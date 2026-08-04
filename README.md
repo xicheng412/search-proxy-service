@@ -52,5 +52,5 @@ pnpm dev                 # wrangler dev，本地起 Worker
    ```
 3. 部署：
    ```bash
-   pnpm deploy
+   pnpm deploy:cf
    ```
