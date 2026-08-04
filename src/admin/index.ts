@@ -55,7 +55,8 @@ admin.get("/", async (c) => {
   let todayCalls = 0;
   await Promise.all(
     dkeys.map(async (k) => {
-      todayCalls += await getDistCalls(kv, k.api_key, today);
+      const s = await getDistCalls(kv, k.api_key, today);
+      todayCalls += s.tavily + s.exa;
     })
   );
 

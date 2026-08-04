@@ -23,9 +23,8 @@ export type TavilyKey = CoreKey;
 export type ExaKey = CoreKey;
 
 export interface DistributedKey {
-  api_key: string;      // 高熵访问密钥，tvly- + 随机串（贴近官方 key 格式，提高第三方工具兼容性）
+  api_key: string;      // 高熵随机字符串（hex），不含任何品牌前缀
   note: string;         // 备注（必填，区分给谁）
-  provider: Provider;   // 该分发 key 的请求最终路由到的上游；旧数据缺省按 "tavily" 处理
   status: KeyStatus;
   created_at: number;
   plain_viewed: boolean;
@@ -34,6 +33,12 @@ export interface DistributedKey {
 export interface TavilyStats {
   success: number;
   fail: number;
+}
+
+/** 分发 key 当日调用数：按 provider 拆分（calls = tavily + exa） */
+export interface DistStats {
+  tavily: number;
+  exa: number;
 }
 
 const DIST_KEYS_KEY = "distributed_keys";
@@ -97,9 +102,9 @@ export function newUpstreamId(def: UpstreamDef): string {
   return def.idPrefix + randomToken(12);
 }
 
-/** 分发 key 前缀与长度贴近 Tavily 官方 key（tvly-...），提高第三方工具对该格式的兼容性。 */
+/** 分发 key：纯随机字符串（hex，不含 `-`）。请求时用 `Bearer <provider>-<key>` 携带，前缀决定路由。 */
 export function newDistApiKey(): string {
-  return "tvly-" + randomToken(24);
+  return randomToken(24);
 }
 
 /** 脱敏：只保留前 7 位 + ****，如 tvly-**** */
@@ -189,9 +194,7 @@ export async function deleteUpstreamKey(
 export async function listDistributedKeys(
   kv: KVNamespace
 ): Promise<DistributedKey[]> {
-  const keys = await readJsonArray<DistributedKey>(kv, DIST_KEYS_KEY);
-  // 旧数据缺 provider 字段：归一化为 "tavily"，兼容性处理
-  return keys.map((k) => (k.provider ? k : { ...k, provider: "tavily" }));
+  return readJsonArray<DistributedKey>(kv, DIST_KEYS_KEY);
 }
 
 export async function getDistributedKey(
@@ -205,7 +208,6 @@ export async function getDistributedKey(
 export async function generateDistributedKey(
   kv: KVNamespace,
   note: string,
-  provider: Provider = "tavily",
   now: number = Date.now()
 ): Promise<DistributedKey> {
   const keys = await listDistributedKeys(kv);
@@ -214,7 +216,6 @@ export async function generateDistributedKey(
   const item: DistributedKey = {
     api_key: keys.some((k) => k.api_key === apiKey) ? newDistApiKey() : apiKey,
     note,
-    provider,
     status: "enabled",
     created_at: now,
     plain_viewed: false, // 尚未查看明文
@@ -227,7 +228,7 @@ export async function generateDistributedKey(
 export async function updateDistributedKey(
   kv: KVNamespace,
   apiKey: string,
-  patch: Partial<Pick<DistributedKey, "note" | "status" | "plain_viewed" | "provider">>
+  patch: Partial<Pick<DistributedKey, "note" | "status" | "plain_viewed">>
 ): Promise<DistributedKey | null> {
   const keys = await listDistributedKeys(kv);
   const idx = keys.findIndex((k) => k.api_key === apiKey);
@@ -295,26 +296,19 @@ export async function getUpstreamStats(
   return getStats(kv, statsUpstreamKey(id, date));
 }
 
-/** 分发 key 当日统计：调用次数 +1（尽力而为，写失败静默） */
+/** 分发 key 当日统计：对应 provider 调用数 +1（尽力而为，写失败静默） */
 export async function incrementDistCalls(
   kv: KVNamespace,
   apiKey: string,
+  provider: Provider,
   date: string = todayDate()
 ): Promise<void> {
   const key = distStatsKey(apiKey, date);
-  let calls = 0;
-  const raw = await kv.get(key, "text");
-  if (raw) {
-    try {
-      const p = JSON.parse(raw);
-      calls = Number.isFinite(p?.calls) ? p.calls : 0;
-    } catch {
-      calls = 0;
-    }
-  }
-  calls += 1;
+  const cur = await getDistCalls(kv, apiKey, date);
+  if (provider === "exa") cur.exa += 1;
+  else cur.tavily += 1;
   try {
-    await kv.put(key, JSON.stringify({ calls }));
+    await kv.put(key, JSON.stringify(cur));
   } catch {
     // 静默忽略
   }
@@ -324,14 +318,17 @@ export async function getDistCalls(
   kv: KVNamespace,
   apiKey: string,
   date: string = todayDate()
-): Promise<number> {
+): Promise<DistStats> {
   const raw = await kv.get(distStatsKey(apiKey, date), "text");
-  if (!raw) return 0;
+  if (!raw) return { tavily: 0, exa: 0 };
   try {
     const p = JSON.parse(raw);
-    return Number.isFinite(p?.calls) ? p.calls : 0;
+    return {
+      tavily: Number.isFinite(p?.tavily) ? p.tavily : 0,
+      exa: Number.isFinite(p?.exa) ? p.exa : 0,
+    };
   } catch {
-    return 0;
+    return { tavily: 0, exa: 0 };
   }
 }
 

@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
 import {
+  DistStats,
   deleteDistributedKey,
   generateDistributedKey,
   getDistCalls,
@@ -26,8 +27,8 @@ async function buildCallsMap(
   kv: KVNamespace,
   dkeys: { api_key: string }[],
   date: string
-): Promise<Record<string, number>> {
-  const callsMap: Record<string, number> = {};
+): Promise<Record<string, DistStats>> {
+  const callsMap: Record<string, DistStats> = {};
   await Promise.all(
     dkeys.map(async (k) => {
       callsMap[k.api_key] = await getDistCalls(kv, k.api_key, date);
@@ -52,15 +53,14 @@ keysAdmin.get("/list", async (c) => {
   return c.html(distListFragment(dkeys, callsMap, csrf));
 });
 
-// 生成新 key（明文只显示一次）
+// 生成新 key（明文只显示一次；请求时用 <provider>-<key> 前缀决定路由）
 keysAdmin.post("/generate", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const note = ((body["note"] as string) ?? "").trim();
   if (!note) return c.html(errorFragment("备注必填"));
   const kv = c.env.KV;
-  const provider = body["provider"] === "exa" ? "exa" : "tavily";
-  const generated = await generateDistributedKey(kv, note, provider);
+  const generated = await generateDistributedKey(kv, note);
   const dkeys = await listDistributedKeys(kv);
   const callsMap = await buildCallsMap(kv, dkeys, todayDate());
   const csrf = (await getCsrfToken(c)) ?? "";
@@ -104,17 +104,5 @@ keysAdmin.post("/:apiKey/toggle", async (c) => {
 keysAdmin.post("/:apiKey/delete", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   await deleteDistributedKey(c.env.KV, c.req.param("apiKey"));
-  return c.redirect("/admin/keys/list", 303);
-});
-
-// 修改分发 key 的 provider（radio 单选后保存）
-keysAdmin.post("/:apiKey/provider", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
-  const apiKey = c.req.param("apiKey");
-  const body = await c.req.parseBody();
-  const provider = body["provider"] === "exa" ? "exa" : "tavily";
-  const cur = (await listDistributedKeys(c.env.KV)).find((k) => k.api_key === apiKey);
-  if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateDistributedKey(c.env.KV, apiKey, { provider });
   return c.redirect("/admin/keys/list", 303);
 });

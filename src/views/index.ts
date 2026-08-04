@@ -3,6 +3,7 @@
 // views/tavily.ts 与 views/exa.ts（按其确认各维护一份）。
 
 import {
+  DistStats,
   DistributedKey,
   maskKey,
 } from "../kv";
@@ -95,7 +96,6 @@ export function layout(
     .badge.ok{ background:#052e16; color:var(--ok); }
     .badge.off{ background:#3f1d1d; color:var(--bad); }
     .badge.warn{ background:#33300a; color:#facc15; }
-    .badge.prov{ background:#0c4a6e; color:#7dd3fc; }
     input[type=text],input[type=password] { background:#0f172a; color:var(--txt);
       border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%; }
     button { background:var(--accent); color:#04121f; border:0; border-radius:8px;
@@ -191,6 +191,7 @@ export function keysPage(csrf: string, fragment: string): string {
   const body = `
 <section class="card">
   <h2>分发 Keys · 管理</h2>
+  <p class="hint" style="margin:0 0 12px;">请求时用 <code>Bearer tavily-&lt;key&gt;</code> 或 <code>Bearer exa-&lt;key&gt;</code>，前缀决定路由到 Tavily 还是 Exa。</p>
   <div id="keys-list">${fragment}</div>
 </section>
 <input type="hidden" id="csrf" value="${esc(csrf)}">`;
@@ -203,23 +204,11 @@ export function keysPage(csrf: string, fragment: string): string {
 
 export function distListFragment(
   keys: DistributedKey[],
-  callsMap: Record<string, number>,
+  callsMap: Record<string, DistStats>,
   csrf: string,
   flash?: string
 ): string {
   const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
-  // Provider 格：徽标 + 单选 radio + 保存（hx 提交后整表刷新）
-  const provCell = (k: DistributedKey) => `
-    <form hx-post="/admin/keys/${esc(k.api_key)}/provider" hx-target="#keys-list"
-          hx-swap="innerHTML" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-      ${csrfField(csrf)}
-      <span class="badge prov">${k.provider === "exa" ? "Exa" : "Tavily"}</span>
-      <label style="font-size:12px;"><input type="radio" name="provider" value="tavily"
-        style="vertical-align:middle;" ${k.provider === "tavily" ? "checked" : ""}> Tavily</label>
-      <label style="font-size:12px;"><input type="radio" name="provider" value="exa"
-        style="vertical-align:middle;" ${k.provider === "exa" ? "checked" : ""}> Exa</label>
-      <button class="ghost" type="submit" style="padding:3px 8px;">保存</button>
-    </form>`;
   const rows = keys.length
     ? keys
         .map((k) => {
@@ -230,14 +219,14 @@ export function distListFragment(
           const created = new Date(k.created_at).toLocaleString("zh-CN", {
             timeZone: "Asia/Shanghai",
           });
-          const calls = callsMap[k.api_key] ?? 0;
+          const s = callsMap[k.api_key] ?? { tavily: 0, exa: 0 };
+          const total = s.tavily + s.exa;
           return `<tr>
-            <td>${provCell(k)}</td>
             <td>${esc(maskKey(k.api_key))}</td>
             <td>${esc(k.note)}</td>
             <td>${st}</td>
             <td class="muted">${esc(created)}</td>
-            <td>${calls}</td>
+            <td title="Tavily ${s.tavily} · Exa ${s.exa}">${total} <span class="muted" style="font-size:11px;">(T ${s.tavily}/E ${s.exa})</span></td>
             <td>
               <form hx-post="/admin/keys/${esc(k.api_key)}/view" hx-target="#plain-${esc(k.api_key)}"
                     hx-swap="innerHTML" style="display:inline;">
@@ -256,36 +245,33 @@ export function distListFragment(
               </form>
             </td>
           </tr>
-          <tr><td id="plain-${esc(k.api_key)}" colspan="7"></td></tr>`;
+          <tr><td id="plain-${esc(k.api_key)}" colspan="6"></td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="7" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
+    : `<tr><td colspan="6" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
 
   return `${flashHtml}
   <form class="row" hx-post="/admin/keys/generate" hx-target="#keys-list" hx-swap="innerHTML">
     ${csrfField(csrf)}
     <input type="text" name="note" placeholder="备注（必填，给谁用）" required>
-    <label class="muted" style="align-self:center;font-size:12px;white-space:nowrap;">
-      <input type="radio" name="provider" value="tavily" checked style="vertical-align:middle;"> Tavily
-      <input type="radio" name="provider" value="exa" style="vertical-align:middle;margin-left:8px;"> Exa
-    </label>
     <button type="submit">生成新 Key</button>
   </form>
   <table>
-    <thead><tr><th>Provider</th><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
+    <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
       <th>当日调用</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
 
-/** 生成成功：明文只显示这一次。返回的片段同时带明文框与刷新后的列表。 */
+/** 生成成功：明文只显示这一次。返回的片段带明文框（含前缀用法提示）与刷新后的列表。 */
 export function distGenerateResult(
   plainApiKey: string,
   keys: DistributedKey[],
-  callsMap: Record<string, number>,
+  callsMap: Record<string, DistStats>,
   csrf: string
 ): string {
-  const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>`;
+  const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
+<div class="hint" style="margin-bottom:8px;">请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code> 或 <code>Bearer exa-${esc(plainApiKey)}</code>，前缀决定路由到哪个上游。</div>`;
   return box + distListFragment(keys, callsMap, csrf);
 }
 

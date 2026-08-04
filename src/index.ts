@@ -19,7 +19,7 @@ app.get("/", (c) => {
     status: "ok",
     providers: ["tavily", "exa"],
     endpoints: {
-      search: "POST /search", // 按分发 key 的 provider 路由
+      search: "POST /search", // Bearer <tavily|exa>-<key>，前缀决定路由
       admin: "/admin",
     },
   });

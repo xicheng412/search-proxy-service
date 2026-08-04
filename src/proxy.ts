@@ -1,8 +1,8 @@
-// 透明代理层：请求端(分发 key) -> 本服务(校验分发 key) -> 上游(真实 key，按分发 key 的 provider 路由) -> 原样返回。
+// 透明代理层：请求端(分发 key) -> 本服务(校验分发 key) -> 上游(真实 key，按请求前缀的 provider 路由) -> 原样返回。
 // 本文件是 provider 无关的泛型算法：由 providers/*.ts 的描述符驱动，代码里无 tavily/exa 分支。
 //
 // 语义：
-//   请求端(分发 key)  ->  本服务(校验分发 key、按 provider 路由)  ->  上游官方(真实 key)  ->  原样返回
+//   请求端(Bearer <provider>-<key>)  ->  本服务(校验 key、按 <provider> 前缀路由)  ->  上游官方(真实 key)  ->  原样返回
 
 import { Context } from "hono";
 import { Env, AppVariables } from "./types";
@@ -11,6 +11,7 @@ import { PROVIDERS } from "./providers";
 import {
   CoreKey,
   DistributedKey,
+  Provider,
   getDistributedKey,
   getUpstreamStats,
   incrementDistCalls,
@@ -133,36 +134,63 @@ function parseBearer(auth: string): string {
   return m[1].trim().split(/\s+/)[0];
 }
 
-/**
- * 校验请求端分发 key，返回其对象（含 provider）；失败时返回 null 并已写入 c.res。
- * 无效/缺失 key 时无法得知 provider，按其默认 Tavily 格式返回 401，不扰动现有 Tavily 客户端。
- */
-async function authenticate(
-  c: Context<{ Bindings: Env; Variables: AppVariables }>
-): Promise<DistributedKey | null> {
-  const auth = c.req.header("authorization") ?? "";
-  const token = parseBearer(auth);
-  if (!token) {
-    c.res = PROVIDERS.tavily.errorBody(
-      401,
-      "Unauthorized: missing or invalid API key."
-    );
-    return null;
-  }
-  const distKey = await getDistributedKey(c.env.KV, token);
-  if (!distKey || distKey.status !== "enabled") {
-    c.res = PROVIDERS.tavily.errorBody(
-      401,
-      "Unauthorized: missing or invalid API key."
-    );
-    return null;
-  }
-  return distKey;
+interface DistAuth {
+  provider: Provider;
+  apiKey: string;
 }
 
 /**
- * 透明的上游代理处理器：与分发 key 的 provider 对应的上游通信。
- * `def` 来自 PROVIDERS[dist.provider]，`path` 是上游官方路径（如 "/search"）。
+ * 解析分发 key：Bearer 令牌必须形如 `<provider>-<key>`。
+ * 前缀（tavily|exa，大小写不敏感）决定路由 provider，`-` 之后的部分是查库的 api_key。
+ * 生成的分发 key 是纯字符串（hex，不含 `-`），按第一个 `-` 切分无歧义；
+ * 前缀非法或缺失时返回 null。
+ */
+export function parseDistKey(token: string): DistAuth | null {
+  const dash = token.indexOf("-");
+  if (dash <= 0) return null; // 无 `-` 或前缀为空
+  const prefix = token.slice(0, dash).toLowerCase();
+  const apiKey = token.slice(dash + 1);
+  if (!apiKey) return null;
+  if (prefix !== "tavily" && prefix !== "exa") return null;
+  return { provider: prefix, apiKey };
+}
+
+/**
+ * 校验请求端分发 key：Bearer 必须形如 `<provider>-<key>`，前缀决定路由。
+ * 失败时返回 null 并已写入 c.res。
+ * - 无 token / 前缀非法：无法得知 provider，用 Tavily 默认格式提示正确用法。
+ * - 前缀合法但 key 无效/禁用：用该 provider 自己的报错格式。
+ */
+async function authenticate(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>
+): Promise<{ provider: Provider; apiKey: string; distKey: DistributedKey } | null> {
+  const token = parseBearer(c.req.header("authorization") ?? "");
+  if (!token) {
+    c.res = PROVIDERS.tavily.errorBody(401, "Unauthorized: missing API key.");
+    return null;
+  }
+  const parsed = parseDistKey(token);
+  if (!parsed) {
+    c.res = PROVIDERS.tavily.errorBody(
+      401,
+      'Unauthorized: expect "Authorization: Bearer <tavily|exa>-<key>".'
+    );
+    return null;
+  }
+  const distKey = await getDistributedKey(c.env.KV, parsed.apiKey);
+  if (!distKey || distKey.status !== "enabled") {
+    c.res = PROVIDERS[parsed.provider].errorBody(
+      401,
+      "Unauthorized: missing or invalid API key."
+    );
+    return null;
+  }
+  return { provider: parsed.provider, apiKey: parsed.apiKey, distKey };
+}
+
+/**
+ * 透明的上游代理处理器：与请求前缀对应的 provider 通信。
+ * `def` 来自 PROVIDERS[provider]，`path` 是上游官方路径（如 "/search"）。
  * 调用前分发 key 已鉴权。
  */
 export async function handleProviderProxy(
@@ -171,9 +199,9 @@ export async function handleProviderProxy(
   path: string,
   apiKey: string
 ): Promise<Response> {
-  // 1. 增加分发 key 当日调用计数（尽力而为）
+  // 1. 增加分发 key 当日调用计数（按 provider 拆分，尽力而为）
   const date = todayDate();
-  await incrementDistCalls(c.env.KV, apiKey, date).catch(() => {});
+  await incrementDistCalls(c.env.KV, apiKey, def.name, date).catch(() => {});
 
   // 读取待转发请求体
   const originBody = await c.req.text();
@@ -230,15 +258,20 @@ export async function handleProviderProxy(
   return classifyAndHandle(kv, def, first, res);
 }
 
-/** /search 透明代理入口：鉴权分发 key，按它的 provider 路由到对应上游。 */
+/** /search 透明代理入口：鉴权分发 key，按请求前缀的 provider 路由到对应上游。 */
 export async function handleSearch(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
 ): Promise<Response> {
   try {
-    const dist = await authenticate(c);
-    if (!dist) return c.res; // 错误响应已在 authenticate 写入
-    const def = PROVIDERS[dist.provider];
-    return await handleProviderProxy(c, def, def.endpoints.search, dist.api_key);
+    const authRes = await authenticate(c);
+    if (!authRes) return c.res; // 错误响应已在 authenticate 写入
+    const def = PROVIDERS[authRes.provider];
+    return await handleProviderProxy(
+      c,
+      def,
+      def.endpoints.search,
+      authRes.distKey.api_key
+    );
   } catch (err) {
     // 透明代理不应裸抛 500；转为带错误信息的响应便于定位（也避免泄露堆栈给客户端）
     const msg = err instanceof Error ? err.message : String(err);

@@ -1,6 +1,6 @@
 # tavily-cf-proxy
 
-基于 **Hono** 构建，部署在 **Cloudflare Workers** 上的 API 密钥代理与管理平台：对外提供统一的 **Tavily / Exa** 搜索代理入口，将上游真实 API Key 收口在中间层，向下游分发可独立管控的访问 Key；每个分发 Key 可通过后台 radio 指定其请求最终路由到 Tavily 还是 Exa。
+基于 **Hono** 构建，部署在 **Cloudflare Workers** 上的 API 密钥代理与管理平台：对外提供统一的 **Tavily / Exa** 搜索代理入口，将上游真实 API Key 收口在中间层，向下游分发可独立管控的访问 Key。分发 Key 是**纯随机字符串**，请求时用 `Bearer tavily-<key>` 或 `Bearer exa-<key>` 携带，**前缀决定该次请求路由到哪个上游**。
 
 ## 技术栈
 
