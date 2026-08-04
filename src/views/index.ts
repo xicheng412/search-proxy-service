@@ -129,6 +129,7 @@ export function layout(
     .err{ color:var(--bad); }
     .toast{ background:#164e63; padding:6px 10px; border-radius:8px; font-size:12px; }
     a{ color:var(--accent); }
+    .wrap > .card + .card { margin-top:20px; }
     pre.code{ background:#0f172a; border:1px solid var(--line); border-radius:8px;
       padding:10px 12px; font-family:ui-monospace,Menlo,monospace; font-size:12px;
       overflow-x:auto; white-space:pre; }
