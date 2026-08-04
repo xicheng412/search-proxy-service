@@ -1,6 +1,6 @@
 // Tavily Keys 管理页模板（按确认与 Exa 各维护一份，路径/文案为本 provider 专用）。
 
-import { TavilyKey, TavilyStats, maskKey } from "../kv";
+import { TavilyKey, TavilyStats, maskKey } from "../domain";
 import { esc, csrfField, layout } from "./index";
 
 export function tavilyPage(csrf: string, fragment: string): string {

@@ -6,7 +6,7 @@ import {
   DistStats,
   DistributedKey,
   maskKey,
-} from "../kv";
+} from "../domain";
 
 export function esc(s: string): string {
   return s

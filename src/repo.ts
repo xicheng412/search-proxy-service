@@ -1,44 +1,18 @@
-// KV 数据访问层（泛型：上游 key 由 provider 描述符驱动，代码里无 provider 分支）
-// 所有数据存 Cloudflare KV，用带前缀的 key 区分。统计为"尽力而为的近似值"：
-// 读-改-写存在竞态，允许少量误差，写失败静默忽略，不阻塞主流程。
+// 基础设施层：Cloudflare KV 的持久化 + 每日统计 + 熔断。
+// 只依赖 domain.ts 的类型/值/策略常量，本身不含业务规则。写失败静默忽略，不阻塞主流程。
 
-export type Provider = "tavily" | "exa";
-export type KeyStatus = "enabled" | "disabled";
-
-/** 上游 key 仓库描述符（providers/*.ts 提供），泛型 CRUD 据此定位 KV 数组键与 id 前缀。 */
-export interface UpstreamDef {
-  keysKey: string;
-  idPrefix: string;
-}
-
-export interface CoreKey {
-  id: string;
-  key: string;                     // 上游真实 key（tavily: tvly-*；exa: 无固定前缀）
-  name: string;                    // 备注
-  status: KeyStatus;
-  cooldown_until: number | null;   // 熔断冷却截止时间戳(ms)，默认 null
-  created_at: number;
-}
-export type TavilyKey = CoreKey;
-export type ExaKey = CoreKey;
-
-export interface DistributedKey {
-  api_key: string;      // 高熵随机字符串（hex），不含任何品牌前缀
-  note: string;         // 备注（必填，区分给谁）
-  status: KeyStatus;
-  created_at: number;
-}
-
-export interface TavilyStats {
-  success: number;
-  fail: number;
-}
-
-/** 分发 key 当日调用数：按 provider 拆分（calls = tavily + exa） */
-export interface DistStats {
-  tavily: number;
-  exa: number;
-}
+import {
+  COOLDOWN_MS,
+  COOLDOWN_THRESHOLD,
+  CoreKey,
+  DistributedKey,
+  DistStats,
+  Provider,
+  UpstreamDef,
+  newDistApiKey,
+  newUpstreamId,
+  todayDate,
+} from "./domain";
 
 const DIST_KEYS_KEY = "distributed_keys";
 
@@ -48,19 +22,6 @@ function statsUpstreamKey(id: string, date: string): string {
 
 function distStatsKey(id: string, date: string): string {
   return `dist_stats:${id}:${date}`;
-}
-
-/**
- * 按 Asia/Shanghai 时区计算"今天"的日期字符串 YYYY-MM-DD。
- * 用 Intl 的 en-CA 格式可直接得到 YYYY-MM-DD。
- */
-export function todayDate(t: number = Date.now()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(t));
 }
 
 async function readJsonArray<T>(kv: KVNamespace, key: string): Promise<T[]> {
@@ -80,36 +41,6 @@ async function writeJsonArray<T>(
   value: T[]
 ): Promise<void> {
   await kv.put(key, JSON.stringify(value));
-}
-
-// ---------------------------------------------------------------
-// 工具函数
-// ---------------------------------------------------------------
-
-/** 生成高熵随机 ID 或密钥。len 为字节数，越长熵越高。 */
-export function randomToken(len = 24): string {
-  const buf = new Uint8Array(len);
-  crypto.getRandomValues(buf);
-  let s = "";
-  for (let i = 0; i < buf.length; i++) {
-    s += buf[i].toString(16).padStart(2, "0");
-  }
-  return s;
-}
-
-export function newUpstreamId(def: UpstreamDef): string {
-  return def.idPrefix + randomToken(12);
-}
-
-/** 分发 key：纯随机字符串（hex，不含 `-`）。请求时用 `Bearer <provider>-<key>` 携带，前缀决定路由。 */
-export function newDistApiKey(): string {
-  return randomToken(24);
-}
-
-/** 脱敏：只保留前 7 位 + ****，如 tvly-**** */
-export function maskKey(key: string): string {
-  if (key.length <= 7) return "****";
-  return key.slice(0, 7) + "****";
 }
 
 // ---------------------------------------------------------------
@@ -248,7 +179,7 @@ export async function deleteDistributedKey(
 }
 
 // ---------------------------------------------------------------
-// 每日统计（近似值，单一 KV PUT，跨天自然重置）
+// 每日统计（近似值：读-改-写存在竞态，单一 KV PUT，跨天自然重置）
 // ---------------------------------------------------------------
 
 async function getStats(
@@ -330,14 +261,9 @@ export async function getDistCalls(
   }
 }
 
-export const DAY_MS = 24 * 60 * 60 * 1000;
-
 // ---------------------------------------------------------------
 // 熔断：连续失败计数（近似值，非精确并发安全）
 // ---------------------------------------------------------------
-
-const COOLDOWN_THRESHOLD = 5; // 连续失败达到该次数触发冷却
-export const COOLDOWN_MS = 60 * 1000; // 冷却时长 60 秒
 
 function breakerKey(id: string): string {
   return `breaker:${id}`;
@@ -382,11 +308,4 @@ export async function recordUpstreamSuccess(
   id: string
 ): Promise<void> {
   await kv.put(breakerKey(id), JSON.stringify({ consecutive: 0 })).catch(() => {});
-}
-
-export async function getConsecutiveFailures(
-  kv: KVNamespace,
-  id: string
-): Promise<number> {
-  return readConsecutive(kv, id);
 }

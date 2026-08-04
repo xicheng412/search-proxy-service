@@ -2,7 +2,7 @@
 // 共享泛型代码（kv/proxy/admin/views）只消费 ProviderConfig / PROVIDERS，
 // 因此新增 provider 时只需加一个描述符文件并在本文件注册，无需改任何逻辑文件。
 
-import { Provider, UpstreamDef } from "../kv";
+import { Provider, UpstreamDef } from "../domain";
 import { TAVILY } from "./tavily";
 import { EXA } from "./exa";
 

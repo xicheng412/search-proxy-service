@@ -10,8 +10,13 @@ import { ProviderConfig } from "./providers";
 import { PROVIDERS } from "./providers";
 import {
   CoreKey,
+  DistAuth,
   DistributedKey,
   Provider,
+  parseDistKey,
+  todayDate,
+} from "./domain";
+import {
   getDistributedKey,
   getUpstreamStats,
   incrementDistCalls,
@@ -19,8 +24,7 @@ import {
   listUpstreamKeys,
   recordUpstreamFailure,
   recordUpstreamSuccess,
-  todayDate,
-} from "./kv";
+} from "./repo";
 
 /**
  * 加权随机：只从 status=enabled 且未冷却的 key 中选择；
@@ -132,27 +136,6 @@ function parseBearer(auth: string): string {
   const m = /^bearer\s*:?\s+(.+)$/i.exec(auth.trim());
   if (!m) return "";
   return m[1].trim().split(/\s+/)[0];
-}
-
-interface DistAuth {
-  provider: Provider;
-  apiKey: string;
-}
-
-/**
- * 解析分发 key：Bearer 令牌必须形如 `<provider>-<key>`。
- * 前缀（tavily|exa，大小写不敏感）决定路由 provider，`-` 之后的部分是查库的 api_key。
- * 生成的分发 key 是纯字符串（hex，不含 `-`），按第一个 `-` 切分无歧义；
- * 前缀非法或缺失时返回 null。
- */
-export function parseDistKey(token: string): DistAuth | null {
-  const dash = token.indexOf("-");
-  if (dash <= 0) return null; // 无 `-` 或前缀为空
-  const prefix = token.slice(0, dash).toLowerCase();
-  const apiKey = token.slice(dash + 1);
-  if (!apiKey) return null;
-  if (prefix !== "tavily" && prefix !== "exa") return null;
-  return { provider: prefix, apiKey };
 }
 
 /**

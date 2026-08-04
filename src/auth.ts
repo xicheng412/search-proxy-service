@@ -3,7 +3,7 @@
 import { Context, MiddlewareHandler } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Env, AppVariables } from "./types";
-import { randomToken } from "./kv";
+import { randomToken } from "./domain";
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 小时
 const SESSION_COOKIE = "admin_session";
