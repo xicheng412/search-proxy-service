@@ -1,0 +1,14 @@
+name = "tavily-cf-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# KV namespace for all application data (tavily keys, distributed keys, stats).
+# Run `pnpm kv:create -- <PREFIX>` or `wrangler kv namespace create <PREFIX>`
+# to provision, then paste the generated id below.
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[observability.logs]
+enabled = true
+invocation_logs = true

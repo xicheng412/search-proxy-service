@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# TypeScript
+*.tsbuildinfo
+
+# Wrangler / Cloudflare local state
+.wrangler/
+.dev.vars
+*.dev.vars
+
+# Environment / secrets (never commit real keys)
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# macOS
+.DS_Store
