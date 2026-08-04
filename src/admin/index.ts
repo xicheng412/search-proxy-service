@@ -10,7 +10,7 @@ import {
   listUpstreamKeys,
 } from "../repo";
 import { EXA, TAVILY } from "../providers";
-import { adminPage } from "../views";
+import { adminPage, helpPage } from "../views";
 import { exaAdmin } from "./exa";
 import { keysAdmin } from "./keys";
 import { tavilyAdmin } from "./tavily";
@@ -32,6 +32,8 @@ admin.use("*", async (c, next) => {
         "/admin/exa/",
         "/admin/keys",
         "/admin/keys/",
+        "/admin/help",
+        "/admin/help/",
       ].includes(c.req.path);
     if (isPage) {
       return c.redirect("/admin/login?next=" + encodeURIComponent(c.req.path));
@@ -77,3 +79,8 @@ admin.get("/", async (c) => {
 admin.route("/tavily", tavilyAdmin);
 admin.route("/exa", exaAdmin);
 admin.route("/keys", keysAdmin);
+
+// ---------- 使用说明页 ----------
+admin.get("/help", async (c) => {
+  return c.html(helpPage());
+});

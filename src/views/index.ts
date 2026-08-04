@@ -21,13 +21,14 @@ export function csrfField(token: string): string {
   return `<input type="hidden" name="csrf_token" value="${esc(token)}">`;
 }
 
-type NavKey = "dashboard" | "tavily" | "exa" | "keys";
+type NavKey = "dashboard" | "tavily" | "exa" | "keys" | "help";
 
 const NAV_ITEMS: { key: NavKey; href: string; label: string }[] = [
   { key: "dashboard", href: "/admin", label: "总览" },
   { key: "tavily", href: "/admin/tavily", label: "Tavily Keys" },
   { key: "exa", href: "/admin/exa", label: "Exa Keys" },
   { key: "keys", href: "/admin/keys", label: "分发 Keys" },
+  { key: "help", href: "/admin/help", label: "使用说明" },
 ];
 
 function nav(active: NavKey): string {
@@ -128,6 +129,10 @@ export function layout(
     .err{ color:var(--bad); }
     .toast{ background:#164e63; padding:6px 10px; border-radius:8px; font-size:12px; }
     a{ color:var(--accent); }
+    pre.code{ background:#0f172a; border:1px solid var(--line); border-radius:8px;
+      padding:10px 12px; font-family:ui-monospace,Menlo,monospace; font-size:12px;
+      overflow-x:auto; white-space:pre; }
+    .hl{ color:var(--accent); }
   </style>
 </head>
 <body>
@@ -294,4 +299,62 @@ export function distGenerateResult(
 
 export function errorFragment(msg: string): string {
   return `<div class="err">${esc(msg)}</div>`;
+}
+
+// ---------------------------------------------------------------
+// 使用说明页（原理 + 调用方式 + 文档，管理员参考/转发给下游）
+// ---------------------------------------------------------------
+
+export function helpPage(): string {
+  const body = `
+<div class="card">
+  <h2>使用说明</h2>
+  <p class="muted">本服务把上游真实 Key（Tavily / Exa 官方 key）收口在中间层，只向下游分发<strong>纯字符串的分发 key</strong>。<br>
+  调用方用 <code>Authorization: Bearer &lt;provider&gt;-&lt;key&gt;</code> 请求代理端点，<code>&lt;provider&gt;</code> 前缀（tavily / exa）决定这一次请求路由到哪个上游；本服务用后台配置的真实上游 key 代为转发，结果原样透传。</p>
+  <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code> 或 <code>exa-&lt;key&gt;</code>。</p>
+</div>
+
+<div class="card">
+  <h2>调用示例（两种方式）</h2>
+  <p class="muted">端点：<code>POST /search</code>　请求体请用对应上游官方的格式（本服务透明转发，不做格式转换）。</p>
+
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：走 Tavily</h3>
+<pre class="code">curl -X POST https://&lt;你的域名&gt;/search \\
+  -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
+  -H "Content-Type: application/json" \\
+  -d '{"query":"what is the latest news about AI","max_results":3}'</pre>
+
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式二：走 Exa</h3>
+<pre class="code">curl -X POST https://&lt;你的域名&gt;/search \\
+  -H "Authorization: Bearer exa-&lt;分发key&gt;" \\
+  -H "Content-Type: application/json" \\
+  -d '{"query":"what is the latest news about AI","numResults":3}'
+</pre>
+  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code> 和 <code>exa-</code> 前缀，按前缀路由到不同上游。列表里的「复制 tavily/exa 调用key」可直接复制完整凭据。</p>
+</div>
+
+<div class="card">
+  <h2>响应与错误</h2>
+  <table>
+    <thead><tr><th>状态</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>2xx</td><td>上游原始响应原样透传（结构由上游决定）</td></tr>
+      <tr><td>429</td><td>自动换另一个可用上游 key 重试一次；仍 429 返回上游错误</td></tr>
+      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code> 或 <code>exa-</code>）</td></tr>
+      <tr><td>503</td><td>该 provider 无可用的上游 key（全部禁用或冷却中）</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>后台功能与文档</h2>
+  <ul class="muted">
+    <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
+    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，一键复制调用凭据；当日调用按 provider 拆分（T/E）。</li>
+    <li><strong>熔断</strong>：上游 key 连续失败达阈值自动冷却 60 秒，期间跳过。</li>
+    <li><strong>统计</strong>：每日统计按 Asia/Shanghai 时区结算，KV 近似值、允许少量误差。</li>
+    <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
+  </ul>
+</div>`;
+  return layout("使用说明 · Tavily Proxy", body, { active: "help" });
 }

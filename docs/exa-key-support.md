@@ -74,6 +74,7 @@ Authorization: Bearer <provider>-<key>
 
 - **Tavily Keys / Exa Keys**：列表（key 脱敏、备注可编辑、状态、冷却、当日成功/失败）、新增（可选 test call 分别打各自上游）、启用/停用、删除。
 - **分发 Keys**：生成（纯随机字符串，明文只在生成响应显示一次，带前缀用法提示）、启用/停用、删除；列表显示当日调用并拆 `T Tavily n / Exa m`；每行提供 **复制 tavily 调用key / 复制 exa 调用key** 按钮——复制组装好的调用凭据 `tavily-<key>` / `exa-<key>`（非外部服务 key，完整明文按需注入行内供一键复制）。
+- **使用说明页（`/admin/help`）**：原理与概念区分、两种 curl 调用示例（`tavily-` / `exa-`）、端点与错误表、文档索引。
 - Dashboard：Tavily/Exa/分发 Key 统计卡 + 今日调用（= 各 key 的 tavily+exa 之和）。
 
 ## 7. 兼容与迁移
