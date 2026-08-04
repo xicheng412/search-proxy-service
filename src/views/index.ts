@@ -208,7 +208,7 @@ export function keysPage(csrf: string, fragment: string): string {
   const body = `
 <section class="card">
   <h2>分发 Keys · 管理</h2>
-  <p class="hint" style="margin:0 0 12px;">请求时用 <code>Bearer tavily-&lt;key&gt;</code> 或 <code>Bearer exa-&lt;key&gt;</code>，前缀决定路由到 Tavily 还是 Exa。</p>
+  <p class="hint" style="margin:0 0 12px;">复制按钮复制的是<strong>调用本服务的凭据</strong> <code>Bearer tavily-&lt;key&gt;</code> / <code>Bearer exa-&lt;key&gt;</code>（前缀决定路由到 Tavily 还是 Exa），不是 Tavily/Exa 官方真实 key——官方 key 在 “Tavily Keys” / “Exa Keys” 页管理。</p>
   <div id="keys-list">${fragment}</div>
 </section>
 <input type="hidden" id="csrf" value="${esc(csrf)}">`;
@@ -246,8 +246,8 @@ export function distListFragment(
             <td title="Tavily ${s.tavily} · Exa ${s.exa}">${total} <span class="muted" style="font-size:11px;">(T ${s.tavily}/E ${s.exa})</span></td>
             <td>
               <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
-                <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" style="padding:3px 8px;">复制 tavily-key</button>
-                <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" style="padding:3px 8px;">复制 exa-key</button>
+                <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）" style="padding:3px 8px;">复制 tavily 调用key</button>
+                <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）" style="padding:3px 8px;">复制 exa 调用key</button>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
                       hx-swap="innerHTML" style="display:inline-block;">
                   ${csrfField(csrf)}
@@ -286,7 +286,7 @@ export function distGenerateResult(
   csrf: string
 ): string {
   const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
-<div class="hint" style="margin-bottom:8px;">请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code> 或 <code>Bearer exa-${esc(plainApiKey)}</code>，前缀决定路由到哪个上游。</div>`;
+<div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）或 <code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）。</div>`;
   return box + distListFragment(keys, callsMap, csrf);
 }
 

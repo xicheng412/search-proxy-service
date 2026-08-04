@@ -9,6 +9,12 @@
 2. 实现 **Exa 透明代理**：统一入口 `POST /search`，按请求前缀选择上游，Bearer 换上游真实 key，结果原样透传；统计/熔断/429 切 key 重试与 Tavily 一致。
 3. **分发 Key 前缀路由**：Key 为纯随机字符串，不绑定 provider；请求时 `tavily-<key>` → Tavily，`exa-<key>` → Exa。
 
+## 1.1 概念区分（术语）
+
+- **上游服务 key（外部真实 key）**：Tavily / Exa 官方签发的 key，在后台 “Tavily Keys” / “Exa Keys” 页管理（列表脱敏），仅由本服务持有，转发时替换进请求头。
+- **分发 key（调用凭据）**：纯随机字符串，在 “分发 Keys” 页生成。调用本服务时写成 `Bearer tavily-<分发key>` 或 `Bearer exa-<分发key>`，前缀即路由选择。
+- **复制按钮语义**：列表里的 “复制 tavily 调用key / 复制 exa 调用key” 复制的是组装好的**调用凭据**（`tavily-<key>` / `exa-<key>`），**不是**外部服务 key。
+
 ## 2. Exa 官方接口事实（已查证）
 
 | 项 | 值 |
@@ -67,7 +73,7 @@ Authorization: Bearer <provider>-<key>
 ## 6. 管理后台
 
 - **Tavily Keys / Exa Keys**：列表（key 脱敏、备注可编辑、状态、冷却、当日成功/失败）、新增（可选 test call 分别打各自上游）、启用/停用、删除。
-- **分发 Keys**：生成（纯随机字符串，明文只显示一次，带前缀用法提示）、查看明文（二次密码确认）、启用/停用、删除；列表显示当日调用并拆 `T Tavily n / Exa m`；页面顶部提示 `Bearer tavily-<key>` / `Bearer exa-<key>`。
+- **分发 Keys**：生成（纯随机字符串，明文只在生成响应显示一次，带前缀用法提示）、启用/停用、删除；列表显示当日调用并拆 `T Tavily n / Exa m`；每行提供 **复制 tavily 调用key / 复制 exa 调用key** 按钮——复制组装好的调用凭据 `tavily-<key>` / `exa-<key>`（非外部服务 key，完整明文按需注入行内供一键复制）。
 - Dashboard：Tavily/Exa/分发 Key 统计卡 + 今日调用（= 各 key 的 tavily+exa 之和）。
 
 ## 7. 兼容与迁移

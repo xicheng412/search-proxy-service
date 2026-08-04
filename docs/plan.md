@@ -1,5 +1,9 @@
 # 项目概述
 
+> 注意：本文为**初始设计文档**，部分方案已变更，当前实现以 `docs/exa-key-support.md` 为准：
+> 1. 分发 Key 已改为**纯字符串 + 前缀路由**（请求时 `Bearer tavily-<key>` / `exa-<key>` 定 provider），不再生成 `tvly-` 前缀，也不再给分发 Key 存 provider 属性 / radio 选择。
+> 2. 分发 Key 的"明文只显示一次 / 二次密码重新查看明文"交互已移除（分发 Key 明文按需注入列表行内供一键复制）。
+
 请用 **Hono 框架** 构建一个部署在 **Cloudflare Workers** 上的 **API 密钥代理与管理平台**，使用 **Wrangler** 进行开发和部署，存储使用 **Cloudflare KV**，管理后台用 **HTMX + 原生 HTML**。
 
 ## 业务本质
