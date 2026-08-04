@@ -27,7 +27,6 @@ export interface DistributedKey {
   note: string;         // 备注（必填，区分给谁）
   status: KeyStatus;
   created_at: number;
-  plain_viewed: boolean;
 }
 
 export interface TavilyStats {
@@ -218,7 +217,6 @@ export async function generateDistributedKey(
     note,
     status: "enabled",
     created_at: now,
-    plain_viewed: false, // 尚未查看明文
   };
   keys.push(item);
   await writeJsonArray(kv, DIST_KEYS_KEY, keys);
@@ -228,7 +226,7 @@ export async function generateDistributedKey(
 export async function updateDistributedKey(
   kv: KVNamespace,
   apiKey: string,
-  patch: Partial<Pick<DistributedKey, "note" | "status" | "plain_viewed">>
+  patch: Partial<Pick<DistributedKey, "note" | "status">>
 ): Promise<DistributedKey | null> {
   const keys = await listDistributedKeys(kv);
   const idx = keys.findIndex((k) => k.api_key === apiKey);

@@ -15,8 +15,6 @@ import {
 import {
   distGenerateResult,
   distListFragment,
-  distViewForm,
-  distViewPlain,
   errorFragment,
   keysPage,
 } from "../views";
@@ -65,29 +63,6 @@ keysAdmin.post("/generate", async (c) => {
   const callsMap = await buildCallsMap(kv, dkeys, todayDate());
   const csrf = (await getCsrfToken(c)) ?? "";
   return c.html(distGenerateResult(generated.api_key, dkeys, callsMap, csrf));
-});
-
-// 查看明文（首查或二次密码确认）
-keysAdmin.post("/:apiKey/view", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
-  const apiKey = c.req.param("apiKey");
-  const kv = c.env.KV;
-  const found = (await listDistributedKeys(kv)).find((k) => k.api_key === apiKey);
-  if (!found) return c.html(errorFragment("未找到该 key"));
-  const body = await c.req.parseBody();
-  const password = ((body["password"] as string) ?? "").trim();
-
-  // 首次查看：若从未查看过明文且未带密码，直接返回明文（生成后的一次机会）
-  if (!found.plain_viewed && !password) {
-    await updateDistributedKey(kv, apiKey, { plain_viewed: true });
-    return c.html(distViewPlain(apiKey));
-  }
-  // 已查看过：必须二次输入密码确认
-  if (!c.env.ADMIN_PASSWORD || password !== c.env.ADMIN_PASSWORD) {
-    const csrf = (await getCsrfToken(c)) ?? "";
-    return c.html(errorFragment("密码错误") + distViewForm(csrf, apiKey));
-  }
-  return c.html(distViewPlain(apiKey));
 });
 
 keysAdmin.post("/:apiKey/toggle", async (c) => {

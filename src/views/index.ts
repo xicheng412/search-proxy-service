@@ -60,6 +60,23 @@ export function layout(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(title)}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script>
+    // 一键复制：点击带 data-copy 的按钮，把完整 key 复制到剪贴板
+    document.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('[data-copy]') : null;
+      if (!btn) return;
+      var text = btn.getAttribute('data-copy') || '';
+      if (!text) return;
+      var orig = btn.textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = '已复制';
+        setTimeout(function () { btn.textContent = orig; }, 1200);
+      }).catch(function () {
+        btn.textContent = '复制失败';
+        setTimeout(function () { btn.textContent = orig; }, 1200);
+      });
+    });
+  </script>
   <style>
     :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0;
             --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --bad:#f87171; }
@@ -228,24 +245,22 @@ export function distListFragment(
             <td class="muted">${esc(created)}</td>
             <td title="Tavily ${s.tavily} · Exa ${s.exa}">${total} <span class="muted" style="font-size:11px;">(T ${s.tavily}/E ${s.exa})</span></td>
             <td>
-              <form hx-post="/admin/keys/${esc(k.api_key)}/view" hx-target="#plain-${esc(k.api_key)}"
-                    hx-swap="innerHTML" style="display:inline;">
-                ${csrfField(csrf)}
-                <button class="ghost" type="submit">查看明文</button>
-              </form>
-              <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
-                    hx-swap="innerHTML" style="display:inline;">
-                ${csrfField(csrf)}
-                <button class="ghost" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
-              </form>
-              <form hx-post="/admin/keys/${esc(k.api_key)}/delete" hx-target="#keys-list"
-                    hx-swap="innerHTML" hx-confirm="确认删除该分发 key？" style="display:inline;">
-                ${csrfField(csrf)}
-                <button class="danger" type="submit">删除</button>
-              </form>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+                <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" style="padding:3px 8px;">复制 tavily-key</button>
+                <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" style="padding:3px 8px;">复制 exa-key</button>
+                <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
+                      hx-swap="innerHTML" style="display:inline-block;">
+                  ${csrfField(csrf)}
+                  <button class="ghost" type="submit" style="padding:3px 8px;">${k.status === "enabled" ? "停用" : "启用"}</button>
+                </form>
+                <form hx-post="/admin/keys/${esc(k.api_key)}/delete" hx-target="#keys-list"
+                      hx-swap="innerHTML" hx-confirm="确认删除该分发 key？" style="display:inline-block;">
+                  ${csrfField(csrf)}
+                  <button class="danger" type="submit" style="padding:3px 8px;">删除</button>
+                </form>
+              </div>
             </td>
-          </tr>
-          <tr><td id="plain-${esc(k.api_key)}" colspan="6"></td></tr>`;
+          </tr>`;
         })
         .join("")
     : `<tr><td colspan="6" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
@@ -275,22 +290,7 @@ export function distGenerateResult(
   return box + distListFragment(keys, callsMap, csrf);
 }
 
-/** 二次密码确认查看明文。返回表单或明文。 */
-export function distViewForm(csrf: string, apiKey: string): string {
-  return `<form hx-post="/admin/keys/${esc(apiKey)}/view" hx-target="#plain-${esc(apiKey)}"
-           hx-swap="innerHTML" style="margin-bottom:8px;">
-    ${csrfField(csrf)}
-    <label class="muted" style="font-size:12px;">为安全起见，请输入管理员密码确认：</label>
-    <div style="display:flex;gap:8px;margin-top:6px;">
-      <input type="password" name="password" style="flex:1;">
-      <button type="submit">确认</button>
-    </div>
-  </form>`;
-}
-
-export function distViewPlain(apiKey: string): string {
-  return `<div class="plain">${esc(apiKey)}</div>`;
-}
+/** 二次密码确认查看明文已随复制按钮移除（明文已注入行内，无需再查）。 */
 
 export function errorFragment(msg: string): string {
   return `<div class="err">${esc(msg)}</div>`;
