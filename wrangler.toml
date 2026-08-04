@@ -7,7 +7,7 @@ compatibility_date = "2024-11-01"
 # to provision, then paste the generated id below.
 [[kv_namespaces]]
 binding = "KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "ff56ea82daa846538fdf11e6bff662eb"
 
 [observability.logs]
 enabled = true

@@ -1,24 +1,34 @@
-// KV 数据访问层
+// KV 数据访问层（泛型：上游 key 由 provider 描述符驱动，代码里无 provider 分支）
 // 所有数据存 Cloudflare KV，用带前缀的 key 区分。统计为"尽力而为的近似值"：
 // 读-改-写存在竞态，允许少量误差，写失败静默忽略，不阻塞主流程。
 
-export type TavilyStatus = "enabled" | "disabled";
+export type Provider = "tavily" | "exa";
+export type KeyStatus = "enabled" | "disabled";
 
-export interface TavilyKey {
-  id: string;
-  key: string; // Tavily 真实 key，tvly- 开头
-  name: string; // 备注
-  status: TavilyStatus;
-  cooldown_until: number | null; // 熔断冷却截止时间戳(ms)，默认 null
-  created_at: number;
+/** 上游 key 仓库描述符（providers/*.ts 提供），泛型 CRUD 据此定位 KV 数组键与 id 前缀。 */
+export interface UpstreamDef {
+  keysKey: string;
+  idPrefix: string;
 }
 
-export interface DistributedKey {
-  api_key: string; // 高熵访问密钥，tvly- + 随机串（前缀贴近 Tavily 官方 key）
-  note: string; // 备注（必填，区分给谁）
-  status: TavilyStatus;
+export interface CoreKey {
+  id: string;
+  key: string;                     // 上游真实 key（tavily: tvly-*；exa: 无固定前缀）
+  name: string;                    // 备注
+  status: KeyStatus;
+  cooldown_until: number | null;   // 熔断冷却截止时间戳(ms)，默认 null
   created_at: number;
-  plain_viewed: boolean; // 明文是否已被查看过
+}
+export type TavilyKey = CoreKey;
+export type ExaKey = CoreKey;
+
+export interface DistributedKey {
+  api_key: string;      // 高熵访问密钥，tvly- + 随机串（贴近官方 key 格式，提高第三方工具兼容性）
+  note: string;         // 备注（必填，区分给谁）
+  provider: Provider;   // 该分发 key 的请求最终路由到的上游；旧数据缺省按 "tavily" 处理
+  status: KeyStatus;
+  created_at: number;
+  plain_viewed: boolean;
 }
 
 export interface TavilyStats {
@@ -30,10 +40,9 @@ export interface DistStats {
   calls: number;
 }
 
-const TAVILY_KEYS_KEY = "tavily_keys";
 const DIST_KEYS_KEY = "distributed_keys";
 
-function statsTavilyKey(id: string, date: string): string {
+function statsUpstreamKey(id: string, date: string): string {
   return `stats:${id}:${date}`;
 }
 
@@ -54,10 +63,7 @@ export function todayDate(t: number = Date.now()): string {
   }).format(new Date(t));
 }
 
-async function readJsonArray<T>(
-  kv: KVNamespace,
-  key: string
-): Promise<T[]> {
+async function readJsonArray<T>(kv: KVNamespace, key: string): Promise<T[]> {
   const raw = await kv.get(key, "text");
   if (!raw) return [];
   try {
@@ -91,13 +97,12 @@ export function randomToken(len = 24): string {
   return s;
 }
 
-export function newTavilyId(): string {
-  return "tk_" + randomToken(12);
+export function newUpstreamId(def: UpstreamDef): string {
+  return def.idPrefix + randomToken(12);
 }
 
+/** 分发 key 前缀与长度贴近 Tavily 官方 key（tvly-...），提高第三方工具对该格式的兼容性。 */
 export function newDistApiKey(): string {
-  // 前缀与长度贴近 Tavily 官方 key（tvly-...），提高第三方工具对该 provider
-  // 的兼容性（不少工具会按 tavily key 格式校验前缀/长度）。
   return "tvly-" + randomToken(24);
 }
 
@@ -108,30 +113,35 @@ export function maskKey(key: string): string {
 }
 
 // ---------------------------------------------------------------
-// Tavily Keys CRUD
+// 上游 Keys CRUD（泛型，按 UpstreamDef 定位 KV 数组与 id 前缀）
 // ---------------------------------------------------------------
 
-export async function listTavilyKeys(kv: KVNamespace): Promise<TavilyKey[]> {
-  return readJsonArray<TavilyKey>(kv, TAVILY_KEYS_KEY);
+export async function listUpstreamKeys(
+  kv: KVNamespace,
+  def: UpstreamDef
+): Promise<CoreKey[]> {
+  return readJsonArray<CoreKey>(kv, def.keysKey);
 }
 
-export async function getTavilyKey(
+export async function getUpstreamKey(
   kv: KVNamespace,
+  def: UpstreamDef,
   id: string
-): Promise<TavilyKey | null> {
-  const keys = await listTavilyKeys(kv);
+): Promise<CoreKey | null> {
+  const keys = await listUpstreamKeys(kv, def);
   return keys.find((k) => k.id === id) ?? null;
 }
 
-export async function addTavilyKey(
+export async function addUpstreamKey(
   kv: KVNamespace,
+  def: UpstreamDef,
   key: string,
   name: string,
   now: number = Date.now()
-): Promise<TavilyKey> {
-  const keys = await listTavilyKeys(kv);
-  const item: TavilyKey = {
-    id: newTavilyId(),
+): Promise<CoreKey> {
+  const keys = await listUpstreamKeys(kv, def);
+  const item: CoreKey = {
+    id: newUpstreamId(def),
     key,
     name: name || "未命名",
     status: "enabled",
@@ -139,46 +149,49 @@ export async function addTavilyKey(
     created_at: now,
   };
   keys.push(item);
-  await writeJsonArray(kv, TAVILY_KEYS_KEY, keys);
+  await writeJsonArray(kv, def.keysKey, keys);
   return item;
 }
 
-export async function updateTavilyKey(
+export async function updateUpstreamKey(
   kv: KVNamespace,
+  def: UpstreamDef,
   id: string,
-  patch: Partial<Pick<TavilyKey, "name" | "status">>
-): Promise<TavilyKey | null> {
-  const keys = await listTavilyKeys(kv);
+  patch: Partial<Pick<CoreKey, "name" | "status">>
+): Promise<CoreKey | null> {
+  const keys = await listUpstreamKeys(kv, def);
   const idx = keys.findIndex((k) => k.id === id);
   if (idx === -1) return null;
-  const updated: TavilyKey = { ...keys[idx], ...patch };
+  const updated: CoreKey = { ...keys[idx], ...patch };
   keys[idx] = updated;
-  await writeJsonArray(kv, TAVILY_KEYS_KEY, keys);
+  await writeJsonArray(kv, def.keysKey, keys);
   return updated;
 }
 
 /** 设置熔断冷却结束时间戳（null 表示解除冷却） */
-export async function setTavilyCooldown(
+export async function setUpstreamCooldown(
   kv: KVNamespace,
+  def: UpstreamDef,
   id: string,
   cooldown_until: number | null
-): Promise<TavilyKey | null> {
-  const keys = await listTavilyKeys(kv);
+): Promise<CoreKey | null> {
+  const keys = await listUpstreamKeys(kv, def);
   const idx = keys.findIndex((k) => k.id === id);
   if (idx === -1) return null;
   keys[idx] = { ...keys[idx], cooldown_until };
-  await writeJsonArray(kv, TAVILY_KEYS_KEY, keys);
+  await writeJsonArray(kv, def.keysKey, keys);
   return keys[idx];
 }
 
-export async function deleteTavilyKey(
+export async function deleteUpstreamKey(
   kv: KVNamespace,
+  def: UpstreamDef,
   id: string
 ): Promise<boolean> {
-  const keys = await listTavilyKeys(kv);
+  const keys = await listUpstreamKeys(kv, def);
   const next = keys.filter((k) => k.id !== id);
   if (next.length === keys.length) return false;
-  await writeJsonArray(kv, TAVILY_KEYS_KEY, next);
+  await writeJsonArray(kv, def.keysKey, next);
   return true;
 }
 
@@ -189,7 +202,9 @@ export async function deleteTavilyKey(
 export async function listDistributedKeys(
   kv: KVNamespace
 ): Promise<DistributedKey[]> {
-  return readJsonArray<DistributedKey>(kv, DIST_KEYS_KEY);
+  const keys = await readJsonArray<DistributedKey>(kv, DIST_KEYS_KEY);
+  // 旧数据缺 provider 字段：归一化为 "tavily"，兼容性处理
+  return keys.map((k) => (k.provider ? k : { ...k, provider: "tavily" }));
 }
 
 export async function getDistributedKey(
@@ -203,6 +218,7 @@ export async function getDistributedKey(
 export async function generateDistributedKey(
   kv: KVNamespace,
   note: string,
+  provider: Provider = "tavily",
   now: number = Date.now()
 ): Promise<DistributedKey> {
   const keys = await listDistributedKeys(kv);
@@ -211,6 +227,7 @@ export async function generateDistributedKey(
   const item: DistributedKey = {
     api_key: keys.some((k) => k.api_key === apiKey) ? newDistApiKey() : apiKey,
     note,
+    provider,
     status: "enabled",
     created_at: now,
     plain_viewed: false, // 尚未查看明文
@@ -223,7 +240,7 @@ export async function generateDistributedKey(
 export async function updateDistributedKey(
   kv: KVNamespace,
   apiKey: string,
-  patch: Partial<Pick<DistributedKey, "note" | "status" | "plain_viewed">>
+  patch: Partial<Pick<DistributedKey, "note" | "status" | "plain_viewed" | "provider">>
 ): Promise<DistributedKey | null> {
   const keys = await listDistributedKeys(kv);
   const idx = keys.findIndex((k) => k.api_key === apiKey);
@@ -265,14 +282,14 @@ async function getStats(
   }
 }
 
-/** Tavily key 当日统计：读取-增量-单次 PUT（尽力而为，写失败静默） */
-export async function incrementTavilyStats(
+/** 上游 key 当日统计：读取-增量-单次 PUT（尽力而为，写失败静默）。按 id 区分，天然按 provider 隔离。 */
+export async function incrementUpstreamStats(
   kv: KVNamespace,
-  tavilyId: string,
+  id: string,
   delta: { success?: number; fail?: number },
   date: string = todayDate()
 ): Promise<void> {
-  const key = statsTavilyKey(tavilyId, date);
+  const key = statsUpstreamKey(id, date);
   const cur = await getStats(kv, key);
   cur.success += delta.success ?? 0;
   cur.fail += delta.fail ?? 0;
@@ -283,12 +300,12 @@ export async function incrementTavilyStats(
   }
 }
 
-export async function getTavilyStats(
+export async function getUpstreamStats(
   kv: KVNamespace,
-  tavilyId: string,
+  id: string,
   date: string = todayDate()
 ): Promise<{ success: number; fail: number }> {
-  return getStats(kv, statsTavilyKey(tavilyId, date));
+  return getStats(kv, statsUpstreamKey(id, date));
 }
 
 /** 分发 key 当日统计：调用次数 +1（尽力而为，写失败静默） */
@@ -362,14 +379,15 @@ async function readConsecutive(
  * 记录一次失败：连续失败计数 +1；若达到阈值，为该 key 设置冷却
  * （cooldown_until = now + COOLDOWN_MS）并重置连续计数。
  */
-export async function recordTavilyFailure(
+export async function recordUpstreamFailure(
   kv: KVNamespace,
+  def: UpstreamDef,
   id: string,
   now: number = Date.now()
 ): Promise<void> {
   const consecutive = (await readConsecutive(kv, id)) + 1;
   if (consecutive >= COOLDOWN_THRESHOLD) {
-    await setTavilyCooldown(kv, id, now + COOLDOWN_MS).catch(() => {});
+    await setUpstreamCooldown(kv, def, id, now + COOLDOWN_MS).catch(() => {});
     await kv.put(breakerKey(id), JSON.stringify({ consecutive: 0 })).catch(() => {});
   } else {
     await kv.put(breakerKey(id), JSON.stringify({ consecutive })).catch(() => {});
@@ -377,7 +395,7 @@ export async function recordTavilyFailure(
 }
 
 /** 记录一次成功：重置连续失败计数。 */
-export async function recordTavilySuccess(
+export async function recordUpstreamSuccess(
   kv: KVNamespace,
   id: string
 ): Promise<void> {

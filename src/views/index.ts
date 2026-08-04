@@ -1,14 +1,14 @@
-// 管理后台的 HTML 构建（原生 HTML + HTMX）。所有页面/片段均由此生成。
+// 管理后台的 HTML 构建（原生 HTML + HTMX）。
+// 本文件 = 公共脚手架 + 分发 Keys（provider 无关部分）；Tavily/Exa 各自的列表模板在
+// views/tavily.ts 与 views/exa.ts（按其确认各维护一份）。
 
 import {
   DistributedKey,
-  TavilyKey,
-  TavilyStats,
   maskKey,
   todayDate,
-} from "./kv";
+} from "../kv";
 
-function esc(s: string): string {
+export function esc(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -17,11 +17,16 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-type NavKey = "dashboard" | "tavily" | "keys";
+export function csrfField(token: string): string {
+  return `<input type="hidden" name="csrf_token" value="${esc(token)}">`;
+}
+
+type NavKey = "dashboard" | "tavily" | "exa" | "keys";
 
 const NAV_ITEMS: { key: NavKey; href: string; label: string }[] = [
   { key: "dashboard", href: "/admin", label: "总览" },
   { key: "tavily", href: "/admin/tavily", label: "Tavily Keys" },
+  { key: "exa", href: "/admin/exa", label: "Exa Keys" },
   { key: "keys", href: "/admin/keys", label: "分发 Keys" },
 ];
 
@@ -91,6 +96,7 @@ export function layout(
     .badge.ok{ background:#052e16; color:var(--ok); }
     .badge.off{ background:#3f1d1d; color:var(--bad); }
     .badge.warn{ background:#33300a; color:#facc15; }
+    .badge.prov{ background:#0c4a6e; color:#7dd3fc; }
     input[type=text],input[type=password] { background:#0f172a; color:var(--txt);
       border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%; }
     button { background:var(--accent); color:#04121f; border:0; border-radius:8px;
@@ -106,7 +112,6 @@ export function layout(
     .err{ color:var(--bad); }
     .toast{ background:#164e63; padding:6px 10px; border-radius:8px; font-size:12px; }
     a{ color:var(--accent); }
-    .logout{ color:var(--muted); }
   </style>
 </head>
 <body>
@@ -134,14 +139,6 @@ export function loginPage(error: boolean): string {
   return layout("登录 · Tavily Proxy", body, { header: false });
 }
 
-function csrfField(token: string): string {
-  return `<input type="hidden" name="csrf_token" value="${esc(token)}">`;
-}
-
-// ---------------------------------------------------------------
-// 管理后台主页（两个区块）
-// ---------------------------------------------------------------
-
 // ---------------------------------------------------------------
 // Dashboard 总览页
 // ---------------------------------------------------------------
@@ -149,6 +146,8 @@ function csrfField(token: string): string {
 export interface DashboardData {
   tavilyTotal: number;
   tavilyEnabled: number;
+  exaTotal: number;
+  exaEnabled: number;
   distTotal: number;
   distEnabled: number;
   todayCalls: number;
@@ -163,6 +162,12 @@ export function adminPage(data: DashboardData): string {
     <div class="stat-num">${data.tavilyTotal}</div>
     <div class="muted">启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}</div>
     <a class="btn" href="/admin/tavily">进入管理 →</a>
+  </div>
+  <div class="card stat">
+    <h2>Exa Keys</h2>
+    <div class="stat-num">${data.exaTotal}</div>
+    <div class="muted">启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}</div>
+    <a class="btn" href="/admin/exa">进入管理 →</a>
   </div>
   <div class="card stat">
     <h2>分发 Keys</h2>
@@ -180,21 +185,7 @@ export function adminPage(data: DashboardData): string {
 }
 
 // ---------------------------------------------------------------
-// Tavily Keys 独立管理页
-// ---------------------------------------------------------------
-
-export function tavilyPage(csrf: string, fragment: string): string {
-  const body = `
-<section class="card">
-  <h2>Tavily Keys · 管理</h2>
-  <div id="tavily-list">${fragment}</div>
-</section>
-<input type="hidden" id="csrf" value="${esc(csrf)}">`;
-  return layout("Tavily Keys · Tavily Proxy", body, { active: "tavily" });
-}
-
-// ---------------------------------------------------------------
-// 分发 Keys 独立管理页
+// 分发 Keys 独立管理页（provider 无关，公共部分）
 // ---------------------------------------------------------------
 
 export function keysPage(csrf: string, fragment: string): string {
@@ -208,80 +199,6 @@ export function keysPage(csrf: string, fragment: string): string {
 }
 
 // ---------------------------------------------------------------
-// Tavily Keys 区块
-// ---------------------------------------------------------------
-
-export function tavilyListFragment(
-  keys: TavilyKey[],
-  statsMap: Record<string, TavilyStats>,
-  csrf: string,
-  now: number,
-  flash?: string
-): string {
-  const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
-  const rows = keys.length
-    ? keys
-        .map((k) => {
-          const s = statsMap[k.id] ?? { success: 0, fail: 0 };
-          const cooling =
-            k.cooldown_until != null && k.cooldown_until > now
-              ? `<span class="badge warn">冷却中</span>`
-              : `<span class="muted">-</span>`;
-          const st =
-            k.status === "enabled"
-              ? `<span class="badge ok">enabled</span>`
-              : `<span class="badge off">disabled</span>`;
-          return `<tr>
-            <td>${esc(maskKey(k.key))}</td>
-            <td>${esc(k.name)}</td>
-            <td>${st}</td>
-            <td>${cooling}</td>
-            <td>${s.success}</td>
-            <td>${s.fail}</td>
-            <td>
-              <form hx-post="/admin/tavily/${esc(k.id)}/toggle" hx-target="#tavily-list"
-                    hx-swap="innerHTML" style="display:inline;">
-                ${csrfField(csrf)}
-                <button class="ghost" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
-              </form>
-              <form hx-post="/admin/tavily/${esc(k.id)}/delete" hx-target="#tavily-list"
-                    hx-swap="innerHTML" hx-confirm="确认删除该 Tavily key？" style="display:inline;">
-                ${csrfField(csrf)}
-                <button class="danger" type="submit">删除</button>
-              </form>
-            </td>
-          </tr>`;
-        })
-        .join("")
-    : `<tr><td colspan="7" class="muted">暂无 Tavily key，请先添加。</td></tr>`;
-
-  return `${flashHtml}
-  <form class="row" hx-post="/admin/tavily/add" hx-target="#tavily-list" hx-swap="innerHTML">
-    ${csrfField(csrf)}
-    <input type="text" name="name" placeholder="备注（如：主 key）" required>
-    <input type="text" name="key" placeholder="tvly-xxx" required>
-    <label class="muted" style="align-self:center;font-size:12px;white-space:nowrap;">
-      <input type="checkbox" name="test" value="1" style="vertical-align:middle;"> 加入时验证
-    </label>
-    <button type="submit">添加</button>
-  </form>
-  <table>
-    <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>冷却</th>
-      <th>当日成功</th><th>当日失败</th><th>操作</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`;
-}
-
-export function tavilyAddResult(
-  ctx: { error?: string; mask?: string }
-): string {
-  if (ctx.error) {
-    return `<div class="err" style="margin-bottom:8px;">${esc(ctx.error)}</div>`;
-  }
-  return `<div class="toast" style="margin-bottom:8px;">已添加 ${esc(ctx.mask ?? "")} 并验证通过</div>`;
-}
-
-// ---------------------------------------------------------------
 // 分发 Keys 区块
 // ---------------------------------------------------------------
 
@@ -292,6 +209,18 @@ export function distListFragment(
   flash?: string
 ): string {
   const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
+  // Provider 格：徽标 + 单选 radio + 保存（hx 提交后整表刷新）
+  const provCell = (k: DistributedKey) => `
+    <form hx-post="/admin/keys/${esc(k.api_key)}/provider" hx-target="#keys-list"
+          hx-swap="innerHTML" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      ${csrfField(csrf)}
+      <span class="badge prov">${k.provider === "exa" ? "Exa" : "Tavily"}</span>
+      <label style="font-size:12px;"><input type="radio" name="provider" value="tavily"
+        style="vertical-align:middle;" ${k.provider === "tavily" ? "checked" : ""}> Tavily</label>
+      <label style="font-size:12px;"><input type="radio" name="provider" value="exa"
+        style="vertical-align:middle;" ${k.provider === "exa" ? "checked" : ""}> Exa</label>
+      <button class="ghost" type="submit" style="padding:3px 8px;">保存</button>
+    </form>`;
   const rows = keys.length
     ? keys
         .map((k) => {
@@ -304,6 +233,7 @@ export function distListFragment(
           });
           const calls = callsMap[k.api_key] ?? 0;
           return `<tr>
+            <td>${provCell(k)}</td>
             <td>${esc(maskKey(k.api_key))}</td>
             <td>${esc(k.note)}</td>
             <td>${st}</td>
@@ -327,19 +257,23 @@ export function distListFragment(
               </form>
             </td>
           </tr>
-          <tr><td id="plain-${esc(k.api_key)}" colspan="6"></td></tr>`;
+          <tr><td id="plain-${esc(k.api_key)}" colspan="7"></td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="6" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
+    : `<tr><td colspan="7" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
 
   return `${flashHtml}
   <form class="row" hx-post="/admin/keys/generate" hx-target="#keys-list" hx-swap="innerHTML">
     ${csrfField(csrf)}
     <input type="text" name="note" placeholder="备注（必填，给谁用）" required>
+    <label class="muted" style="align-self:center;font-size:12px;white-space:nowrap;">
+      <input type="radio" name="provider" value="tavily" checked style="vertical-align:middle;"> Tavily
+      <input type="radio" name="provider" value="exa" style="vertical-align:middle;margin-left:8px;"> Exa
+    </label>
     <button type="submit">生成新 Key</button>
   </form>
   <table>
-    <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
+    <thead><tr><th>Provider</th><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
       <th>当日调用</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;

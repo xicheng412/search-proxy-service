@@ -17,8 +17,9 @@ app.get("/", (c) => {
   return c.json({
     name: "tavily-cf-proxy",
     status: "ok",
+    providers: ["tavily", "exa"],
     endpoints: {
-      search: "POST /search",
+      search: "POST /search", // 按分发 key 的 provider 路由
       admin: "/admin",
     },
   });
