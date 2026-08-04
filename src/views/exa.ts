@@ -35,7 +35,15 @@ export function exaListFragment(
               : `<span class="badge off">disabled</span>`;
           return `<tr>
             <td>${esc(maskKey(k.key))}</td>
-            <td>${esc(k.name)}</td>
+            <td>
+              <form hx-post="/admin/exa/${esc(k.id)}/name" hx-target="#exa-list"
+                    hx-swap="innerHTML" style="display:flex;gap:4px;align-items:center;">
+                ${csrfField(csrf)}
+                <input type="text" name="name" value="${esc(k.name)}"
+                  style="width:110px;padding:4px 6px;">
+                <button class="ghost" type="submit" style="padding:3px 8px;">保存</button>
+              </form>
+            </td>
             <td>${st}</td>
             <td>${cooling}</td>
             <td>${s.success}</td>
@@ -74,11 +82,3 @@ export function exaListFragment(
   </table>`;
 }
 
-export function exaAddResult(
-  ctx: { error?: string; mask?: string }
-): string {
-  if (ctx.error) {
-    return `<div class="err" style="margin-bottom:8px;">${esc(ctx.error)}</div>`;
-  }
-  return `<div class="toast" style="margin-bottom:8px;">已添加 ${esc(ctx.mask ?? "")} 并验证通过</div>`;
-}

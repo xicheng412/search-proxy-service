@@ -36,10 +36,6 @@ export interface TavilyStats {
   fail: number;
 }
 
-export interface DistStats {
-  calls: number;
-}
-
 const DIST_KEYS_KEY = "distributed_keys";
 
 function statsUpstreamKey(id: string, date: string): string {
@@ -121,15 +117,6 @@ export async function listUpstreamKeys(
   def: UpstreamDef
 ): Promise<CoreKey[]> {
   return readJsonArray<CoreKey>(kv, def.keysKey);
-}
-
-export async function getUpstreamKey(
-  kv: KVNamespace,
-  def: UpstreamDef,
-  id: string
-): Promise<CoreKey | null> {
-  const keys = await listUpstreamKeys(kv, def);
-  return keys.find((k) => k.id === id) ?? null;
 }
 
 export async function addUpstreamKey(

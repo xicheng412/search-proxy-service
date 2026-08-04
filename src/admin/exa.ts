@@ -77,6 +77,17 @@ exaAdmin.post("/add", async (c) => {
   return c.redirect("/admin/exa/list", 303);
 });
 
+exaAdmin.post("/:id/name", async (c) => {
+  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
+  const id = c.req.param("id");
+  const body = await c.req.parseBody();
+  const name = (((body["name"] as string) ?? "").trim() || "未命名");
+  const cur = (await listUpstreamKeys(c.env.KV, EXA.upstream)).find((k) => k.id === id);
+  if (!cur) return c.html(errorFragment("未找到该 key"));
+  await updateUpstreamKey(c.env.KV, EXA.upstream, id, { name });
+  return c.redirect("/admin/exa/list", 303);
+});
+
 exaAdmin.post("/:id/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");

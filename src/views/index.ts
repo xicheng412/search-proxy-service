@@ -5,7 +5,6 @@
 import {
   DistributedKey,
   maskKey,
-  todayDate,
 } from "../kv";
 
 export function esc(s: string): string {
@@ -309,8 +308,4 @@ export function distViewPlain(apiKey: string): string {
 
 export function errorFragment(msg: string): string {
   return `<div class="err">${esc(msg)}</div>`;
-}
-
-export function htmxToday(): string {
-  return todayDate();
 }
