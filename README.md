@@ -54,3 +54,5 @@ pnpm dev                 # wrangler dev，本地起 Worker
    ```bash
    pnpm deploy:cf
    ```
+
+> 全新环境从零部署(登录、KV 创建、secret、初始化数据、排障)的分步指南见 [`docs/deployment-guide.md`](docs/deployment-guide.md)。
