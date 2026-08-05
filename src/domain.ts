@@ -1,10 +1,11 @@
 // 纯领域层：类型、领域规则、值语义。零依赖（不 import 本仓库任何模块）。
-// 与存储/呈现/传输解耦：repo.ts（持久化）、proxy.ts（编排）、views（呈现）都只消费这里的词汇。
+// 与存储/呈现/传输解耦：storage.ts（持久化）、usage-store.ts（统计缓冲）、
+// circuit-breaker.ts（熔断）、proxy.ts（编排）、views（呈现）都只消费这里的词汇。
 
 export type Provider = "tavily" | "exa";
 export type KeyStatus = "enabled" | "disabled";
 
-/** 上游 key 仓库描述符（providers/*.ts 提供），供 repo 泛型 CRUD 定位 KV 数组键与 id 前缀。 */
+/** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 KV 数组键与 id 前缀。 */
 export interface UpstreamDef {
   keysKey: string;
   idPrefix: string;

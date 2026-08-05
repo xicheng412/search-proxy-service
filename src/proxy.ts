@@ -16,15 +16,9 @@ import {
   parseDistKey,
   todayDate,
 } from "./domain";
-import {
-  getDistributedKey,
-  getUpstreamStats,
-  incrementDistCalls,
-  incrementUpstreamStats,
-  listUpstreamKeys,
-  recordUpstreamFailure,
-  recordUpstreamSuccess,
-} from "./repo";
+import { getDistributedKey, listUpstreamKeys } from "./storage";
+import { getUsageStore } from "./usage-store";
+import { recordUpstreamFailure, recordUpstreamSuccess } from "./circuit-breaker";
 
 /**
  * 加权随机：只从 status=enabled 且未冷却的 key 中选择；
@@ -106,13 +100,13 @@ async function classifyAndHandle(
   usedKey: CoreKey,
   res: Response
 ): Promise<Response> {
+  const store = getUsageStore(kv);
+  const date = todayDate();
   const status = res.status;
 
   if (status >= 200 && status < 300) {
-    await Promise.all([
-      incrementUpstreamStats(kv, usedKey.id, { success: 1 }).catch(() => {}),
-      recordUpstreamSuccess(kv, usedKey.id).catch(() => {}),
-    ]);
+    store.recordUpstreamResult(usedKey.id, "success", date);
+    await recordUpstreamSuccess(kv, usedKey.id).catch(() => {});
     return passthrough(res);
   }
 
@@ -120,10 +114,8 @@ async function classifyAndHandle(
     return passthrough(res);
   }
 
-  await Promise.all([
-    incrementUpstreamStats(kv, usedKey.id, { fail: 1 }).catch(() => {}),
-    recordUpstreamFailure(kv, def.upstream, usedKey.id).catch(() => {}),
-  ]);
+  store.recordUpstreamResult(usedKey.id, "fail", date);
+  await recordUpstreamFailure(kv, def.upstream, usedKey.id).catch(() => {});
   return passthrough(res);
 }
 
@@ -182,23 +174,23 @@ export async function handleProviderProxy(
   path: string,
   apiKey: string
 ): Promise<Response> {
-  // 1. 增加分发 key 当日调用计数（按 provider 拆分，尽力而为）
+  const store = getUsageStore(c.env.KV);
+  const kv = c.env.KV;
+
+  // 1. 增加分发 key 当日调用计数（按 provider 拆分，进内存缓冲，尽力而为）
   const date = todayDate();
-  await incrementDistCalls(c.env.KV, apiKey, def.name, date).catch(() => {});
+  store.recordDistCall(apiKey, def.name, date);
+  // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
+  store.flushSoon(c.executionCtx);
 
   // 读取待转发请求体
   const originBody = await c.req.text();
   const contentType = c.req.header("content-type") ?? "application/json";
 
   // 2. 选出该 provider 的可用上游 key；无可用 -> 503（贴近该 provider 报错格式）
-  const kv = c.env.KV;
   const keys = await listUpstreamKeys(kv, def.upstream);
-  const statsMap: Record<string, { success: number; fail: number }> = {};
-  await Promise.all(
-    keys.map(async (k) => {
-      statsMap[k.id] = await getUpstreamStats(kv, k.id, date);
-    })
-  );
+  // 权重读：一次取全部 key（KV 值缓存 30s + 本 isolate 未 flush 增量叠加上去）
+  const statsMap = await store.readUpstreamTodayStats(keys.map((k) => k.id), date);
 
   const now = Date.now();
   const first = selectUpstreamKey(keys, statsMap, now);
@@ -219,21 +211,17 @@ export async function handleProviderProxy(
       const retried = await proxyToUpstream(def, path, second.key, originBody, contentType);
       if (retried.status === 429) {
         // 重试仍 429：两个 key 都计失败，透传上游错误响应
-        await Promise.all([
-          incrementUpstreamStats(kv, first.id, { fail: 1 }).catch(() => {}),
-          recordUpstreamFailure(kv, def.upstream, first.id).catch(() => {}),
-          incrementUpstreamStats(kv, second.id, { fail: 1 }).catch(() => {}),
-          recordUpstreamFailure(kv, def.upstream, second.id).catch(() => {}),
-        ]);
+        store.recordUpstreamResult(first.id, "fail", date);
+        await recordUpstreamFailure(kv, def.upstream, first.id).catch(() => {});
+        store.recordUpstreamResult(second.id, "fail", date);
+        await recordUpstreamFailure(kv, def.upstream, second.id).catch(() => {});
         return passthrough(retried);
       }
       return classifyAndHandle(kv, def, second, retried);
     }
     // 无第二个可选 key：首次 429 计失败，透传上游错误响应
-    await Promise.all([
-      incrementUpstreamStats(kv, first.id, { fail: 1 }).catch(() => {}),
-      recordUpstreamFailure(kv, def.upstream, first.id).catch(() => {}),
-    ]);
+    store.recordUpstreamResult(first.id, "fail", date);
+    await recordUpstreamFailure(kv, def.upstream, first.id).catch(() => {});
     return passthrough(res);
   }
 

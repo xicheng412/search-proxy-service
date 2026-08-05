@@ -4,11 +4,8 @@ import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getSession } from "../auth";
 import { todayDate } from "../domain";
-import {
-  getDistCalls,
-  listDistributedKeys,
-  listUpstreamKeys,
-} from "../repo";
+import { listDistributedKeys, listUpstreamKeys } from "../storage";
+import { getUsageStore } from "../usage-store";
 import { EXA, TAVILY } from "../providers";
 import { adminPage, helpPage } from "../views";
 import { exaAdmin } from "./exa";
@@ -55,9 +52,10 @@ admin.get("/", async (c) => {
   ]);
 
   let todayCalls = 0;
+  const store = getUsageStore(kv);
   await Promise.all(
     dkeys.map(async (k) => {
-      const s = await getDistCalls(kv, k.api_key, today);
+      const s = await store.readDistCalls(k.api_key, today);
       todayCalls += s.tavily + s.exa;
     })
   );

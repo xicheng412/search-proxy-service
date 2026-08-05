@@ -7,10 +7,10 @@ import { todayDate } from "../domain";
 import {
   addUpstreamKey,
   deleteUpstreamKey,
-  getUpstreamStats,
   listUpstreamKeys,
   updateUpstreamKey,
-} from "../repo";
+} from "../storage";
+import { getUsageStore } from "../usage-store";
 import { TAVILY } from "../providers";
 import { errorFragment } from "../views";
 import { tavilyListFragment, tavilyPage } from "../views/tavily";
@@ -21,11 +21,9 @@ tavilyAdmin.get("/", async (c) => {
   const kv = c.env.KV;
   const csrf = (await getCsrfToken(c)) ?? "";
   const keys = await listUpstreamKeys(kv, TAVILY.upstream);
-  const statsMap: Record<string, { success: number; fail: number }> = {};
-  await Promise.all(
-    keys.map(async (k) => {
-      statsMap[k.id] = await getUpstreamStats(kv, k.id, todayDate());
-    })
+  const statsMap = await getUsageStore(kv).readUpstreamTodayStats(
+    keys.map((k) => k.id),
+    todayDate()
   );
   return c.html(tavilyPage(csrf, tavilyListFragment(keys, statsMap, csrf, Date.now())));
 });
@@ -34,11 +32,9 @@ tavilyAdmin.get("/list", async (c) => {
   const kv = c.env.KV;
   const csrf = (await getCsrfToken(c)) ?? "";
   const keys = await listUpstreamKeys(kv, TAVILY.upstream);
-  const statsMap: Record<string, { success: number; fail: number }> = {};
-  await Promise.all(
-    keys.map(async (k) => {
-      statsMap[k.id] = await getUpstreamStats(kv, k.id, todayDate());
-    })
+  const statsMap = await getUsageStore(kv).readUpstreamTodayStats(
+    keys.map((k) => k.id),
+    todayDate()
   );
   return c.html(tavilyListFragment(keys, statsMap, csrf, Date.now()));
 });

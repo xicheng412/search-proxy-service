@@ -7,10 +7,10 @@ import { DistStats, todayDate } from "../domain";
 import {
   deleteDistributedKey,
   generateDistributedKey,
-  getDistCalls,
   listDistributedKeys,
   updateDistributedKey,
-} from "../repo";
+} from "../storage";
+import { getUsageStore } from "../usage-store";
 import {
   distGenerateResult,
   distListFragment,
@@ -25,10 +25,11 @@ async function buildCallsMap(
   dkeys: { api_key: string }[],
   date: string
 ): Promise<Record<string, DistStats>> {
+  const store = getUsageStore(kv);
   const callsMap: Record<string, DistStats> = {};
   await Promise.all(
     dkeys.map(async (k) => {
-      callsMap[k.api_key] = await getDistCalls(kv, k.api_key, date);
+      callsMap[k.api_key] = await store.readDistCalls(k.api_key, date);
     })
   );
   return callsMap;

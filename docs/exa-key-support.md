@@ -50,7 +50,7 @@ export interface DistributedKey {
 export interface DistStats { tavily: number; exa: number; }  // 当日调用：按 provider 拆分
 ```
 
-无 provider 分支的三层结构：`domain.ts`（纯领域：类型 + `parseDistKey` 前缀路由规则 + 值语义，零依赖）、`repo.ts`（KV 持久化 + 统计 + 熔断，依赖 domain）、`proxy.ts`（应用编排，由 `providers/*.ts` 描述符驱动）；admin/views 按 provider 拆文件（`admin/tavily.ts`、`admin/exa.ts`、`views/tavily.ts`、`views/exa.ts`），公共脚手架在 `admin/index.ts` / `views/index.ts`。
+无 provider 分支的分层结构：`domain.ts`（纯领域：类型 + `parseDistKey` 前缀路由规则 + 值语义，零依赖）、`storage.ts`（KV 持久化原语 + Keys 数组 CRUD，依赖 domain）、`usage-store.ts`（日用量统计缓冲写回模块：内存累积 + 节流 flush + 读缓存/overlay，依赖 storage）、`circuit-breaker.ts`（熔断续流策略，依赖 storage + domain 常量）、`proxy.ts`（应用编排，由 `providers/*.ts` 描述符驱动）；admin/views 按 provider 拆文件（`admin/tavily.ts`、`admin/exa.ts`、`views/tavily.ts`、`views/exa.ts`），公共脚手架在 `admin/index.ts` / `views/index.ts`。
 
 ## 4. 请求认证：前缀路由
 

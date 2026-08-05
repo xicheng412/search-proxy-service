@@ -23,7 +23,9 @@ docs/
 src/
   index.ts             # 入口，初始化 Hono app，路由注册
   domain.ts            # 纯领域层：类型 + 前缀路由规则 + 值语义（零依赖）
-  repo.ts              # 基础设施：KV 持久化 + 统计 + 熔断（依赖 domain）
+  storage.ts           # 基础设施·存储：KV 持久化原语 + Keys 数组 CRUD（依赖 domain）
+  usage-store.ts       # 基础设施·统计缓冲写回模块：内存累积 + 节流 flush + 读缓存/overlay
+  circuit-breaker.ts   # 基础设施·熔断续流策略：失败计数 + 阈值冷却（直写 KV）
   providers/           # 每 provider 一份描述符（tavily.ts / exa.ts）+ 注册表（防腐蚀层）
   proxy.ts             # 应用编排：鉴权 + 按请求前缀路由 + 加权选 key + 429 重试
   admin/               # 后台路由（tavily / exa / keys，按 provider 拆分）
