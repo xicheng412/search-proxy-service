@@ -26,10 +26,13 @@ src/
   storage.ts           # 基础设施·存储：KV 持久化原语 + Keys 数组 CRUD（依赖 domain）
   usage-store.ts       # 基础设施·统计缓冲写回模块：内存累积 + 节流 flush + 读缓存/overlay
   circuit-breaker.ts   # 基础设施·熔断续流策略：失败计数 + 阈值冷却（直写 KV）
+  config.ts            # 基础设施·对外地址配置（PUBLIC_BASE_URL 唯一取值，未配置回退 localhost）
   providers/           # 每 provider 一份描述符（tavily.ts / exa.ts）+ 注册表（防腐蚀层）
   proxy.ts             # 应用编排：鉴权 + 按请求前缀路由 + 加权选 key + 429 重试
   admin/               # 后台路由（tavily / exa / keys，按 provider 拆分）
   views/               # 后台模板（index 脚手架 / tavily / exa）
+scripts/deploy.sh      # 生产部署：从 config/prod.env（gitignored）注入 PUBLIC_BASE_URL 后 wrangler deploy
+config/prod.env.example# 生产部署配置模板（真实域名填在 gitignored 的 config/prod.env）
 wrangler.toml          # Worker + KV binding 配置
 ```
 

@@ -9,6 +9,9 @@ compatibility_date = "2024-11-01"
 binding = "KV"
 id = "ff56ea82daa846538fdf11e6bff662eb"
 
+# 对外 API 地址 PUBLIC_BASE_URL 用 `wrangler secret put PUBLIC_BASE_URL` 配置
+# （存为 secret 以避免生产域名泄漏进代码库；本地开发在 .dev.vars 覆盖）。唯一取值见 src/config.ts。
+
 [observability.logs]
 enabled = true
 invocation_logs = true

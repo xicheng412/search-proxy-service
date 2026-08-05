@@ -3,6 +3,8 @@
 export type Env = {
   KV: KVNamespace;
   ADMIN_PASSWORD: string;
+  /** 对外 API 地址（调用方访问本服务的 origin）。经部署脚本从 gitignored config/prod.env 注入；本地 .dev.vars 覆盖；唯一取值在 config.ts。 */
+  PUBLIC_BASE_URL: string;
 };
 
 export type AppVariables = {

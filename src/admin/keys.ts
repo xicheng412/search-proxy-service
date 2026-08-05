@@ -11,6 +11,7 @@ import {
   updateDistributedKey,
 } from "../storage";
 import { getUsageStore } from "../usage-store";
+import { resolvePublicBaseUrl } from "../config";
 import {
   distGenerateResult,
   distListFragment,
@@ -38,17 +39,19 @@ async function buildCallsMap(
 keysAdmin.get("/", async (c) => {
   const kv = c.env.KV;
   const csrf = (await getCsrfToken(c)) ?? "";
+  const base = resolvePublicBaseUrl(c.env);
   const dkeys = await listDistributedKeys(kv);
   const callsMap = await buildCallsMap(kv, dkeys, todayDate());
-  return c.html(keysPage(csrf, distListFragment(dkeys, callsMap, csrf)));
+  return c.html(keysPage(csrf, distListFragment(dkeys, callsMap, csrf, undefined, base)));
 });
 
 keysAdmin.get("/list", async (c) => {
   const kv = c.env.KV;
   const csrf = (await getCsrfToken(c)) ?? "";
+  const base = resolvePublicBaseUrl(c.env);
   const dkeys = await listDistributedKeys(kv);
   const callsMap = await buildCallsMap(kv, dkeys, todayDate());
-  return c.html(distListFragment(dkeys, callsMap, csrf));
+  return c.html(distListFragment(dkeys, callsMap, csrf, undefined, base));
 });
 
 // 生成新 key（明文只显示一次；请求时用 <provider>-<key> 前缀决定路由）
@@ -62,7 +65,8 @@ keysAdmin.post("/generate", async (c) => {
   const dkeys = await listDistributedKeys(kv);
   const callsMap = await buildCallsMap(kv, dkeys, todayDate());
   const csrf = (await getCsrfToken(c)) ?? "";
-  return c.html(distGenerateResult(generated.api_key, dkeys, callsMap, csrf));
+  const base = resolvePublicBaseUrl(c.env);
+  return c.html(distGenerateResult(generated.api_key, dkeys, callsMap, csrf, base));
 });
 
 keysAdmin.post("/:apiKey/toggle", async (c) => {

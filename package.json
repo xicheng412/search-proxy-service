@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy:cf": "wrangler deploy",
+    "deploy:cf": "bash scripts/deploy.sh",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "kv:create": "wrangler kv namespace create"

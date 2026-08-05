@@ -14,6 +14,9 @@ build/
 .dev.vars
 *.dev.vars
 
+# 生产部署配置（真实域名等，gitignored；模板见 config/prod.env.example）
+config/prod.env
+
 # Environment / secrets (never commit real keys)
 .env
 .env.*

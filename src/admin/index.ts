@@ -6,6 +6,7 @@ import { getSession } from "../auth";
 import { todayDate } from "../domain";
 import { listDistributedKeys, listUpstreamKeys } from "../storage";
 import { getUsageStore } from "../usage-store";
+import { resolvePublicBaseUrl } from "../config";
 import { EXA, TAVILY } from "../providers";
 import { adminPage, helpPage } from "../views";
 import { exaAdmin } from "./exa";
@@ -80,5 +81,5 @@ admin.route("/keys", keysAdmin);
 
 // ---------- 使用说明页 ----------
 admin.get("/help", async (c) => {
-  return c.html(helpPage());
+  return c.html(helpPage(resolvePublicBaseUrl(c.env)));
 });

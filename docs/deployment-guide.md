@@ -78,7 +78,29 @@ wrangler secret put ADMIN_PASSWORD
 ```bash
 # .dev.vars
 ADMIN_PASSWORD=本地开发用密码
+PUBLIC_BASE_URL=http://localhost:8787
 ```
+
+## 4.1 配置对外 API 地址 `PUBLIC_BASE_URL`(普通变量,gitignored 文件承载)
+
+`PUBLIC_BASE_URL` 是"调用方访问本服务的对外 origin",用于后台「复制 base url / 复制 /search」按钮与帮助页 curl 示例。它是**普通配置变量**(非密钥),但为避免生产域名进入公开仓库,采用"模板提交 + 真实文件 gitignore"模式(唯一取值逻辑在 `src/config.ts`,**仓库内不写真实域名**):
+
+**本地开发**(`.dev.vars` 已 gitignore;模板见 `.dev.vars.example`):
+
+```bash
+# .dev.vars
+ADMIN_PASSWORD=本地开发用密码
+PUBLIC_BASE_URL=http://localhost:8787
+```
+
+**线上部署**(`config/prod.env` gitignored;模板见 `config/prod.env.example`,经 `scripts/deploy.sh` 以 `--var` 注入):
+
+```bash
+# config/prod.env   (真实值,勿提交)
+PUBLIC_BASE_URL=https://你的真实域名
+```
+
+部署统一走 `pnpm deploy:cf`(即 `scripts/deploy.sh`):读取 `config/prod.env` 注入 `--var PUBLIC_BASE_URL=…` 后 `wrangler deploy`;文件缺失时告警并**不带该 var 部署**(此时运行时回退 `http://localhost:8787`,需注意)。
 
 ## 5. (可选)本地验证
 

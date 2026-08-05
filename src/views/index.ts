@@ -229,7 +229,8 @@ export function distListFragment(
   keys: DistributedKey[],
   callsMap: Record<string, DistStats>,
   csrf: string,
-  flash?: string
+  flash?: string,
+  publicBaseUrl: string = ""
 ): string {
   const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
   const rows = keys.length
@@ -277,6 +278,11 @@ export function distListFragment(
     <input type="text" name="note" placeholder="备注（必填，给谁用）" required>
     <button type="submit">生成新 Key</button>
   </form>
+  <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 10px;">
+    ${publicBaseUrl ? `<span class="muted" style="font-size:11px;">${esc(publicBaseUrl)}</span>` : ""}
+    <button class="ghost" type="button" data-copy="${esc(publicBaseUrl)}" title="复制调用基础地址" style="padding:3px 8px;">复制 base url</button>
+    <button class="ghost" type="button" data-copy="${esc(publicBaseUrl + "/search")}" title="复制搜索端点：POST base/search" style="padding:3px 8px;">复制 /search</button>
+  </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
       <th>当日调用</th><th>操作</th></tr></thead>
@@ -289,11 +295,12 @@ export function distGenerateResult(
   plainApiKey: string,
   keys: DistributedKey[],
   callsMap: Record<string, DistStats>,
-  csrf: string
+  csrf: string,
+  publicBaseUrl: string = ""
 ): string {
   const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
 <div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）或 <code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）。</div>`;
-  return box + distListFragment(keys, callsMap, csrf);
+  return box + distListFragment(keys, callsMap, csrf, undefined, publicBaseUrl);
 }
 
 /** 二次密码确认查看明文已随复制按钮移除（明文已注入行内，无需再查）。 */
@@ -306,7 +313,8 @@ export function errorFragment(msg: string): string {
 // 使用说明页（原理 + 调用方式 + 文档，管理员参考/转发给下游）
 // ---------------------------------------------------------------
 
-export function helpPage(): string {
+export function helpPage(publicBaseUrl: string = ""): string {
+  const base = esc(publicBaseUrl);
   const body = `
 <div class="card">
   <h2>使用说明</h2>
@@ -317,21 +325,21 @@ export function helpPage(): string {
 
 <div class="card">
   <h2>调用示例（两种方式）</h2>
-  <p class="muted">端点：<code>POST /search</code>　请求体请用对应上游官方的格式（本服务透明转发，不做格式转换）。</p>
+  <p class="muted">端点：<code>POST ${base}/search</code>　请求体请用对应上游官方的格式（本服务透明转发，不做格式转换）。</p>
 
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：走 Tavily</h3>
-<pre class="code">curl -X POST https://&lt;你的域名&gt;/search \\
+<pre class="code">curl -X POST ${base}/search \\
   -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
   -H "Content-Type: application/json" \\
   -d '{"query":"what is the latest news about AI","max_results":3}'</pre>
 
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式二：走 Exa</h3>
-<pre class="code">curl -X POST https://&lt;你的域名&gt;/search \\
+<pre class="code">curl -X POST ${base}/search \\
   -H "Authorization: Bearer exa-&lt;分发key&gt;" \\
   -H "Content-Type: application/json" \\
   -d '{"query":"what is the latest news about AI","numResults":3}'
 </pre>
-  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code> 和 <code>exa-</code> 前缀，按前缀路由到不同上游。列表里的「复制 tavily/exa 调用key」可直接复制完整凭据。</p>
+  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code> 和 <code>exa-</code> 前缀，按前缀路由到不同上游。列表里的「复制 tavily/exa 调用key」可直接复制完整凭据；「复制 base url / 复制 /search」复制本服务对外地址。</p>
 </div>
 
 <div class="card">
