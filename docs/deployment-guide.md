@@ -100,7 +100,9 @@ PUBLIC_BASE_URL=http://localhost:8787
 PUBLIC_BASE_URL=https://你的真实域名
 ```
 
-部署统一走 `pnpm deploy:cf`(即 `scripts/deploy.sh`):读取 `config/prod.env` 注入 `--var PUBLIC_BASE_URL=…` 后 `wrangler deploy`;文件缺失时告警并**不带该 var 部署**(此时运行时回退 `http://localhost:8787`,需注意)。
+部署统一走 `pnpm deploy:cf`(即 `scripts/deploy.sh`):读取 `config/prod.env` 注入 `--var PUBLIC_BASE_URL:https://…` 后 `wrangler deploy`;文件缺失时告警并**不带该 var 部署**(此时运行时回退 `http://localhost:8787`,需注意)。
+
+> ⚠️ **`--var` 用冒号分隔**——wrangler 按 `:` 切分。写成 `PUBLIC_BASE_URL=https://…` 会被当成 key=`PUBLIC_BASE_URL=https`、value=`//…`,线上实际没有 `PUBLIC_BASE_URL` 这个变量,界面会静默回退 localhost。脚本已用冒号格式,勿改回。
 
 ## 5. (可选)本地验证
 
