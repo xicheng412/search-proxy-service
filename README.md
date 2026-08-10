@@ -25,8 +25,8 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 ## Features
 
 - **Multi-provider, single endpoint.** `POST /search` accepts either `Bearer tavily-…` or `Bearer exa-…`; the prefix decides routing. Add a new provider with a single descriptor file.
-- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. 5 consecutive failures → 60 s cooldown, auto-recover.
-- **429 retry with key switching.** First 429 silently retries on a different upstream key (still transparent passthrough).
+- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Failures trigger exponential backoff cooldown: `60s × 2^consecutive_failures`; success resets consecutive count. Every use gets a 5s post-use cooldown.
+- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. On failure (any non-2xx or network error), switches to another available key. 429 triggers retry but preserves circuit breaker count. Transparent passthrough throughout.
 - **Transparent passthrough.** Request / response bodies flow through untouched; only the `Authorization` header is swapped.
 - **Distributed keys carry no provider binding.** One generated key, two ways to call — `tavily-<key>` for Tavily, `exa-<key>` for Exa. Operators choose at call time.
 - **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (calls per provider), shown live in the dashboard.
@@ -42,12 +42,14 @@ Caller ──────────►  │   /search  (Cloudflare Worker · H
   Bearer tavily-…   │  1. parseDistKey  →  provider                │
   Bearer exa-…      │  2. lookup dist key in KV  →  401 if missing  │
                     │  3. +1 today's call  (in-mem buffered)        │
-                    │  4. pick upstream key  (weighted, no cooldown)│
-                    │  5. proxy request, swap Authorization         │
-                    │     • 2xx       →  record success, pass      │
-                    │     • 429       →  retry once w/ other key    │
-                    │     • other     →  record fail + breaker      │
-                    └─────────────┬────────────────────────────────┘
+                    │  4. pick upstream key  (weighted, excludes     │
+                    │     cooldown/disabled/tried keys)              │
+                    │  5. proxy request  (up to 3 attempts):         │
+                    │     • 2xx       →  success + 5s post-use cool │
+                    │     • 429       →  5s cool, switch key, retry  │
+                    │     • 4xx/5xx   →  exponential cool, retry    │
+                    │     • network error → same as 4xx/5xx          │
+                    │  6. all fails  →  pass through last error     │
                                   │  Bearer <real upstream key>
                                   ▼
                         ┌─────────────────────┐
@@ -132,10 +134,10 @@ src/
 ├── domain.ts            # pure domain: types, parseDistKey, value semantics
 ├── storage.ts           # KV primitives + generic Keys CRUD
 ├── usage-store.ts       # per-day stats (write-back, in-memory buffering)
-├── circuit-breaker.ts   # consecutive-failure → cooldown
+├── circuit-breaker.ts   # cooldown: post-use 5s + exponential backoff
 ├── auth.ts              # login / session / CSRF / logout
 ├── config.ts            # PUBLIC_BASE_URL single source of truth
-├── proxy.ts             # auth → select key → forward → classify
+├── proxy.ts             # auth → select key → retry loop (up to 3x) → passthrough
 ├── providers/           # one descriptor per upstream (tavily / exa / index)
 ├── admin/               # /admin/* routes (per-provider files + shared)
 └── views/               # HTMX templates

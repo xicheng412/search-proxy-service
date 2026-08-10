@@ -360,7 +360,7 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <ul class="muted">
     <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
     <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，一键复制调用凭据；当日调用按 provider 拆分（T/E）。</li>
-    <li><strong>熔断</strong>：上游 key 连续失败达阈值自动冷却 60 秒，期间跳过。</li>
+    <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
     <li><strong>统计</strong>：每日统计按 Asia/Shanghai 时区结算，KV 近似值、允许少量误差。</li>
     <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
   </ul>

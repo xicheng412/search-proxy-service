@@ -127,8 +127,11 @@ export function autoKeyName(): string {
 }
 
 // ---------------------------------------------------------------
-// 熔断策略常量（领域策略）
+// 冷却策略常量（领域策略）
 // ---------------------------------------------------------------
 
-export const COOLDOWN_THRESHOLD = 5; // 连续失败达到该次数触发冷却
-export const COOLDOWN_MS = 60 * 1000; // 冷却时长 60 秒
+/** 每次使用 key 后（无论成败）的冷却时长：防止同一 key 被连续请求瞬间打穿。 */
+export const POST_USE_COOLDOWN_MS = 5 * 1000;
+
+/** 熔断冷却基数：首次失败冷却 = BASE × 2^1 = 2min，后续指数增长。 */
+export const BREAKER_BASE_MS = 60 * 1000;

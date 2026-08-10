@@ -3,6 +3,11 @@
 //
 // 语义：
 //   请求端(Bearer <provider>-<key>)  ->  本服务(校验 key、按 <provider> 前缀路由)  ->  上游官方(真实 key)  ->  原样返回
+//
+// 重试策略：
+//   一次请求最多尝试 3 个不同的上游 key（MAX_ATTEMPTS）。
+//   每次失败后换 key 重试，失败 key 会进入冷却（post-use 5s + 指数退避），
+//   重试过程中被冷却/禁用的 key 自动被 selectUpstreamKey 过滤，不会再次选中。
 
 import { Context } from "hono";
 import { Env, AppVariables } from "./types";
@@ -10,7 +15,6 @@ import { ProviderConfig } from "./providers";
 import { PROVIDERS } from "./providers";
 import {
   CoreKey,
-  DistAuth,
   DistributedKey,
   Provider,
   parseDistKey,
@@ -18,21 +22,30 @@ import {
 } from "./domain";
 import { getDistributedKey, listUpstreamKeys } from "./storage";
 import { getUsageStore } from "./usage-store";
-import { recordUpstreamFailure, recordUpstreamSuccess } from "./circuit-breaker";
+import {
+  recordUpstreamFailure,
+  recordUpstreamSuccess,
+  recordUpstreamRateLimit,
+} from "./circuit-breaker";
+
+/** 单次请求最多尝试的上游 key 数量。 */
+const MAX_ATTEMPTS = 3;
 
 /**
- * 加权随机：只从 status=enabled 且未冷却的 key 中选择；
+ * 加权随机：只从 status=enabled、未冷却 且 未被排除的 key 中选择；
  * 权重 = 1 / (当日失败数 + 1)，即失败越少权重越高（0 失败最高）。
  */
 export function selectUpstreamKey(
   keys: CoreKey[],
   statsMap: Record<string, { success: number; fail: number }>,
-  now: number = Date.now()
+  now: number = Date.now(),
+  excludeIds?: Set<string>
 ): CoreKey | null {
   const candidates = keys.filter(
     (k) =>
       k.status === "enabled" &&
-      (k.cooldown_until == null || k.cooldown_until <= now)
+      (k.cooldown_until == null || k.cooldown_until <= now) &&
+      (!excludeIds || !excludeIds.has(k.id))
   );
   if (candidates.length === 0) return null;
 
@@ -47,17 +60,6 @@ export function selectUpstreamKey(
     if (r <= 0) return candidates[i];
   }
   return candidates[candidates.length - 1];
-}
-
-/** 选出与指定 key 不同的另一个可用 key（用于 429 重试）。 */
-export function selectDifferentUpstreamKey(
-  keys: CoreKey[],
-  statsMap: Record<string, { success: number; fail: number }>,
-  excludeId: string,
-  now: number = Date.now()
-): CoreKey | null {
-  const others = keys.filter((k) => k.id !== excludeId);
-  return selectUpstreamKey(others, statsMap, now);
 }
 
 async function proxyToUpstream(
@@ -86,37 +88,6 @@ function passthrough(res: Response): Response {
     statusText: res.statusText,
     headers: newHeaders,
   });
-}
-
-/**
- * 分类处理上游响应并更新统计，随后原样透传。
- * - 2xx：成功，记成功 + 重置熔断计数
- * - 429：由调用方决定是否切 key 重试（此函数直接透传，不计数）
- * - 其他（401/403/5xx/网络等）：记失败 + 熔断，并透传上游错误响应
- */
-async function classifyAndHandle(
-  kv: KVNamespace,
-  def: ProviderConfig,
-  usedKey: CoreKey,
-  res: Response
-): Promise<Response> {
-  const store = getUsageStore(kv);
-  const date = todayDate();
-  const status = res.status;
-
-  if (status >= 200 && status < 300) {
-    store.recordUpstreamResult(usedKey.id, "success", date);
-    await recordUpstreamSuccess(kv, usedKey.id).catch(() => {});
-    return passthrough(res);
-  }
-
-  if (status === 429) {
-    return passthrough(res);
-  }
-
-  store.recordUpstreamResult(usedKey.id, "fail", date);
-  await recordUpstreamFailure(kv, def.upstream, usedKey.id).catch(() => {});
-  return passthrough(res);
 }
 
 /**
@@ -167,6 +138,12 @@ async function authenticate(
  * 透明的上游代理处理器：与请求前缀对应的 provider 通信。
  * `def` 来自 PROVIDERS[provider]，`path` 是上游官方路径（如 "/search"）。
  * 调用前分发 key 已鉴权。
+ *
+ * 重试策略：最多尝试 MAX_ATTEMPTS 个不同的上游 key。
+ * - 2xx → 立即返回，记录成功并重置连续失败
+ * - 429 → 换 key 重试，仅 post-use 冷却，不计熔断
+ * - 其他错误 / 网络异常 → 换 key 重试，记录失败 + 指数退避冷却
+ * - 候选池耗尽或达到上限 → 透传最后一个错误响应
  */
 export async function handleProviderProxy(
   c: Context<{ Bindings: Env; Variables: AppVariables }>,
@@ -187,46 +164,60 @@ export async function handleProviderProxy(
   const originBody = await c.req.text();
   const contentType = c.req.header("content-type") ?? "application/json";
 
-  // 2. 选出该 provider 的可用上游 key；无可用 -> 503（贴近该 provider 报错格式）
+  // 2. 选出该 provider 的可用上游 key；无可用 -> 503
   const keys = await listUpstreamKeys(kv, def.upstream);
-  // 权重读：一次取全部 key（KV 值缓存 30s + 本 isolate 未 flush 增量叠加上去）
-  const statsMap = await store.readUpstreamTodayStats(keys.map((k) => k.id), date);
+  const statsMap = await store.readUpstreamTodayStats(
+    keys.map((k) => k.id),
+    date
+  );
 
-  const now = Date.now();
-  const first = selectUpstreamKey(keys, statsMap, now);
-  if (!first) {
-    return def.errorBody(
-      503,
-      `No available upstream ${def.name} key (all disabled or in cooldown).`
-    );
-  }
+  const tried = new Set<string>();
+  let lastRes: Response | null = null;
 
-  // 3. 用真实上游 key 透明转发首次请求
-  const res = await proxyToUpstream(def, path, first.key, originBody, contentType);
+  // 3. 重试循环：最多 MAX_ATTEMPTS 次，每次选不同的 key
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const now = Date.now();
+    const key = selectUpstreamKey(keys, statsMap, now, tried);
+    if (!key) break; // 候选池耗尽
+    tried.add(key.id);
 
-  // 4. 若首次 429：切换另一个可用 key 重试一次（仍是透明转发）
-  if (res.status === 429) {
-    const second = selectDifferentUpstreamKey(keys, statsMap, first.id, now);
-    if (second) {
-      const retried = await proxyToUpstream(def, path, second.key, originBody, contentType);
-      if (retried.status === 429) {
-        // 重试仍 429：两个 key 都计失败，透传上游错误响应
-        store.recordUpstreamResult(first.id, "fail", date);
-        await recordUpstreamFailure(kv, def.upstream, first.id).catch(() => {});
-        store.recordUpstreamResult(second.id, "fail", date);
-        await recordUpstreamFailure(kv, def.upstream, second.id).catch(() => {});
-        return passthrough(retried);
-      }
-      return classifyAndHandle(kv, def, second, retried);
+    // 发起上游请求（fetch 可能抛出网络异常）
+    let res: Response;
+    try {
+      res = await proxyToUpstream(def, path, key.key, originBody, contentType);
+    } catch {
+      // 网络异常：视为失败，换 key 重试
+      store.recordUpstreamResult(key.id, "fail", date);
+      await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
+      continue;
     }
-    // 无第二个可选 key：首次 429 计失败，透传上游错误响应
-    store.recordUpstreamResult(first.id, "fail", date);
-    await recordUpstreamFailure(kv, def.upstream, first.id).catch(() => {});
-    return passthrough(res);
+
+    // 2xx 成功 → 立即返回
+    if (res.ok) {
+      store.recordUpstreamResult(key.id, "success", date);
+      await recordUpstreamSuccess(kv, def.upstream, key.id, now).catch(() => {});
+      return passthrough(res);
+    }
+
+    lastRes = res;
+
+    // 429 限流 → 换 key 重试，仅 post-use 冷却
+    if (res.status === 429) {
+      await recordUpstreamRateLimit(kv, def.upstream, key.id, now).catch(() => {});
+      continue;
+    }
+
+    // 401 / 403 / 5xx 等 → 换 key 重试，记录失败 + 指数退避冷却
+    store.recordUpstreamResult(key.id, "fail", date);
+    await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
   }
 
-  // 5. 非 429：按 2xx/401/403/5xx 分类处理并原样透传
-  return classifyAndHandle(kv, def, first, res);
+  // 4. 重试耗尽：透传最后一个错误响应，或返回 502
+  if (lastRes) return passthrough(lastRes);
+  return def.errorBody(
+    502,
+    `All upstream ${def.name} keys exhausted or failed after retries.`
+  );
 }
 
 /** /search 透明代理入口：鉴权分发 key，按请求前缀的 provider 路由到对应上游。 */
