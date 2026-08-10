@@ -9,6 +9,10 @@ export function exaPage(csrf: string, fragment: string): string {
   <h2>Exa Keys · 管理</h2>
   <div id="exa-list">${fragment}</div>
 </section>
+<section class="card">
+  <h2>添加 Exa Key</h2>
+  ${exaEditFragment(csrf)}
+</section>
 <input type="hidden" id="csrf" value="${esc(csrf)}">`;
   return layout("Exa Keys · Tavily Proxy", body, { active: "exa" });
 }
@@ -66,19 +70,35 @@ export function exaListFragment(
     : `<tr><td colspan="7" class="muted">暂无 Exa key，请先添加。</td></tr>`;
 
   return `${flashHtml}
-  <form class="row" hx-post="/admin/exa/add" hx-target="#exa-list" hx-swap="innerHTML">
-    ${csrfField(csrf)}
-    <input type="text" name="name" placeholder="备注（如：主 key）" required>
-    <input type="text" name="key" placeholder="Exa API key" required>
-    <label class="muted" style="align-self:center;font-size:12px;white-space:nowrap;">
-      <input type="checkbox" name="test" value="1" style="vertical-align:middle;"> 加入时验证
-    </label>
-    <button type="submit">添加</button>
-  </form>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>冷却</th>
       <th>当日成功</th><th>当日失败</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
+}
+
+export function exaEditFragment(csrf: string): string {
+  return `
+  <form class="row" hx-post="/admin/exa/add" hx-target="#exa-list" hx-swap="innerHTML">
+    ${csrfField(csrf)}
+    <input type="text" name="key" placeholder="Exa API key" required>
+    <input type="text" name="name" placeholder="备注（可选）">
+    <label class="muted" style="align-self:center;font-size:12px;white-space:nowrap;">
+      <input type="checkbox" name="test" value="1" style="vertical-align:middle;"> 加入时验证
+    </label>
+    <button type="submit">添加</button>
+  </form>
+  <details style="margin-top:12px;">
+    <summary style="cursor:pointer;color:var(--muted);font-size:13px;">批量添加</summary>
+    <form hx-post="/admin/exa/add/batch" hx-target="#exa-list" hx-swap="innerHTML" style="margin-top:8px;">
+      ${csrfField(csrf)}
+      <textarea name="keys" placeholder="多个 key 用逗号或换行分隔" rows="4" required
+        style="width:100%;box-sizing:border-box;"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+        <input type="text" name="name" placeholder="备注前缀（可选）" style="flex:1;">
+        <button type="submit">批量添加</button>
+      </div>
+    </form>
+  </details>`;
 }
 

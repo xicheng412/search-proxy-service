@@ -104,6 +104,28 @@ export function todayDate(t: number = Date.now()): string {
   }).format(new Date(t));
 }
 
+/**
+ * 自动生成 key 备注名：Asia/Shanghai 时间戳 + 4 位随机 hex。
+ * 格式：YYYY/MM/DD/HH:MM:SS+RAND，如 2026/08/10/14:30:25+a1b2。
+ */
+export function autoKeyName(): string {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  const rand = randomToken(2).slice(0, 4);
+  return `${get("year")}/${get("month")}/${get("day")}/${get("hour")}:${get("minute")}:${get("second")}+${rand}`;
+}
+
 // ---------------------------------------------------------------
 // 熔断策略常量（领域策略）
 // ---------------------------------------------------------------

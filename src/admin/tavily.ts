@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
-import { todayDate } from "../domain";
+import { autoKeyName, todayDate } from "../domain";
 import {
   addUpstreamKey,
   deleteUpstreamKey,
@@ -39,14 +39,15 @@ tavilyAdmin.get("/list", async (c) => {
   return c.html(tavilyListFragment(keys, statsMap, csrf, Date.now()));
 });
 
-// 新增 Tavily key（可附带 test call）
+// 新增 Tavily key（可附带 test call；name 可选，未填则自动生成）
 tavilyAdmin.post("/add", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const key = ((body["key"] as string) ?? "").trim();
-  const name = ((body["name"] as string) ?? "").trim();
+  let name = ((body["name"] as string) ?? "").trim();
   const doTest = body["test"] === "1";
   if (!key) return c.html(errorFragment("缺少 key"));
+  if (!name) name = autoKeyName();
   const kv = c.env.KV;
 
   if (doTest) {
@@ -70,6 +71,30 @@ tavilyAdmin.post("/add", async (c) => {
   }
 
   await addUpstreamKey(kv, TAVILY.upstream, key, name);
+  return c.redirect("/admin/tavily/list", 303);
+});
+
+// 批量添加 Tavily keys（逗号或换行分隔；name 前缀可选，未填则自动生成）
+tavilyAdmin.post("/add/batch", async (c) => {
+  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
+  const body = await c.req.parseBody();
+  const keysText = ((body["keys"] as string) ?? "").trim();
+  const namePrefix = ((body["name"] as string) ?? "").trim();
+  if (!keysText) return c.html(errorFragment("缺少 key"));
+
+  const rawKeys = keysText.split(/[\n,]+/).map((k) => k.trim()).filter(Boolean);
+  if (rawKeys.length === 0) return c.html(errorFragment("未解析到有效 key"));
+
+  const kv = c.env.KV;
+  const pad = String(rawKeys.length).length;
+  for (let i = 0; i < rawKeys.length; i++) {
+    const key = rawKeys[i];
+    const name = namePrefix
+      ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}`
+      : autoKeyName();
+    await addUpstreamKey(kv, TAVILY.upstream, key, name);
+  }
+
   return c.redirect("/admin/tavily/list", 303);
 });
 
