@@ -12,7 +12,7 @@
 - **代理链路**：外部用分发 key 调用 → 本服务校验 → 选上游 key → 透明转发 → 原样返回。
 - **管理链路**：管理员密码登录后台 → 管理上游 key（多个，可加可删可熔断）/ 分发 key（生成、禁用、删除）/ 查看当日统计。
 
-唯一对外数据面是 `POST /search`（同时是代理与文档约定的"主端点"），其他 `/admin/*` 是管理后台。
+唯一对外数据面是 `GET|POST /search`（同时是代理与文档约定的"主端点"），其他 `/admin/*` 是管理后台。
 
 ---
 
@@ -21,56 +21,65 @@
 | 概念 | 形态 | 何时出现 | 备注 |
 |---|---|---|---|
 | **上游 key**（upstream key） | Tavily 的 `tvly-…` 或 Exa 的不规则字符串 | 后台 Tavily / Exa Keys 页录入 | 真实 key，由本服务持有；列表一律脱敏（如 `tvly-****`） |
-| **分发 key**（distributed key） | 纯高熵 hex 字符串，无任何品牌前缀 | 后台 分发 Keys 页生成 | 用来给调用方；**调用时需拼前缀** `Bearer <provider>-<key>` |
+| **分发 key**（distributed key） | 纯高熵 hex 字符串，无任何品牌前缀 | 后台 分发 Keys 页生成 | 用来给调用方；**调用时需拼前缀** `Bearer <前缀>-<key>` |
+| **线协议**（wire protocol） | `native` / `searxng`（大小写不敏感） | 由调用凭据前缀决定 | native = 原样透传上游协议；searxng = SearXNG 兼容协议（需转换）；见 §2.1 |
 | **provider 前缀** | `tavily` / `exa`（大小写不敏感） | 调用方发起请求时携带 | 决定这次请求路由到哪个上游；分发 key 自身**不带** provider 属性 |
 | **当日** | `YYYY-MM-DD`（Asia/Shanghai 时区） | 跨天自然归零，零定时任务 | 见 [`src/domain.ts`](../src/domain.ts) `todayDate()` |
 | **权重** | `1 / (当日失败数 + 1)` | 选上游 key 时计算 | 失败越少权重越高；0 失败最高 |
 
 ### 2.1 调用凭据的拼装规则
 
+前缀同时决定**线协议**与**路由 provider**（复合前缀，大小写不敏感）：
+
 ```
-Authorization: Bearer <provider>-<key>
-                        └─┬──┘ └─┬─┘
-                  必须 tavily / exa   查库的 api_key（精确匹配）
+Authorization: Bearer <proto?-><provider>-<key>
+                        │                └─┬─┘
+                        │              查库的 api_key（精确匹配）
+                        └──────────────────┘
+  tavily-<key>、exa-<key>                → proto=native (透传)
+  searxng-tavily-<key>、searxng-exa-<key>→ proto=searxng (SearXNG 兼容协议)
 ```
 
-- `parseDistKey()`（[`src/domain.ts`](../src/domain.ts)）按第一个 `-` 切分；分发 key 是 hex 不含 `-`，切分无歧义。
-- 合法分发 key 用 `Bearer tavily-abc...` 走 Tavily，用 `Bearer exa-abc...` 走 Exa。
-- **裸 key / `tvly-` 前缀 / `sk-` 前缀** 全部 401。
-- 前缀决定路由后，错误响应格式按该 provider 的官方错误体返回（Tavily `{detail:{error}}`，Exa `{error}`）。
+- `parseDistKey()`（[`src/domain.ts`](../src/domain.ts)）按最后一个 `-` 切分；分发 key 是 hex 不含 `-`，切分无歧义。
+- 合法分发 key 用 `Bearer tavily-abc...` 走 Tavily（透传），`Bearer exa-abc...` 走 Exa（透传），`Bearer searxng-tavily-abc...` 走 SearXNG 协议（后端 Tavily）。
+- **裸 key / `tvly-` 前缀 / `sk-` 前缀 / 未注册的复合前缀** 全部 401。
+- native 透传的错误响应用对应 provider 官方格式（Tavily `{detail:{error}}`，Exa `{error}`）；searxng 路径的错误统一为 `{ "error": "..." }`（见 §6.4）。
 
 ### 2.2 后台"复制"按钮语义
 
-后台 分发 Keys 列表里每行有 **"复制 tavily 调用 key"** 和 **"复制 exa 调用 key"** 两个按钮——它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个 provider 调"准备的两种拼装结果。
+后台 分发 Keys 列表里每行有 **"复制 tavily 调用 key"**、**"复制 exa 调用 key"**、**"复制 searxng-tavily 调用 key"** 三个按钮——它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的三种拼装结果。
 
 ---
 
 ## 3. 数据流
 
-### 3.1 请求代理（`POST /search`）
+### 3.1 请求代理（`GET|POST /search`）
 
 ```
 ┌──────────────┐
-│ 调用方        │  Authorization: Bearer tavily-<key>  /  exa-<key>
+│ 调用方        │  native:    Bearer tavily-<key> / exa-<key>   (POST)
+│               │  searxng:   Bearer searxng-tavily-<key>       (GET|POST + q&format=json)
 └──────┬───────┘
        │
        ▼
 ┌──────────────────────────────────────────────────────┐
 │ handleSearch (src/proxy.ts)                          │
-│  ① authenticate:  parseDistKey → 查 distributed_keys │
-│  ② recordDistCall: +1 当日调用（内存缓冲，节流 flush）│
-│  ③ selectUpstreamKey:  从 enabled∧未冷却 中按权重选   │
-│     ├─ 候选为空 → 503（provider 格式）               │
-│  ④ proxyToUpstream:  Authorization 换成真实 key      │
-│  ⑤ 分类处理:                                          │
-│     - 2xx   → 记 success, 重置连续失败计数, 透传     │
-│     - 429   → 切到另一个 key 重试一次                │
-│              ├─ 重试仍 429 → 两 key 均记 fail, 透传 │
-│              └─ 重试成功 → 走 2xx 路径               │
-│     - 其他  → 记 fail, 触发熔断(若累计), 透传        │
+│  ① authenticate:  parseDistKey(协议+provider) → 查库 │
+│  ② searxng 协议?  adapters/searxng 参数→Tavily 请求体 │
+│  ③ searchWithRetry 核:  recordDistCall +1, flush     │
+│  ④ selectUpstreamKey:  从 enabled∧未冷却 中按权重选   │
+│     ├─ 无 key / 全冷却 → 503（按协议错误体）          │
+│  ⑤ fetch 上游（30s 超时, 每次换 key, 最多 3 次）      │
+│  ⑥ 分类处理:                                          │
+│     - 2xx   → 记 success, 重置连续失败, 协议响应      │
+│     - 429   → 仅 post-use 冷却, 换 key 重试           │
+│     - 400/404/422 → 立即返回, 不记失败不烧 key        │
+│     - 401/403 → 记 stats fail + 仅 post-use 冷却,换key│
+│     - 5xx/网络 → 记 fail + 指数退避, 换 key 重试      │
+│  ⑦ 耗尽 → 透传最后错误 / 502（按协议错误体）          │
 └──────────────────────────────────────────────────────┘
        │
-       ▼ (fetch 透传)
+       ▼ (fetch)
 ┌──────────────┐
 │ Tavily / Exa │
 └──────────────┘
@@ -97,7 +106,7 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ domain.ts (纯领域)                                                │
-│  类型 + parseDistKey 前缀路由规则 + 值语义 + 熔断常量            │
+│  类型 + parseDistKey 前缀路由规则(协议/provider) + 值语义 + 熔断常量│
 │  零依赖; storage/usage-store/circuit-breaker/proxy/admin/views   │
 │  都只消费这里的词汇。                                             │
 └─────────────────────────────────────────────────────────────────┘
@@ -111,20 +120,26 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 └────────────────────────┘ │ └──────────────────────────┘
          ↑ ↑              │            ↑ ↑
 ┌────────┴─┐ ┌────────────┴────┐ ┌─────┴──────────────────────┐
-│ usage-   │ │ circuit-breaker │ │ proxy.ts (应用编排)          │
-│ store.ts │ │ .ts             │ │ handleProviderProxy,        │
-│ (日用量  │ │ (连续失败计数   │ │ selectUpstreamKey,           │
-│  缓冲)  │ │  → 冷却 60s)   │ │ authenticate, classify       │
-└─────────┘ └─────────────────┘ └──────────────────────────────┘
-         ↑                                ↑
-         │   ┌────────────────────────────┘
-         │   │
-┌────────┴───┴─────────────────────────────────────────────┐
-│ index.ts (入口)  +  admin/  +  views/                    │
-│  - 路由注册                                              │
-│  - 鉴权中间件 (CSRF、登录态)                              │
-│  - HTMX 渲染 (tavily/exa/keys 三块页面 + Dashboard + Help)│
-└──────────────────────────────────────────────────────────┘
+│ usage-   │ │ circuit-breaker │ │ adapters/searxng.ts        │
+│ store.ts │ │ .ts             │ │  (消费方 ACL)              │
+│ (日用量  │ │ (连续失败计数   │ │  searxng→Tavily 请求转换 +  │
+│  缓冲)  │ │  → 冷却 60s)   │ │  Tavily 响应→searxng JSON │
+└─────────┘ └─────────────────┘ └──────────┬───────────────────┘
+         ↑                                │
+┌────────┴─────────────────────────────────┴───────────────────┐
+│ proxy.ts (应用编排)                                            │
+│  searchWithRetry 通用重试核 + handleProviderProxy(native)     │
+│  + handleSearxng(searxng) + authenticate + selectUpstreamKey  │
+└───────────────────────────────────────────────────────────────┘
+         ↑
+         │   ┌────────────────────────────┐
+         │   │ index.ts (入口)            │
+┌────────┴───┴────────────────────────────┴────────────────────┐
+│ admin/  +  views/                                            │
+│  - 路由注册 (GET|POST /search)                               │
+│  - 鉴权中间件 (CSRF、登录态)                                 │
+│  - HTMX 渲染 (tavily/exa/keys 三块页面 + Dashboard + Help)    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.1 各模块职责一句话
@@ -136,7 +151,8 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 | `usage-store.ts` | 内存累积 + 节流 flush + 读叠加 | 不改 domain 规则；不直接被 admin 写 |
 | `circuit-breaker.ts` | 连续失败计数 → 冷却 | 不感知 provider；失败静默 |
 | `providers/` | 一个 provider 的全部事实（base、endpoints、KV 键、id 前缀、test body、错误体格式） | 不写业务逻辑 |
-| `proxy.ts` | 鉴权 + 选 key + 转发 + 分类处理 | 不读视图模板 |
+| `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV |
+| `proxy.ts` | 鉴权 + 选 key + 通用重试核 + native/searxng 协议路径 | 不读视图模板 |
 | `auth.ts` | 登录 / 会话 / CSRF / 登出 | 不写业务数据 |
 | `admin/` | 路由 + 鉴权校验 + 调 storage / usage-store | 不直接拼 HTML；视图在 views/ |
 | `views/` | 模板片段（HTMX 友好）+ 渲染函数 | 不写 IO |
@@ -151,6 +167,8 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 2. `src/providers/index.ts`：把它注册到 `PROVIDERS`。
 
 其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
+
+> **协议与 provider 正交**：线协议（native / searxng）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径（经 `searchWithRetry` callbacks 注入）。例见 `searxng`。
 
 ---
 
@@ -209,20 +227,29 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
 - 429 → 仅 post-use 5s 冷却，不碰连续失败计数。
 - breaker 计数本身有 10 分钟 TTL——10 分钟内无新失败则视为"该 key 已恢复"。
 
-### 6.3 自动重试
+### 6.3 自动重试（`searchWithRetry` 核）
 
-- 单次请求最多尝试 3 个不同的上游 key。
-- 任何非2xx 或网络异常 → 换 key 重试。
+- 单次请求最多尝试 3 个不同的上游 key（`MAX_ATTEMPTS`）。
+- 每次尝试换 key；网络异常/超时（30s）视为失败并换 key。
+- **分类语义**：
+  - `2xx` → 协议处理（native 透传 / searxng 转 JSON）；searxng 解析失败视为失败换 key。
+  - `429` → 仅 post-use 冷却，换 key 重试（不计熔断）。
+  - `400/404/422` → 客户端确定性错误：立即返回，**不重试、不记失败、不烧 key**。
+  - `401/403` → 记统计失败（权重惩罚）+ 仅 post-use 冷却（不熔断），换 key。
+  - 其他 `4xx`/`5xx` → 记录失败 + 指数退避冷却，换 key。
 - 每个失败 key 在重试过程中实时更新冷却，已冷却/禁用的 key 自动从候选池过滤。
-- 候选池耗尽或达到 3 次上限 → 透传最后一个错误响应；无响应可得 → 502。
+- 未配置任何上游 key / 全部冷却或禁用 → `503`（3xx 用 provider 错误体，searxng 用 `{error}`）。
+- 候选池耗尽或达到 3 次上限 → 透传最后一个错误响应；无响应可得 → `502`。
+
 ### 6.4 错误体格式
 
 | provider | 错误响应 | 来源 |
 |---|---|---|
 | Tavily | `{ "detail": { "error": "..." } }` | 与官方一致 |
 | Exa | `{ "error": "..." }` | 与官方一致（429 / 通用） |
+| SearXNG 协议 | `{ "error": "..." }` | 对齐 searxng `index_error` |
 
-`PROVIDERS[provider].errorBody(status, msg)` 集中产出，**禁止**在 proxy/admin 里硬编码某一家的格式。
+`PROVIDERS[provider].errorBody(status, msg)` 集中产出**上游官方错误体**；searxng 路径由 `adapters/searxng.ts:searxngError` 统一产出，**禁止**在 proxy/admin 里硬编码某一家的格式。
 
 ### 6.5 会话与 CSRF
 

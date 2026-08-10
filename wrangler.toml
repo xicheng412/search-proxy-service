@@ -13,6 +13,8 @@ id = "ff56ea82daa846538fdf11e6bff662eb"
 # gitignored 的 config/prod.env 以 `--var PUBLIC_BASE_URL:https://…` 注入（注意 --var 用冒号分隔）；
 # 本地开发在 .dev.vars 覆盖。唯一取值见 src/config.ts。
 
+# 远端不再记录 Workers Logs（关闭 Cloudflare 日志平台采集，节省成本/避免记录内容）。
+# 本地 pnpm dev 的终端日志不受影响（那是运行时输出，非远端采集）。
 [observability.logs]
-enabled = true
-invocation_logs = true
+enabled = false
+invocation_logs = false

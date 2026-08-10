@@ -1,13 +1,20 @@
-// 透明代理层：请求端(分发 key) -> 本服务(校验分发 key) -> 上游(真实 key，按请求前缀的 provider 路由) -> 原样返回。
-// 本文件是 provider 无关的泛型算法：由 providers/*.ts 的描述符驱动，代码里无 tavily/exa 分支。
+// 代理编排层：请求端(分发 key) -> 本服务(校验分发 key) -> 上游(真实 key，按前缀路由) -> 返回。
+// 本文件是 provider 无关的泛型算法：由 providers/*.ts 的描述符驱动，代码里无 tavily/exa 分支；
+// 线协议差异（native 透传 vs searxng 转换）由调用方通过 RetryCallbacks 注入，核内无分支。
 //
 // 语义：
-//   请求端(Bearer <provider>-<key>)  ->  本服务(校验 key、按 <provider> 前缀路由)  ->  上游官方(真实 key)  ->  原样返回
+//   请求端(Bearer <[protocol-/]>provider-<key>)
+//     -> 本服务(校验 key、按前缀选协议/路由 provider)
+//     -> 上游官方(真实 key)
+//     -> 按协议返回（native 原样透传 / searxng 转标准 JSON）
 //
-// 重试策略：
-//   一次请求最多尝试 3 个不同的上游 key（MAX_ATTEMPTS）。
-//   每次失败后换 key 重试，失败 key 会进入冷却（post-use 5s + 指数退避），
-//   重试过程中被冷却/禁用的 key 自动被 selectUpstreamKey 过滤，不会再次选中。
+// 重试策略（searchWithRetry 核，一次请求最多尝试 MAX_ATTEMPTS 个不同上游 key）：
+//   - 2xx        → 调用 onSuccess；返回 null 视为"成功但响应不可用"，按失败换 key 重试
+//   - 429        → 换 key 重试，仅 post-use 冷却，不计熔断
+//   - 400/404/422→ 客户端确定性错误：立即返回该响应，不重试、不记失败、不烧 key
+//   - 401/403    → key 级错误：记统计失败（权重惩罚）+ 仅 post-use 冷却（不熔断），换 key
+//   - 其余/网络  → 记录失败 + 指数退避冷却，换 key 重试
+//   候选池耗尽或达到上限 → onFailure（透传最后一个错误响应，或 503/502）
 
 import { Context } from "hono";
 import { Env, AppVariables } from "./types";
@@ -17,6 +24,7 @@ import {
   CoreKey,
   DistributedKey,
   Provider,
+  WireProtocol,
   parseDistKey,
   todayDate,
 } from "./domain";
@@ -27,9 +35,43 @@ import {
   recordUpstreamSuccess,
   recordUpstreamRateLimit,
 } from "./circuit-breaker";
+import {
+  parseSearxngParams,
+  buildTavilyBody,
+  resolveTopic,
+  toSearxngResponse,
+  searxngError,
+} from "./adapters/searxng";
 
 /** 单次请求最多尝试的上游 key 数量。 */
 const MAX_ATTEMPTS = 3;
+
+/** 单次上游请求超时（网络无响应视为失败，换 key 重试）。 */
+const UPSTREAM_TIMEOUT_MS = 30_000;
+
+/** 通用重试的结果，交给 onFailure 按协议渲染最终响应。 */
+export type RetryOutcome =
+  | { kind: "success"; res: Response }
+  | { kind: "no-keys"; lastRes: null } // 该 provider 未配置任何上游 key
+  | { kind: "unavailable"; lastRes: null } // 全部冷却/禁用
+  | { kind: "client-error"; lastRes: Response } // 4xx 客户端确定性错误
+  | { kind: "exhausted"; lastRes: Response | null }; // 重试耗尽（可能全是网络异常，null）
+
+export interface RetryCallbacks {
+  /** 构造发往上游的请求（每次重试复用同一份，只换 key；body 读取只做一次）。 */
+  buildRequest(
+    c: Context<{ Bindings: Env; Variables: AppVariables }>
+  ): Promise<{ path: string; body: string; contentType: string }>;
+  /** 2xx 后的协议处理；返回 null 表示"成功但响应不可用"，核内按失败换 key 重试。 */
+  onSuccess(
+    c: Context<{ Bindings: Env; Variables: AppVariables }>,
+    res: Response
+  ): Promise<Response | null>;
+  /** 最终失败渲染（含 503/502 语义），按协议决定透传或转换。 */
+  onFailure(
+    outcome: Exclude<RetryOutcome, { kind: "success" }>
+  ): Promise<Response>;
+}
 
 /**
  * 加权随机：只从 status=enabled、未冷却 且 未被排除的 key 中选择；
@@ -77,6 +119,7 @@ async function proxyToUpstream(
     method: "POST",
     headers,
     body,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 }
 
@@ -102,14 +145,19 @@ function parseBearer(auth: string): string {
 }
 
 /**
- * 校验请求端分发 key：Bearer 必须形如 `<provider>-<key>`，前缀决定路由。
+ * 校验请求端分发 key：Bearer 必须形如 `<[protocol-/]>provider-<key>`，前缀决定协议与路由。
  * 失败时返回 null 并已写入 c.res。
  * - 无 token / 前缀非法：无法得知 provider，用 Tavily 默认格式提示正确用法。
  * - 前缀合法但 key 无效/禁用：用该 provider 自己的报错格式。
  */
 async function authenticate(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
-): Promise<{ provider: Provider; apiKey: string; distKey: DistributedKey } | null> {
+): Promise<{
+  protocol: WireProtocol;
+  provider: Provider;
+  apiKey: string;
+  distKey: DistributedKey;
+} | null> {
   const token = parseBearer(c.req.header("authorization") ?? "");
   if (!token) {
     c.res = PROVIDERS.tavily.errorBody(401, "Unauthorized: missing API key.");
@@ -119,37 +167,40 @@ async function authenticate(
   if (!parsed) {
     c.res = PROVIDERS.tavily.errorBody(
       401,
-      'Unauthorized: expect "Authorization: Bearer <tavily|exa>-<key>".'
+      'Unauthorized: expect "Authorization: Bearer <tavily|exa|searxng-tavily>-<key>".'
     );
     return null;
   }
   const distKey = await getDistributedKey(c.env.KV, parsed.apiKey);
   if (!distKey || distKey.status !== "enabled") {
-    c.res = PROVIDERS[parsed.provider].errorBody(
-      401,
-      "Unauthorized: missing or invalid API key."
-    );
+    // 错误体按线协议选择：native 用该 provider 官方格式；searxng 用官方 `{error}` 格式
+    c.res =
+      parsed.protocol === "searxng"
+        ? searxngError(401, "Unauthorized: missing or invalid API key.")
+        : PROVIDERS[parsed.provider].errorBody(
+            401,
+            "Unauthorized: missing or invalid API key."
+          );
     return null;
   }
-  return { provider: parsed.provider, apiKey: parsed.apiKey, distKey };
+  return {
+    protocol: parsed.protocol,
+    provider: parsed.provider,
+    apiKey: parsed.apiKey,
+    distKey,
+  };
 }
 
 /**
- * 透明的上游代理处理器：与请求前缀对应的 provider 通信。
- * `def` 来自 PROVIDERS[provider]，`path` 是上游官方路径（如 "/search"）。
- * 调用前分发 key 已鉴权。
- *
- * 重试策略：最多尝试 MAX_ATTEMPTS 个不同的上游 key。
- * - 2xx → 立即返回，记录成功并重置连续失败
- * - 429 → 换 key 重试，仅 post-use 冷却，不计熔断
- * - 其他错误 / 网络异常 → 换 key 重试，记录失败 + 指数退避冷却
- * - 候选池耗尽或达到上限 → 透传最后一个错误响应
+ * 通用重试核：鉴权后由各协议路径共用。
+ * - 每次尝试选不同 key；命中"不可重试"分类提前返回，避免浪费配额/流量。
+ * - 无 key 配置 / 全部冷却禁用 → 503（经 onFailure 渲染）。
  */
-export async function handleProviderProxy(
+export async function searchWithRetry(
   c: Context<{ Bindings: Env; Variables: AppVariables }>,
   def: ProviderConfig,
-  path: string,
-  apiKey: string
+  apiKey: string,
+  cb: RetryCallbacks
 ): Promise<Response> {
   const store = getUsageStore(c.env.KV);
   const kv = c.env.KV;
@@ -160,43 +211,63 @@ export async function handleProviderProxy(
   // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
   store.flushSoon(c.executionCtx);
 
-  // 读取待转发请求体
-  const originBody = await c.req.text();
-  const contentType = c.req.header("content-type") ?? "application/json";
+  // 构造上游请求只做一次（重试间 body 不变，仅换 key）
+  const req = await cb.buildRequest(c);
 
-  // 2. 选出该 provider 的可用上游 key；无可用 -> 503
+  // 2. 选出该 provider 的上游 key；未配置任何 key -> 503
   const keys = await listUpstreamKeys(kv, def.upstream);
+  if (keys.length === 0) {
+    return cb.onFailure({ kind: "no-keys", lastRes: null });
+  }
   const statsMap = await store.readUpstreamTodayStats(
     keys.map((k) => k.id),
     date
   );
 
+  // 3. 候选预检：全部冷却/禁用 -> 503
+  const now0 = Date.now();
+  const hasCandidate = keys.some(
+    (k) =>
+      k.status === "enabled" &&
+      (k.cooldown_until == null || k.cooldown_until <= now0)
+  );
+  if (!hasCandidate) {
+    return cb.onFailure({ kind: "unavailable", lastRes: null });
+  }
+
   const tried = new Set<string>();
   let lastRes: Response | null = null;
 
-  // 3. 重试循环：最多 MAX_ATTEMPTS 次，每次选不同的 key
+  // 4. 重试循环：最多 MAX_ATTEMPTS 次，每次选不同的 key
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const now = Date.now();
     const key = selectUpstreamKey(keys, statsMap, now, tried);
     if (!key) break; // 候选池耗尽
     tried.add(key.id);
 
-    // 发起上游请求（fetch 可能抛出网络异常）
+    // 发起上游请求（fetch 可能抛出网络异常/超时）
     let res: Response;
     try {
-      res = await proxyToUpstream(def, path, key.key, originBody, contentType);
+      res = await proxyToUpstream(def, req.path, key.key, req.body, req.contentType);
     } catch {
-      // 网络异常：视为失败，换 key 重试
+      // 网络异常/超时：视为失败，换 key 重试
       store.recordUpstreamResult(key.id, "fail", date);
       await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
       continue;
     }
 
-    // 2xx 成功 → 立即返回
+    // 2xx 成功 → 交给 onSuccess；返回 null 表示响应不可用，按失败换 key
     if (res.ok) {
-      store.recordUpstreamResult(key.id, "success", date);
-      await recordUpstreamSuccess(kv, def.upstream, key.id, now).catch(() => {});
-      return passthrough(res);
+      const out = await cb.onSuccess(c, res);
+      if (out) {
+        store.recordUpstreamResult(key.id, "success", date);
+        await recordUpstreamSuccess(kv, def.upstream, key.id, now).catch(() => {});
+        return out;
+      }
+      lastRes = res;
+      store.recordUpstreamResult(key.id, "fail", date);
+      await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
+      continue;
     }
 
     lastRes = res;
@@ -207,27 +278,170 @@ export async function handleProviderProxy(
       continue;
     }
 
-    // 401 / 403 / 5xx 等 → 换 key 重试，记录失败 + 指数退避冷却
+    // 400/404/422 客户端确定性错误 → 立即返回该响应（不重试、不记失败、不烧 key）
+    if (res.status === 400 || res.status === 404 || res.status === 422) {
+      return cb.onFailure({ kind: "client-error", lastRes: res });
+    }
+
+    // 401/403 key 级错误 → 记统计失败（权重惩罚）+ 仅 post-use 冷却（不熔断），换 key
+    if (res.status === 401 || res.status === 403) {
+      store.recordUpstreamResult(key.id, "fail", date);
+      await recordUpstreamRateLimit(kv, def.upstream, key.id, now).catch(() => {});
+      continue;
+    }
+
+    // 其余（5xx / 未知状态）→ 记录失败 + 指数退避冷却，换 key 重试
     store.recordUpstreamResult(key.id, "fail", date);
     await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
   }
 
-  // 4. 重试耗尽：透传最后一个错误响应，或返回 502
-  if (lastRes) return passthrough(lastRes);
-  return def.errorBody(
-    502,
-    `All upstream ${def.name} keys exhausted or failed after retries.`
-  );
+  // 5. 重试耗尽 → onFailure（透传最后错误响应，或 503/502）
+  return cb.onFailure({ kind: "exhausted", lastRes });
 }
 
-/** /search 透明代理入口：鉴权分发 key，按请求前缀的 provider 路由到对应上游。 */
+/**
+ * native 路径：原样透传。与旧 handleProviderProxy 行为一致，仅 400/404/422 不再烧 key。
+ */
+export async function handleProviderProxy(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>,
+  def: ProviderConfig,
+  path: string,
+  apiKey: string
+): Promise<Response> {
+  return searchWithRetry(c, def, apiKey, {
+    buildRequest: async () => ({
+      path,
+      body: await c.req.text(),
+      contentType: c.req.header("content-type") ?? "application/json",
+    }),
+    onSuccess: async (_c, res) => passthrough(res),
+    onFailure: async (outcome) => {
+      if (outcome.lastRes) return passthrough(outcome.lastRes);
+      if (outcome.kind === "no-keys") {
+        return def.errorBody(503, `No ${def.name} upstream keys configured.`);
+      }
+      if (outcome.kind === "exhausted") {
+        // 全部网络异常、无任何响应可得 → 502（与原实现及文档 §6.3 一致）
+        return def.errorBody(
+          502,
+          `All upstream ${def.name} keys failed after retries.`
+        );
+      }
+      return def.errorBody(
+        503,
+        `All upstream ${def.name} keys are temporarily unavailable (disabled or in cooldown).`
+      );
+    },
+  });
+}
+
+/** 把 searxng 请求参数归一化成 kv（GET → query string；POST → 表单/JSON 字段）。 */
+async function collectSearxngParams(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>
+): Promise<Record<string, string>> {
+  const kv: Record<string, string> = {};
+  if (c.req.method === "GET") {
+    const url = new URL(c.req.url);
+    url.searchParams.forEach((v, k) => {
+      kv[k] = v;
+    });
+    return kv;
+  }
+  const body = await c.req.parseBody();
+  for (const [k, v] of Object.entries(body)) {
+    if (typeof v === "string") kv[k] = v;
+  }
+  return kv;
+}
+
+/**
+ * searxng 路径：SearXNG 协议 → Tavily 请求 → Tavily 后端（走通用重试核）→ 转回 SearXNG JSON。
+ * 统计仍按 provider（tavily）记，searxng 仅作为"换皮协议"。
+ */
+export async function handleSearxng(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>,
+  def: ProviderConfig,
+  apiKey: string
+): Promise<Response> {
+  const params = await collectSearxngParams(c);
+  const { params: parsed, error } = parseSearxngParams(params);
+  if (error) {
+    // 参数错误也记一次调用（口径：分发 key 调用次数，而非成功次数）
+    const store = getUsageStore(c.env.KV);
+    store.recordDistCall(apiKey, def.name, todayDate());
+    store.flushSoon(c.executionCtx);
+    return searxngError(error.status, error.message);
+  }
+  if (!parsed) {
+    return searxngError(400, "invalid search parameters");
+  }
+  // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
+  if (parsed.pageno && parsed.pageno > 1) {
+    const store = getUsageStore(c.env.KV);
+    store.recordDistCall(apiKey, def.name, todayDate());
+    store.flushSoon(c.executionCtx);
+    const empty = toSearxngResponse({ results: [] }, parsed.query, resolveTopic(parsed) ?? undefined);
+    return new Response(JSON.stringify(empty), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const body = buildTavilyBody(parsed);
+
+  return searchWithRetry(c, def, apiKey, {
+    buildRequest: async () => ({
+      path: def.endpoints.search,
+      body: JSON.stringify(body),
+      contentType: "application/json",
+    }),
+    onSuccess: async (_c, res) => {
+      try {
+        const raw = await res.json();
+        const converted = toSearxngResponse(raw, parsed.query, resolveTopic(parsed) ?? undefined);
+        return new Response(JSON.stringify(converted), {
+          status: res.status,
+          headers: { "content-type": "application/json" },
+        });
+      } catch {
+        // 2xx 但 JSON 解析/转换失败：响应不可用，换 key 重试
+        return null;
+      }
+    },
+    onFailure: async (outcome) => {
+      // 2xx 但内容不可用（如解析失败）时 lastRes 是 200 —— 视为上游故障，不返回 200+error
+      if (outcome.lastRes && !outcome.lastRes.ok) {
+        return searxngError(outcome.lastRes.status, `search failed (${outcome.lastRes.status})`);
+      }
+      const msg =
+        outcome.kind === "no-keys"
+          ? "search backend has no upstream keys configured"
+          : outcome.kind === "exhausted"
+            ? "search upstream unreachable"
+            : "search backend temporarily unavailable";
+      const status = outcome.kind === "exhausted" ? 502 : 503;
+      return searxngError(status, msg);
+    },
+  });
+}
+
+/** /search 入口：鉴权分发 key，按前缀协议分派到 native 透传或 searxng 转换路径。 */
 export async function handleSearch(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
 ): Promise<Response> {
+  // 先解析 token 拿线协议（纯解析、不查库），供鉴权失败/异常时按协议渲染错误体。
+  let protocol: WireProtocol = "native";
+  const token = parseBearer(c.req.header("authorization") ?? "");
+  if (token) {
+    const parsed = parseDistKey(token);
+    if (parsed) protocol = parsed.protocol;
+  }
   try {
     const authRes = await authenticate(c);
     if (!authRes) return c.res; // 错误响应已在 authenticate 写入
     const def = PROVIDERS[authRes.provider];
+    if (authRes.protocol === "searxng") {
+      return await handleSearxng(c, def, authRes.distKey.api_key);
+    }
     return await handleProviderProxy(
       c,
       def,
@@ -235,8 +449,11 @@ export async function handleSearch(
       authRes.distKey.api_key
     );
   } catch (err) {
-    // 透明代理不应裸抛 500；转为带错误信息的响应便于定位（也避免泄露堆栈给客户端）
+    // 代理不应裸抛 500；转为带错误信息的响应便于定位（也避免泄露堆栈给客户端）
     const msg = err instanceof Error ? err.message : String(err);
+    if (protocol === "searxng") {
+      return searxngError(502, "internal search error");
+    }
     return Response.json(
       { detail: { error: "Internal proxy error: " + msg } },
       { status: 502 }

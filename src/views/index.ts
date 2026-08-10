@@ -255,6 +255,7 @@ export function distListFragment(
               <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
                 <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）" style="padding:3px 8px;">复制 tavily 调用key</button>
                 <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）" style="padding:3px 8px;">复制 exa 调用key</button>
+                <button class="ghost" type="button" data-copy="searxng-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer searxng-tavily-&lt;key&gt;（SearXNG 协议，请求走 Tavily）" style="padding:3px 8px;">复制 searxng-tavily 调用key</button>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
                       hx-swap="innerHTML" style="display:inline-block;">
                   ${csrfField(csrf)}
@@ -299,7 +300,7 @@ export function distGenerateResult(
   publicBaseUrl: string = ""
 ): string {
   const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
-<div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）或 <code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）。</div>`;
+<div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）、<code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa），或 <code>Bearer searxng-tavily-${esc(plainApiKey)}</code>（SearXNG 协议，走 Tavily）。</div>`;
   return box + distListFragment(keys, callsMap, csrf, undefined, publicBaseUrl);
 }
 
@@ -319,13 +320,13 @@ export function helpPage(publicBaseUrl: string = ""): string {
 <div class="card">
   <h2>使用说明</h2>
   <p class="muted">本服务把上游真实 Key（Tavily / Exa 官方 key）收口在中间层，只向下游分发<strong>纯字符串的分发 key</strong>。<br>
-  调用方用 <code>Authorization: Bearer &lt;provider&gt;-&lt;key&gt;</code> 请求代理端点，<code>&lt;provider&gt;</code> 前缀（tavily / exa）决定这一次请求路由到哪个上游；本服务用后台配置的真实上游 key 代为转发，结果原样透传。</p>
-  <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code> 或 <code>exa-&lt;key&gt;</code>。</p>
+  调用方用 <code>Authorization: Bearer &lt;前缀&gt;-&lt;key&gt;</code> 请求代理端点。前缀同时决定<strong>协议</strong>与<strong>路由</strong>：<code>tavily-</code> / <code>exa-</code> 为原生透传（POST，原样转发上游协议）；<code>searxng-tavily-</code> 为 SearXNG 兼容协议（GET/POST，入参返回值按 SearXNG 标准，后端走 Tavily）。</p>
+  <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code>、<code>exa-&lt;key&gt;</code> 或 <code>searxng-tavily-&lt;key&gt;</code>。</p>
 </div>
 
 <div class="card">
-  <h2>调用示例（两种方式）</h2>
-  <p class="muted">端点：<code>POST ${base}/search</code>　请求体请用对应上游官方的格式（本服务透明转发，不做格式转换）。</p>
+  <h2>调用示例（三种方式）</h2>
+  <p class="muted">原生透传端点：<code>POST ${base}/search</code>（请求体请用对应上游官方的格式）；SearXNG 兼容端点：<code>GET|POST ${base}/search</code>。</p>
 
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：走 Tavily</h3>
 <pre class="code">curl -X POST ${base}/search \\
@@ -339,7 +340,11 @@ export function helpPage(publicBaseUrl: string = ""): string {
   -H "Content-Type: application/json" \\
   -d '{"query":"what is the latest news about AI","numResults":3}'
 </pre>
-  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code> 和 <code>exa-</code> 前缀，按前缀路由到不同上游。列表里的「复制 tavily/exa 调用key」可直接复制完整凭据；「复制 base url / 复制 /search」复制本服务对外地址。</p>
+
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式三：走 SearXNG 兼容接口（GET）</h3>
+<pre class="code">curl -L -X GET "${base}/search?q=what+is+new+in+AI&format=json" \\
+  -H "Authorization: Bearer searxng-tavily-&lt;分发key&gt;"</pre>
+  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 前缀。列表里的「复制 tavily/exa/searxng-tavily 调用key」可直接复制完整凭据；「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
 </div>
 
 <div class="card">
@@ -347,9 +352,10 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <table>
     <thead><tr><th>状态</th><th>含义</th></tr></thead>
     <tbody>
-      <tr><td>2xx</td><td>上游原始响应原样透传（结构由上游决定）</td></tr>
+      <tr><td>2xx</td><td><code>native</code>：上游原始响应原样透传（结构由上游决定）；<code>searxng</code>：转成 SearXNG 标准 JSON</td></tr>
       <tr><td>429</td><td>自动换另一个可用上游 key 重试一次；仍 429 返回上游错误</td></tr>
-      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code> 或 <code>exa-</code>）</td></tr>
+      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code>、<code>exa-</code> 或 <code>searxng-tavily-</code>）</td></tr>
+      <tr><td>400</td><td>（searxng）缺 <code>q</code> 或 <code>format</code> 非 json；<code>native</code> 路径透传上游 400</td></tr>
       <tr><td>503</td><td>该 provider 无可用的上游 key（全部禁用或冷却中）</td></tr>
     </tbody>
   </table>

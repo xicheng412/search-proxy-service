@@ -18,17 +18,19 @@ app.get("/", (c) => {
     name: "tavily-cf-proxy",
     status: "ok",
     providers: ["tavily", "exa"],
+    protocols: ["native", "searxng"],
     endpoints: {
-      search: "POST /search", // Bearer <tavily|exa>-<key>，前缀决定路由
+      search: "GET|POST /search", // native: POST Bearer <tavily|exa>-<key>；searxng: GET|POST Bearer searxng-tavily-<key>
       admin: "/admin",
     },
   });
 });
 
 // ---------- 代理链路 ----------
-// 透明代理：请求端对 /search 的请求，原样改造成 Tavily 官方请求并透传结果。
-// 鉴权方式与 Tavily 官方一致：Authorization: Bearer <key>（此处 key 用后台生成的分发 key）。
-app.post("/search", handleSearch);
+// 透明代理 + searxng 兼容：请求端对 /search 的请求按 token 前缀分派。
+// - native 透传（POST）：Bearer <tavily|exa>-<key>，原样透传上游协议。
+// - searxng 兼容（GET|POST）：Bearer searxng-tavily-<key>，入参/返回值按 SearXNG 标准。
+app.all("/search", handleSearch);
 
 // ---------- 管理员认证 ----------
 app.get("/admin/login", (c) => {

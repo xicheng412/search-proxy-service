@@ -24,11 +24,12 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 
 ## Features
 
-- **Multi-provider, single endpoint.** `POST /search` accepts either `Bearer tavily-…` or `Bearer exa-…`; the prefix decides routing. Add a new provider with a single descriptor file.
+- **Multi-protocol, multi-provider, single endpoint.** `GET|POST /search` accepts `Bearer tavily-…`, `Bearer exa-…`, or the SearXNG-compatible `Bearer searxng-tavily-…`; the prefix decides both the wire protocol and the routing provider. Add a new provider with a single descriptor file.
 - **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Failures trigger exponential backoff cooldown: `60s × 2^consecutive_failures`; success resets consecutive count. Every use gets a 5s post-use cooldown.
-- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. On failure (any non-2xx or network error), switches to another available key. 429 triggers retry but preserves circuit breaker count. Transparent passthrough throughout.
-- **Transparent passthrough.** Request / response bodies flow through untouched; only the `Authorization` header is swapped.
-- **Distributed keys carry no provider binding.** One generated key, two ways to call — `tavily-<key>` for Tavily, `exa-<key>` for Exa. Operators choose at call time.
+- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` retry with post-use cooldown only; other failures / network errors trigger exponential cooldown and switch key.
+- **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped.
+- **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily upstream request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
+- **Distributed keys carry no provider binding.** One generated key, three ways to call — `tavily-<key>` for Tavily, `exa-<key>` for Exa, `searxng-tavily-<key>` for the SearXNG protocol. Operators choose at call time.
 - **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (calls per provider), shown live in the dashboard.
 - **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, dashboard, and a built-in usage help page with copy-able curl snippets. No SPA, no build.
 - **Stateless deploy.** `pnpm install && pnpm dev` to run. Deploy is a single `pnpm run deploy:cf`.
@@ -39,17 +40,20 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
                     ┌──────────────────────────────────────────────┐
 Caller ──────────►  │   /search  (Cloudflare Worker · Hono)         │
                     │                                              │
-  Bearer tavily-…   │  1. parseDistKey  →  provider                │
-  Bearer exa-…      │  2. lookup dist key in KV  →  401 if missing  │
+  Bearer tavily-…   │  1. parseDistKey → protocol (native|searxng)  │
+  Bearer exa-…      │     + provider (tavily|exa)                   │
+  Bearer searxng-…  │  2. lookup dist key in KV → 401 if missing    │
                     │  3. +1 today's call  (in-mem buffered)        │
-                    │  4. pick upstream key  (weighted, excludes     │
-                    │     cooldown/disabled/tried keys)              │
-                    │  5. proxy request  (up to 3 attempts):         │
+                    │  4. searxng? translate  → Tavily request      │
+                    │  5. pick upstream key (weighted, excludes      │
+                    │     cooldown/disabled/tried keys)             │
+                    │  6. proxy request (up to 3 attempts):         │
                     │     • 2xx       →  success + 5s post-use cool │
-                    │     • 429       →  5s cool, switch key, retry  │
-                    │     • 4xx/5xx   →  exponential cool, retry    │
-                    │     • network error → same as 4xx/5xx          │
-                    │  6. all fails  →  pass through last error     │
+                    │     • 429       →  5s cool, switch key, retry │
+                    │     • 400/404/422 → return now, no key burn   │
+                    │     • 401/403   →  switch key, 5s cool only   │
+                    │     • other 4xx/5xx/network → exp. cool, retry│
+                    │  7. native: passthrough / searxng: → JSON     │
                                   │  Bearer <real upstream key>
                                   ▼
                         ┌─────────────────────┐
@@ -94,6 +98,10 @@ curl -X POST http://localhost:8787/search \
   -H "Authorization: Bearer exa-<your-distributed-key>" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is Cloudflare Workers?"}'
+
+# SearXNG-compatible path (GET, standard SearXNG JSON response)
+curl -L -X GET "http://localhost:8787/search?q=Cloudflare+Workers&format=json" \
+  -H "Authorization: Bearer searxng-tavily-<your-distributed-key>"
 ```
 
 ## Deploy to production
@@ -137,7 +145,8 @@ src/
 ├── circuit-breaker.ts   # cooldown: post-use 5s + exponential backoff
 ├── auth.ts              # login / session / CSRF / logout
 ├── config.ts            # PUBLIC_BASE_URL single source of truth
-├── proxy.ts             # auth → select key → retry loop (up to 3x) → passthrough
+├── proxy.ts             # auth → pick protocol path → retry core (up to 3x) → respond
+├── adapters/            # consumer-side protocol ACL (searxng ↔ Tavily translation)
 ├── providers/           # one descriptor per upstream (tavily / exa / index)
 ├── admin/               # /admin/* routes (per-provider files + shared)
 └── views/               # HTMX templates
@@ -164,6 +173,8 @@ Two files, no logic changes:
 2. `src/providers/index.ts` — register it in `PROVIDERS`.
 
 Storage, proxy, admin, and views all consume `PROVIDERS[name]`; there are no per-provider `if` branches in the shared code. See `docs/architecture.md §4.2` for the full walkthrough.
+
+**Protocol adapters are orthogonal to providers.** A new *wire protocol* (like the SearXNG adapter in `src/adapters/`) does not require a new provider entry — it plugs into `searchWithRetry` via its own callbacks and only needs a new composite prefix registered in `domain.ts:parseDistKey` (e.g. `searxng-<provider>-`).
 
 ## License & status
 

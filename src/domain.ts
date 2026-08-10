@@ -3,6 +3,10 @@
 // circuit-breaker.ts（熔断）、proxy.ts（编排）、views（呈现）都只消费这里的词汇。
 
 export type Provider = "tavily" | "exa";
+
+/** 调用侧线协议：native = 原样透传上游协议；searxng = SearXNG 兼容协议（需协议转换）。 */
+export type WireProtocol = "native" | "searxng";
+
 export type KeyStatus = "enabled" | "disabled";
 
 /** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 KV 数组键与 id 前缀。 */
@@ -41,24 +45,36 @@ export interface DistStats {
 }
 
 export interface DistAuth {
+  protocol: WireProtocol;
   provider: Provider;
   apiKey: string;
 }
 
 /**
- * 领域规则（核心）：解析调用凭据 Bearer `<provider>-<key>`。
- * 前缀（tavily|exa，大小写不敏感）决定路由 provider，`-` 之后的部分是查库的 api_key。
- * 生成的分发 key 是纯字符串（hex，不含 `-`），按第一个 `-` 切分无歧义；
+ * 领域规则（核心）：解析调用凭据 Bearer `<protocol?/-><provider>-<key>`。
+ * 复合前缀（大写不敏感）同时决定「线协议」与「路由 provider」：
+ *   tavily-<key>         → protocol=native,  provider=tavily   （原样透传 Tavily）
+ *   exa-<key>            → protocol=native,  provider=exa      （原样透传 Exa）
+ *   searxng-tavily-<key> → protocol=searxng, provider=tavily   （SearXNG 协议，走 Tavily 后端）
+ * 生成的分发 key 是纯字符串（hex，不含 `-`），按最后一个 `-` 切分无歧义；
  * 前缀非法或缺失时返回 null。
  */
 export function parseDistKey(token: string): DistAuth | null {
-  const dash = token.indexOf("-");
-  if (dash <= 0) return null; // 无 `-` 或前缀为空
-  const prefix = token.slice(0, dash).toLowerCase();
-  const apiKey = token.slice(dash + 1);
+  const lastDash = token.lastIndexOf("-");
+  if (lastDash <= 0) return null; // 无 `-` 或前缀为空
+  const prefix = token.slice(0, lastDash).toLowerCase();
+  const apiKey = token.slice(lastDash + 1);
   if (!apiKey) return null;
-  if (prefix !== "tavily" && prefix !== "exa") return null;
-  return { provider: prefix, apiKey };
+  switch (prefix) {
+    case "tavily":
+      return { protocol: "native", provider: "tavily", apiKey };
+    case "exa":
+      return { protocol: "native", provider: "exa", apiKey };
+    case "searxng-tavily":
+      return { protocol: "searxng", provider: "tavily", apiKey };
+    default:
+      return null;
+  }
 }
 
 // ---------------------------------------------------------------
