@@ -41,6 +41,7 @@ import {
   resolveTopic,
   toSearxngResponse,
   searxngError,
+  SearxngParams,
 } from "./adapters/searxng";
 
 /** 单次请求最多尝试的上游 key 数量。 */
@@ -48,6 +49,12 @@ const MAX_ATTEMPTS = 3;
 
 /** 单次上游请求超时（网络无响应视为失败，换 key 重试）。 */
 const UPSTREAM_TIMEOUT_MS = 30_000;
+
+/** 队列 DO 执行所需的最小依赖（替代整颗 Hono Context）。 */
+export interface CoreDeps {
+  kv: KVNamespace;
+  executionCtx: { waitUntil(p: Promise<unknown>): void };
+}
 
 /** 通用重试的结果，交给 onFailure 按协议渲染最终响应。 */
 export type RetryOutcome =
@@ -58,15 +65,8 @@ export type RetryOutcome =
   | { kind: "exhausted"; lastRes: Response | null }; // 重试耗尽（可能全是网络异常，null）
 
 export interface RetryCallbacks {
-  /** 构造发往上游的请求（每次重试复用同一份，只换 key；body 读取只做一次）。 */
-  buildRequest(
-    c: Context<{ Bindings: Env; Variables: AppVariables }>
-  ): Promise<{ path: string; body: string; contentType: string }>;
   /** 2xx 后的协议处理；返回 null 表示"成功但响应不可用"，核内按失败换 key 重试。 */
-  onSuccess(
-    c: Context<{ Bindings: Env; Variables: AppVariables }>,
-    res: Response
-  ): Promise<Response | null>;
+  onSuccess(res: Response): Promise<Response | null>;
   /** 最终失败渲染（含 503/502 语义），按协议决定透传或转换。 */
   onFailure(
     outcome: Exclude<RetryOutcome, { kind: "success" }>
@@ -192,27 +192,26 @@ async function authenticate(
 }
 
 /**
- * 通用重试核：鉴权后由各协议路径共用。
+ * 通用重试核：鉴权后由各协议路径共用。签名与请求方 Context 解耦——只依赖 KV 与
+ * waitUntil，因此队列 DO（无 Hono Context）也能直接调用。
  * - 每次尝试选不同 key；命中"不可重试"分类提前返回，避免浪费配额/流量。
  * - 无 key 配置 / 全部冷却禁用 → 503（经 onFailure 渲染）。
  */
 export async function searchWithRetry(
-  c: Context<{ Bindings: Env; Variables: AppVariables }>,
+  deps: CoreDeps,
   def: ProviderConfig,
   apiKey: string,
+  request: { path: string; body: string; contentType: string },
   cb: RetryCallbacks
 ): Promise<Response> {
-  const store = getUsageStore(c.env.KV);
-  const kv = c.env.KV;
+  const store = getUsageStore(deps.kv);
+  const kv = deps.kv;
 
   // 1. 增加分发 key 当日调用计数（按 provider 拆分，进内存缓冲，尽力而为）
   const date = todayDate();
   store.recordDistCall(apiKey, def.name, date);
   // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
-  store.flushSoon(c.executionCtx);
-
-  // 构造上游请求只做一次（重试间 body 不变，仅换 key）
-  const req = await cb.buildRequest(c);
+  store.flushSoon(deps.executionCtx);
 
   // 2. 选出该 provider 的上游 key；未配置任何 key -> 503
   const keys = await listUpstreamKeys(kv, def.upstream);
@@ -248,7 +247,7 @@ export async function searchWithRetry(
     // 发起上游请求（fetch 可能抛出网络异常/超时）
     let res: Response;
     try {
-      res = await proxyToUpstream(def, req.path, key.key, req.body, req.contentType);
+      res = await proxyToUpstream(def, request.path, key.key, request.body, request.contentType);
     } catch {
       // 网络异常/超时：视为失败，换 key 重试
       store.recordUpstreamResult(key.id, "fail", date);
@@ -258,7 +257,7 @@ export async function searchWithRetry(
 
     // 2xx 成功 → 交给 onSuccess；返回 null 表示响应不可用，按失败换 key
     if (res.ok) {
-      const out = await cb.onSuccess(c, res);
+      const out = await cb.onSuccess(res);
       if (out) {
         store.recordUpstreamResult(key.id, "success", date);
         await recordUpstreamSuccess(kv, def.upstream, key.id, now).catch(() => {});
@@ -299,43 +298,126 @@ export async function searchWithRetry(
   return cb.onFailure({ kind: "exhausted", lastRes });
 }
 
-/**
- * native 路径：原样透传。与旧 handleProviderProxy 行为一致，仅 400/404/422 不再烧 key。
- */
-export async function handleProviderProxy(
+// ---------------------------------------------------------------
+// 队列任务：主 Worker 鉴权后把"一次相对上游的请求"打成可序列化任务，转发给
+// 所属 provider 的队列 DO；DO 串行放行（intervalMs 间隔），调用下方执行器跑完整
+// 重试/冷却/统计。native 与 searxng 各一个执行器，供 DO 引用（不依赖 Hono Context）。
+// ---------------------------------------------------------------
+export interface NativeTask {
+  kind: "native";
+  path: string;
+  body: string;
+  contentType: string;
+}
+export interface SearxngTask {
+  kind: "searxng";
+  query: string;
+  topic?: "news" | "general";
+  body: string;
+  contentType: string;
+}
+export type QueueTask = NativeTask | SearxngTask;
+
+/** native 执行器（透传）：构建 passthrough 回调，交给通用重试核。 */
+export async function runNativeTask(
+  deps: CoreDeps,
+  def: ProviderConfig,
+  apiKey: string,
+  task: NativeTask
+): Promise<Response> {
+  return searchWithRetry(
+    deps,
+    def,
+    apiKey,
+    { path: task.path, body: task.body, contentType: task.contentType },
+    {
+      onSuccess: async (_res) => passthrough(_res),
+      onFailure: async (outcome) => {
+        if (outcome.lastRes) return passthrough(outcome.lastRes);
+        if (outcome.kind === "no-keys") {
+          return def.errorBody(503, `No ${def.name} upstream keys configured.`);
+        }
+        if (outcome.kind === "exhausted") {
+          // 全部网络异常、无任何响应可得 → 502（与原实现及文档 §6.3 一致）
+          return def.errorBody(
+            502,
+            `All upstream ${def.name} keys failed after retries.`
+          );
+        }
+        return def.errorBody(
+          503,
+          `All upstream ${def.name} keys are temporarily unavailable (disabled or in cooldown).`
+        );
+      },
+    }
+  );
+}
+
+/** searxng 执行器（转换）：构建 searxng 转换回调，交给通用重试核。 */
+export async function runSearxngTask(
+  deps: CoreDeps,
+  def: ProviderConfig,
+  apiKey: string,
+  task: SearxngTask
+): Promise<Response> {
+  return searchWithRetry(
+    deps,
+    def,
+    apiKey,
+    { path: def.endpoints.search, body: task.body, contentType: task.contentType },
+    {
+      onSuccess: async (res) => {
+        try {
+          const raw = await res.json();
+          const converted = toSearxngResponse(raw, task.query, task.topic);
+          return new Response(JSON.stringify(converted), {
+            status: res.status,
+            headers: { "content-type": "application/json" },
+          });
+        } catch {
+          // 2xx 但 JSON 解析/转换失败：响应不可用，换 key 重试
+          return null;
+        }
+      },
+      onFailure: async (outcome) => {
+        // 2xx 但内容不可用（如解析失败）时 lastRes 是 200 —— 视为上游故障，不返回 200+error
+        if (outcome.lastRes && !outcome.lastRes.ok) {
+          return searxngError(
+            outcome.lastRes.status,
+            `search failed (${outcome.lastRes.status})`
+          );
+        }
+        const msg =
+          outcome.kind === "no-keys"
+            ? "search backend has no upstream keys configured"
+            : outcome.kind === "exhausted"
+              ? "search upstream unreachable"
+              : "search backend temporarily unavailable";
+        const status = outcome.kind === "exhausted" ? 502 : 503;
+        return searxngError(status, msg);
+      },
+    }
+  );
+}
+
+/** 把任务转发给所属 provider 的队列 DO，返回 DO 最终响应（持连接等待其时间片）。 */
+async function forwardToQueue(
   c: Context<{ Bindings: Env; Variables: AppVariables }>,
   def: ProviderConfig,
-  path: string,
-  apiKey: string
+  apiKey: string,
+  task: QueueTask
 ): Promise<Response> {
-  return searchWithRetry(c, def, apiKey, {
-    buildRequest: async () => ({
-      path,
-      body: await c.req.text(),
-      contentType: c.req.header("content-type") ?? "application/json",
-    }),
-    onSuccess: async (_c, res) => passthrough(res),
-    onFailure: async (outcome) => {
-      if (outcome.lastRes) return passthrough(outcome.lastRes);
-      if (outcome.kind === "no-keys") {
-        return def.errorBody(503, `No ${def.name} upstream keys configured.`);
-      }
-      if (outcome.kind === "exhausted") {
-        // 全部网络异常、无任何响应可得 → 502（与原实现及文档 §6.3 一致）
-        return def.errorBody(
-          502,
-          `All upstream ${def.name} keys failed after retries.`
-        );
-      }
-      return def.errorBody(
-        503,
-        `All upstream ${def.name} keys are temporarily unavailable (disabled or in cooldown).`
-      );
-    },
+  const id = c.env.QUEUE.idFromName(def.name);
+  const stub = c.env.QUEUE.get(id);
+  return stub.fetch("https://queue.internal/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: def.name, apiKey, task }),
+    signal: c.req.raw.signal,
   });
 }
 
-/** 把 searxng 请求参数归一化成 kv（GET → query string；POST → 表单/JSON 字段）。 */
+/** 把搜索请求参数归一化成 kv（GET → query string；POST → 表单/JSON 字段）。 */
 async function collectSearxngParams(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
 ): Promise<Record<string, string>> {
@@ -354,77 +436,7 @@ async function collectSearxngParams(
   return kv;
 }
 
-/**
- * searxng 路径：SearXNG 协议 → Tavily 请求 → Tavily 后端（走通用重试核）→ 转回 SearXNG JSON。
- * 统计仍按 provider（tavily）记，searxng 仅作为"换皮协议"。
- */
-export async function handleSearxng(
-  c: Context<{ Bindings: Env; Variables: AppVariables }>,
-  def: ProviderConfig,
-  apiKey: string
-): Promise<Response> {
-  const params = await collectSearxngParams(c);
-  const { params: parsed, error } = parseSearxngParams(params);
-  if (error) {
-    // 参数错误也记一次调用（口径：分发 key 调用次数，而非成功次数）
-    const store = getUsageStore(c.env.KV);
-    store.recordDistCall(apiKey, def.name, todayDate());
-    store.flushSoon(c.executionCtx);
-    return searxngError(error.status, error.message);
-  }
-  if (!parsed) {
-    return searxngError(400, "invalid search parameters");
-  }
-  // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
-  if (parsed.pageno && parsed.pageno > 1) {
-    const store = getUsageStore(c.env.KV);
-    store.recordDistCall(apiKey, def.name, todayDate());
-    store.flushSoon(c.executionCtx);
-    const empty = toSearxngResponse({ results: [] }, parsed.query, resolveTopic(parsed) ?? undefined);
-    return new Response(JSON.stringify(empty), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }
-  const body = buildTavilyBody(parsed);
-
-  return searchWithRetry(c, def, apiKey, {
-    buildRequest: async () => ({
-      path: def.endpoints.search,
-      body: JSON.stringify(body),
-      contentType: "application/json",
-    }),
-    onSuccess: async (_c, res) => {
-      try {
-        const raw = await res.json();
-        const converted = toSearxngResponse(raw, parsed.query, resolveTopic(parsed) ?? undefined);
-        return new Response(JSON.stringify(converted), {
-          status: res.status,
-          headers: { "content-type": "application/json" },
-        });
-      } catch {
-        // 2xx 但 JSON 解析/转换失败：响应不可用，换 key 重试
-        return null;
-      }
-    },
-    onFailure: async (outcome) => {
-      // 2xx 但内容不可用（如解析失败）时 lastRes 是 200 —— 视为上游故障，不返回 200+error
-      if (outcome.lastRes && !outcome.lastRes.ok) {
-        return searxngError(outcome.lastRes.status, `search failed (${outcome.lastRes.status})`);
-      }
-      const msg =
-        outcome.kind === "no-keys"
-          ? "search backend has no upstream keys configured"
-          : outcome.kind === "exhausted"
-            ? "search upstream unreachable"
-            : "search backend temporarily unavailable";
-      const status = outcome.kind === "exhausted" ? 502 : 503;
-      return searxngError(status, msg);
-    },
-  });
-}
-
-/** /search 入口：鉴权分发 key，按前缀协议分派到 native 透传或 searxng 转换路径。 */
+/** /search 入口：鉴权分发 key，把任务打成可序列化载荷转发给队列 DO。 */
 export async function handleSearch(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
 ): Promise<Response> {
@@ -439,15 +451,54 @@ export async function handleSearch(
     const authRes = await authenticate(c);
     if (!authRes) return c.res; // 错误响应已在 authenticate 写入
     const def = PROVIDERS[authRes.provider];
+    const apiKey = authRes.distKey.api_key;
+
     if (authRes.protocol === "searxng") {
-      return await handleSearxng(c, def, authRes.distKey.api_key);
+      const params = await collectSearxngParams(c);
+      const { params: parsed, error } = parseSearxngParams(params);
+      if (error) {
+        // 参数错误也记一次调用（口径：分发 key 调用次数，而非成功次数）
+        const store = getUsageStore(c.env.KV);
+        store.recordDistCall(apiKey, def.name, todayDate());
+        store.flushSoon(c.executionCtx);
+        return searxngError(error.status, error.message);
+      }
+      if (!parsed) {
+        return searxngError(400, "invalid search parameters");
+      }
+      // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
+      if (parsed.pageno && parsed.pageno > 1) {
+        const store = getUsageStore(c.env.KV);
+        store.recordDistCall(apiKey, def.name, todayDate());
+        store.flushSoon(c.executionCtx);
+        const empty = toSearxngResponse(
+          { results: [] },
+          parsed.query,
+          resolveTopic(parsed) ?? undefined
+        );
+        return new Response(JSON.stringify(empty), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const task: SearxngTask = {
+        kind: "searxng",
+        query: parsed.query,
+        topic: resolveTopic(parsed) ?? undefined,
+        body: JSON.stringify(buildTavilyBody(parsed)),
+        contentType: "application/json",
+      };
+      return await forwardToQueue(c, def, apiKey, task);
     }
-    return await handleProviderProxy(
-      c,
-      def,
-      def.endpoints.search,
-      authRes.distKey.api_key
-    );
+
+    // native 路径：读一次 body 固定，转发给队列 DO
+    const task: NativeTask = {
+      kind: "native",
+      path: def.endpoints.search,
+      body: await c.req.text(),
+      contentType: c.req.header("content-type") ?? "application/json",
+    };
+    return await forwardToQueue(c, def, apiKey, task);
   } catch (err) {
     // 代理不应裸抛 500；转为带错误信息的响应便于定位（也避免泄露堆栈给客户端）
     const msg = err instanceof Error ? err.message : String(err);

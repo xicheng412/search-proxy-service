@@ -174,6 +174,9 @@ export interface DashboardData {
   distEnabled: number;
   todayCalls: number;
   today: string;
+  queueIntervalMs: number;
+  queueMaxDepth: number;
+  csrf: string;
 }
 
 export function adminPage(data: DashboardData): string {
@@ -202,6 +205,18 @@ export function adminPage(data: DashboardData): string {
     <div class="stat-num">${data.todayCalls}</div>
     <div class="muted">统计日：${esc(data.today)}</div>
   </div>
+</section>
+<section class="card">
+  <h2>上游请求队列 · 参数</h2>
+  <p class="hint" style="margin:0 0 12px;">突发请求会被串行放行到上游（Tavily / Exa 各自独立队列）：每个任务处理完隔 <strong>intervalMs</strong> 再放下一个；等待中达到 <strong>maxDepth</strong> 时新请求返回 429。改这里即生效（≤3s 内），无需重新部署。想在放开频率时调大数值即可。</p>
+  <form method="post" action="/admin/queue-config" class="row">
+    ${csrfField(data.csrf)}
+    <label class="muted">间隔 (ms)</label>
+    <input type="number" name="intervalMs" min="100" value="${data.queueIntervalMs}" required style="max-width:140px;">
+    <label class="muted">最大等待数</label>
+    <input type="number" name="maxDepth" min="1" value="${data.queueMaxDepth}" required style="max-width:140px;">
+    <button type="submit">保存</button>
+  </form>
 </section>`;
   return layout("总览 · Tavily Proxy", body, { active: "dashboard" });
 }

@@ -9,6 +9,16 @@ compatibility_date = "2024-11-01"
 binding = "KV"
 id = "ff56ea82daa846538fdf11e6bff662eb"
 
+# 每 provider 一把队列 Durable Object（idFromName(provider) = "tavily"|"exa"）。
+# 串行放行上游请求（intervalMs 间隔 + maxDepth 拒入），参数运行时经 KV `queue_config` 调整。
+[[durable_objects.bindings]]
+name = "QUEUE"
+class_name = "QueueDO"
+
+[[migrations]]
+tag = "v1-queue"
+new_sqlite_classes = ["QueueDO"]
+
 # 对外 API 地址 PUBLIC_BASE_URL 是普通变量（非 secret）：生产经 scripts/deploy.sh 从
 # gitignored 的 config/prod.env 以 `--var PUBLIC_BASE_URL:https://…` 注入（注意 --var 用冒号分隔）；
 # 本地开发在 .dev.vars 覆盖。唯一取值见 src/config.ts。

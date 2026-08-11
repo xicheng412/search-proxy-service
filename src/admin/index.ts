@@ -2,13 +2,14 @@
 
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
-import { getSession } from "../auth";
+import { getSession, getCsrfToken, validateCsrf } from "../auth";
 import { todayDate } from "../domain";
 import { listDistributedKeys, listUpstreamKeys } from "../storage";
 import { getUsageStore } from "../usage-store";
 import { resolvePublicBaseUrl } from "../config";
+import { readQueueConfig, writeQueueConfig } from "../queue-config";
 import { EXA, TAVILY } from "../providers";
-import { adminPage, helpPage } from "../views";
+import { adminPage, errorFragment, helpPage } from "../views";
 import { exaAdmin } from "./exa";
 import { keysAdmin } from "./keys";
 import { tavilyAdmin } from "./tavily";
@@ -71,8 +72,30 @@ admin.get("/", async (c) => {
       distEnabled: dkeys.filter((k) => k.status === "enabled").length,
       todayCalls,
       today,
+      queueIntervalMs: (await readQueueConfig(kv)).intervalMs,
+      queueMaxDepth: (await readQueueConfig(kv)).maxDepth,
+      csrf: (await getCsrfToken(c)) ?? "",
     })
   );
+});
+
+// 更新上游请求队列参数（CSRF 校验 + 数值校验；写 KV，DO 侧 TTL 缓存 ≤3s 生效）
+admin.post("/queue-config", async (c) => {
+  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
+  const body = await c.req.parseBody();
+  const intervalMs = Number(body["intervalMs"]);
+  const maxDepth = Number(body["maxDepth"]);
+  if (!Number.isFinite(intervalMs) || intervalMs < 100) {
+    return c.html(errorFragment("间隔至少 100ms"), 400);
+  }
+  if (!Number.isFinite(maxDepth) || maxDepth < 1) {
+    return c.html(errorFragment("最大等待数至少为 1"), 400);
+  }
+  await writeQueueConfig(c.env.KV, {
+    intervalMs: Math.round(intervalMs),
+    maxDepth: Math.floor(maxDepth),
+  });
+  return c.redirect("/admin", 303);
 });
 
 admin.route("/tavily", tavilyAdmin);

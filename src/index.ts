@@ -7,6 +7,7 @@ import { loginPage } from "./views";
 import { handleSearch } from "./proxy";
 
 export type { Env } from "./types";
+export { QueueDO } from "./queue";
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
