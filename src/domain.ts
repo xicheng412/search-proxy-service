@@ -101,10 +101,17 @@ export function newDistApiKey(): string {
   return randomToken(24);
 }
 
-/** 脱敏：只保留前 7 位 + ****，如 tvly-**** */
+/**
+ * 脱敏：保留可识别前缀 + 尾部若干字符，用 .... 省略中间。
+ * 带前缀（含 `-`）的 key 保留前缀至首个 `-` 含 `-`，如 tvly-....abcdef；
+ * 无前缀（exa/dist 等纯随机）保留前 4 位 + 尾 6 位，如 a1b2....cdef0a。
+ * 尾部字符用于区分同前缀的多个 key。
+ */
 export function maskKey(key: string): string {
-  if (key.length <= 7) return "****";
-  return key.slice(0, 7) + "****";
+  if (key.length <= 12) return "****";
+  const dash = key.indexOf("-");
+  const prefix = dash >= 0 ? key.slice(0, dash + 1) : key.slice(0, 4);
+  return `${prefix}....${key.slice(-6)}`;
 }
 
 /**
