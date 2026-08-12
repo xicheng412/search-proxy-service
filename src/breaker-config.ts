@@ -21,7 +21,7 @@ export const DEFAULT_BREAKER_CONFIG: BreakerConfig = {
 const CONFIG_KEY = "breaker_config";
 const CACHE_TTL_MS = 3000;
 
-/** 从 KV 读取配置；未写/损坏时回退默认值。只校验数值有限且为正。 */
+/** 从 KV 读取配置；未写/损坏时回退默认值。postUse 允许 0（= 关闭每次冷却），其余只校验有限且为正。 */
 export async function readBreakerConfig(kv: KVNamespace): Promise<BreakerConfig> {
   let raw: unknown = null;
   try {
@@ -39,7 +39,7 @@ export async function readBreakerConfig(kv: KVNamespace): Promise<BreakerConfig>
     typeof o.invalidCooldownMs === "number" ? o.invalidCooldownMs : Number.NaN;
   return {
     postUseCooldownMs:
-      Number.isFinite(postUseCooldownMs) && postUseCooldownMs > 0
+      Number.isFinite(postUseCooldownMs) && postUseCooldownMs >= 0
         ? Math.round(postUseCooldownMs)
         : DEFAULT_BREAKER_CONFIG.postUseCooldownMs,
     breakerBaseMs:

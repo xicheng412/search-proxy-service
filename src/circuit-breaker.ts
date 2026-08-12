@@ -1,7 +1,7 @@
 // 基础设施层·熔断冷却策略。
 // 三层冷却共用一个 cooldown_until 字段，写入时取较大值：
-//   1. Post-use 冷却：每次使用后（无论成败）固定时长（默认 5s，可调）
-//   2. 熔断冷却：每次非429失败后，指数退避 = base × 2^连续失败次数（base 默认 60s，可调）
+//   1. Post-use 冷却：每次使用后（无论成败）固定时长（默认 10s，可调）
+//   2. 熔断冷却：每次非429失败后，指数退避 = base × 2^连续失败次数（base 默认 10min，可调）
 //   3. 疑似失效冷却：每次 401/403 后固定 invalidCooldownMs（默认 12h，可调），不碰连续失败计数
 // 成功时连续失败归零，冷却仅保留 post-use 时长。
 // 读写失败均静默：它是保险机制，不阻塞主流程。
@@ -72,8 +72,8 @@ export async function recordUpstreamRateLimit(
 }
 
 /**
- * 401/403 疑似失效：固定 invalidCooldownMs（默认 12h）长冷却，不碰连续失败计数。
- * 到点后重试一次；若成功由 recordUpstreamSuccess 自动回缩并归零。
+ * 401/403 疑似失效：固定 invalidCooldownMs（默认 12h）长冷却，不碰连续失败计数；
+ * 以 post-use 为地板（较长者胜）。到点后重试一次；若成功由 recordUpstreamSuccess 自动回缩并归零。
  */
 export async function recordUpstreamInvalid(
   kv: KVNamespace,
@@ -81,6 +81,7 @@ export async function recordUpstreamInvalid(
   id: string,
   now: number = Date.now()
 ): Promise<void> {
-  const { invalidCooldownMs } = await config.get(kv);
-  await setUpstreamCooldown(kv, def, id, now + invalidCooldownMs).catch(() => {});
+  const { postUseCooldownMs, invalidCooldownMs } = await config.get(kv);
+  const until = now + Math.max(postUseCooldownMs, invalidCooldownMs);
+  await setUpstreamCooldown(kv, def, id, until).catch(() => {});
 }
