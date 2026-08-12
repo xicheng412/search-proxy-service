@@ -25,8 +25,8 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 ## Features
 
 - **Multi-protocol, multi-provider, single endpoint.** `GET|POST /search` accepts `Bearer tavily-…`, `Bearer exa-…`, or the SearXNG-compatible `Bearer searxng-tavily-…`; the prefix decides both the wire protocol and the routing provider. Add a new provider with a single descriptor file.
-- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Failures trigger exponential backoff cooldown: `60s × 2^consecutive_failures`; success resets consecutive count. Every use gets a 5s post-use cooldown.
-- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` retry with post-use cooldown only; other failures / network errors trigger exponential cooldown and switch key.
+- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed.
+- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` park the key with a 12h suspected-invalid cooldown then switch; other failures / network errors trigger exponential cooldown and switch key.
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped.
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily upstream request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
 - **Distributed keys carry no provider binding.** One generated key, three ways to call — `tavily-<key>` for Tavily, `exa-<key>` for Exa, `searxng-tavily-<key>` for the SearXNG protocol. Operators choose at call time.
@@ -48,10 +48,10 @@ Caller ──────────►  │   /search  (Cloudflare Worker · H
                     │  5. pick upstream key (weighted, excludes      │
                     │     cooldown/disabled/tried keys)             │
                     │  6. proxy request (up to 3 attempts):         │
-                    │     • 2xx       →  success + 5s post-use cool │
-                    │     • 429       →  5s cool, switch key, retry │
+                    │     • 2xx      →  success + 10s post-use cool │
+                    │     • 429      →  10s cool, switch key, retry │
                     │     • 400/404/422 → return now, no key burn   │
-                    │     • 401/403   →  switch key, 5s cool only   │
+                    │     • 401/403   →  park key 12h, switch, retry│
                     │     • other 4xx/5xx/network → exp. cool, retry│
                     │  7. native: passthrough / searxng: → JSON     │
                                   │  Bearer <real upstream key>
@@ -142,7 +142,8 @@ src/
 ├── domain.ts            # pure domain: types, parseDistKey, value semantics
 ├── storage.ts           # KV primitives + generic Keys CRUD
 ├── usage-store.ts       # per-day stats (write-back, in-memory buffering)
-├── circuit-breaker.ts   # cooldown: post-use 5s + exponential backoff
+├── circuit-breaker.ts   # cooldown: post-use + breaker + invalid (params runtime from KV)
+├── breaker-config.ts    # runtime cooldown params (KV breaker_config, admin-adjustable)
 ├── auth.ts              # login / session / CSRF / logout
 ├── config.ts            # PUBLIC_BASE_URL single source of truth
 ├── proxy.ts             # auth → pick protocol path → retry core (up to 3x) → respond

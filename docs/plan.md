@@ -19,7 +19,7 @@
 | "明文 key 只显示一次 / 二次密码重新查看明文" | **未实现**。明文按需注入列表行内供一键复制（"复制 tavily / exa 调用 key" 按钮） | `src/admin/keys.ts`, `src/views/` |
 | `DistributedKey` 含 `plain_viewed` 字段 | **未实现**。当前字段：`api_key / note / status / created_at` | `src/domain.ts` |
 | KV 统计"单次 PUT 合并 success/fail" | 用 `usage-store.ts` 写回式：内存累积 + 节流 flush + 读叠加 | `src/usage-store.ts` |
-| 熔断"连续失败 ≥ 5 次冷却 60 秒" | **已升级**：指数退避冷却 = 60s × 2^consecutive + post-use 5s，定义在 `src/domain.ts`（`POST_USE_COOLDOWN_MS=5s`, `BREAKER_BASE_MS=60s`） | `src/domain.ts`, `src/circuit-breaker.ts` |
+|||| 熔断"连续失败 ≥ 5 次冷却 60 秒" | **已升级**：三层冷却（post-use / 指数退避 / 401-403 疑似失效），默认 `base=10min`,`post-use=10s`,`invalid=12h`，存 KV `breaker_config` 可在 admin dashboard"冷却参数"卡片调整 | `src/breaker-config.ts`, `src/circuit-breaker.ts` |
 | 单一入口 `POST /search` 代理 Tavily | 同一入口按 Bearer 前缀路由到 Tavily 或 Exa | `src/proxy.ts` |
 | 错误体按 Tavily 格式 | 按 provider 区分：Tavily `{detail:{error}}`，Exa `{error}` | `src/providers/` |
 | 管理员认证："HttpOnly + SameSite=Lax + 24h + CSRF" | **已实现**，外加 `secure: true`；CSRF 用恒定时间比较 | `src/auth.ts` |
@@ -79,10 +79,10 @@
 - **请求派发策略**：
   1. 只从 `status=enabled` 且 `cooldown_until <= now` 中选取。
   2. 加权随机：权重 `1 / (当日失败数 + 1)`，0 失败最高。
-  3. 失败 → 指数退避冷却：60s × 2^consecutive（首次 2min，成功即归零）；每次使用后 5s post-use 冷却。
+  3. 失败 → 指数退避冷却：10min × 2^consecutive（首次 20min，成功即归零）；每次使用后 10s post-use 冷却。
 - **每日统计**：成功 / 失败（best-effort 近似值）。
 
-> **实施状态**：✅ 全部实现并已升级为指数退避 + post-use 双重冷却，参数定义在 [`src/domain.ts`](../src/domain.ts) `POST_USE_COOLDOWN_MS` / `BREAKER_BASE_MS`。
+> **实施状态**：✅ 全部实现并已升级为三层冷却（post-use / 指数退避 / 401-403 疑似失效），参数默认 `POST_USE=10s` / `BASE=10min` / `INVALID=12h`，存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（见 [`src/breaker-config.ts`](../src/breaker-config.ts)）。
 > **扩展**：同样的"多 key + 加权 + 熔断 + 当日统计"模式被对称地复刻到 Exa，由 `src/providers/exa.ts` 描述符驱动。
 
 ### 4.3 分发 Key 管理

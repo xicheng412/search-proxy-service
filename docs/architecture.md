@@ -123,7 +123,7 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 │ usage-   │ │ circuit-breaker │ │ adapters/searxng.ts        │
 │ store.ts │ │ .ts             │ │  (消费方 ACL)              │
 │ (日用量  │ │ (连续失败计数   │ │  searxng→Tavily 请求转换 +  │
-│  缓冲)  │ │  → 冷却 60s)   │ │  Tavily 响应→searxng JSON │
+│  缓冲)  │ │  → 冷却 10min) │ │  Tavily 响应→searxng JSON │
 └─────────┘ └─────────────────┘ └──────────┬───────────────────┘
          ↑                                │
 ┌────────┴─────────────────────────────────┴───────────────────┐
@@ -149,7 +149,7 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 | `domain.ts` | 词汇 + 规则 + 纯函数 | 不 import 任何仓库模块；不读 KV |
 | `storage.ts` | KV 读写 + Keys CRUD | 不做节流/不吞错/不写策略 |
 | `usage-store.ts` | 内存累积 + 节流 flush + 读叠加 | 不改 domain 规则；不直接被 admin 写 |
-| `circuit-breaker.ts` | 连续失败计数 → 冷却 | 不感知 provider；失败静默 |
+| `circuit-breaker.ts` | 连续失败计数 → 冷却（读 KV `breaker_config` 运行时参数） | 不感知 provider；失败静默 |
 | `providers/` | 一个 provider 的全部事实（base、endpoints、KV 键、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV |
 | `proxy.ts` | 鉴权 + 选 key + 通用重试核 + native/searxng 协议路径 | 不读视图模板 |
@@ -219,13 +219,15 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
 
 无可用 → `503`，错误体用该 provider 自己的格式。
 
-### 6.2 冷却（双重）
+### 6.2 冷却（三层，共用一个字段）
 
-- **Post-use 冷却**：每次使用后（无论成败）自动设置 5s 冷却，防止同一 key 被连续请求打穿。
-- **熔断冷却**：非429失败 → 连续失败 +1，指数退避冷却 = max(5s, 60s × 2^consecutive)。
-- 成功 → 连续失败归零，仅保留 5s post-use 冷却。
-- 429 → 仅 post-use 5s 冷却，不碰连续失败计数。
+- **Post-use 冷却**：每次使用后（无论成败）自动设置冷却（默认 10s），防止同一 key 被连续请求打穿。
+- **熔断冷却**：非429失败 → 连续失败 +1，指数退避冷却 = max(post-use, base × 2^consecutive)，base 默认 10min。
+- **疑似失效冷却**：401/403（key 级鉴权错误）→ 固定 invalidCooldownMs（默认 12h），不碰连续失败计数；到点重试一次，成功由 post-use 自动回缩。
+- 成功 → 连续失败归零，仅保留 post-use 冷却。
+- 429 → 仅 post-use 冷却，不碰连续失败计数。
 - breaker 计数本身有 10 分钟 TTL——10 分钟内无新失败则视为"该 key 已恢复"。
+- **post-use / base / invalid 三个时长存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（≤3s 生效），无需重新部署**（见 `src/breaker-config.ts`）。
 
 ### 6.3 自动重试（`searchWithRetry` 核）
 
@@ -235,7 +237,7 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
   - `2xx` → 协议处理（native 透传 / searxng 转 JSON）；searxng 解析失败视为失败换 key。
   - `429` → 仅 post-use 冷却，换 key 重试（不计熔断）。
   - `400/404/422` → 客户端确定性错误：立即返回，**不重试、不记失败、不烧 key**。
-  - `401/403` → 记统计失败（权重惩罚）+ 仅 post-use 冷却（不熔断），换 key。
+  - `401/403` → 记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调，不熔断），换 key。
   - 其他 `4xx`/`5xx` → 记录失败 + 指数退避冷却，换 key。
 - 每个失败 key 在重试过程中实时更新冷却，已冷却/禁用的 key 自动从候选池过滤。
 - 未配置任何上游 key / 全部冷却或禁用 → `503`（3xx 用 provider 错误体，searxng 用 `{error}`）。

@@ -12,7 +12,7 @@
 //   - 2xx        → 调用 onSuccess；返回 null 视为"成功但响应不可用"，按失败换 key 重试
 //   - 429        → 换 key 重试，仅 post-use 冷却，不计熔断
 //   - 400/404/422→ 客户端确定性错误：立即返回该响应，不重试、不记失败、不烧 key
-//   - 401/403    → key 级错误：记统计失败（权重惩罚）+ 仅 post-use 冷却（不熔断），换 key
+//   - 401/403    → key 级错误：记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调），换 key
 //   - 其余/网络  → 记录失败 + 指数退避冷却，换 key 重试
 //   候选池耗尽或达到上限 → onFailure（透传最后一个错误响应，或 503/502）
 
@@ -34,6 +34,7 @@ import {
   recordUpstreamFailure,
   recordUpstreamSuccess,
   recordUpstreamRateLimit,
+  recordUpstreamInvalid,
 } from "./circuit-breaker";
 import {
   parseSearxngParams,
@@ -282,10 +283,10 @@ export async function searchWithRetry(
       return cb.onFailure({ kind: "client-error", lastRes: res });
     }
 
-    // 401/403 key 级错误 → 记统计失败（权重惩罚）+ 仅 post-use 冷却（不熔断），换 key
+    // 401/403 key 级错误 → 记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h），换 key
     if (res.status === 401 || res.status === 403) {
       store.recordUpstreamResult(key.id, "fail", date);
-      await recordUpstreamRateLimit(kv, def.upstream, key.id, now).catch(() => {});
+      await recordUpstreamInvalid(kv, def.upstream, key.id, now).catch(() => {});
       continue;
     }
 

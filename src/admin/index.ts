@@ -8,6 +8,7 @@ import { listDistributedKeys, listUpstreamKeys } from "../storage";
 import { getUsageStore } from "../usage-store";
 import { resolvePublicBaseUrl } from "../config";
 import { readQueueConfig, writeQueueConfig } from "../queue-config";
+import { readBreakerConfig, writeBreakerConfig } from "../breaker-config";
 import { EXA, TAVILY } from "../providers";
 import { adminPage, errorFragment, helpPage } from "../views";
 import { exaAdmin } from "./exa";
@@ -74,6 +75,9 @@ admin.get("/", async (c) => {
       today,
       queueIntervalMs: (await readQueueConfig(kv)).intervalMs,
       queueMaxDepth: (await readQueueConfig(kv)).maxDepth,
+      postUseCooldownMs: (await readBreakerConfig(kv)).postUseCooldownMs,
+      breakerBaseMs: (await readBreakerConfig(kv)).breakerBaseMs,
+      invalidCooldownMs: (await readBreakerConfig(kv)).invalidCooldownMs,
       csrf: (await getCsrfToken(c)) ?? "",
     })
   );
@@ -94,6 +98,30 @@ admin.post("/queue-config", async (c) => {
   await writeQueueConfig(c.env.KV, {
     intervalMs: Math.round(intervalMs),
     maxDepth: Math.floor(maxDepth),
+  });
+  return c.redirect("/admin", 303);
+});
+
+// 更新熔断/冷却参数（CSRF 校验 + 数值校验；写 KV，circuit-breaker 侧 TTL 缓存 ≤3s 生效）
+admin.post("/breaker-config", async (c) => {
+  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
+  const body = await c.req.parseBody();
+  const postUseCooldownMs = Number(body["postUseCooldownMs"]);
+  const breakerBaseMs = Number(body["breakerBaseMs"]);
+  const invalidCooldownMs = Number(body["invalidCooldownMs"]);
+  if (!Number.isFinite(postUseCooldownMs) || postUseCooldownMs < 0) {
+    return c.html(errorFragment("冷却时长至少为 0ms"), 400);
+  }
+  if (!Number.isFinite(breakerBaseMs) || breakerBaseMs < 1000) {
+    return c.html(errorFragment("熔断基数至少 1000ms"), 400);
+  }
+  if (!Number.isFinite(invalidCooldownMs) || invalidCooldownMs < 1000) {
+    return c.html(errorFragment("疑似失效冷却至少 1000ms"), 400);
+  }
+  await writeBreakerConfig(c.env.KV, {
+    postUseCooldownMs: Math.round(postUseCooldownMs),
+    breakerBaseMs: Math.round(breakerBaseMs),
+    invalidCooldownMs: Math.round(invalidCooldownMs),
   });
   return c.redirect("/admin", 303);
 });

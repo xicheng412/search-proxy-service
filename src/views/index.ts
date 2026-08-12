@@ -176,6 +176,9 @@ export interface DashboardData {
   today: string;
   queueIntervalMs: number;
   queueMaxDepth: number;
+  postUseCooldownMs: number;
+  breakerBaseMs: number;
+  invalidCooldownMs: number;
   csrf: string;
 }
 
@@ -215,6 +218,20 @@ export function adminPage(data: DashboardData): string {
     <input type="number" name="intervalMs" min="100" value="${data.queueIntervalMs}" required style="max-width:140px;">
     <label class="muted">最大等待数</label>
     <input type="number" name="maxDepth" min="1" value="${data.queueMaxDepth}" required style="max-width:140px;">
+    <button type="submit">保存</button>
+  </form>
+</section>
+<section class="card">
+  <h2>冷却参数</h2>
+  <p class="hint" style="margin:0 0 12px;"><strong>post-use</strong> 每次使用后（无论成败）的固定冷却；<strong>熔断</strong> 每次非 429 失败后指数退避 <code>base × 2^连续失败次数</code>；<strong>疑似失效</strong> 每次 401/403（key 级鉴权错误）后固定冷却，到点重试一次，成功自动恢复。三者在同一把 key 上取较久者生效。改这里即生效（≤3s 内），无需重新部署。</p>
+  <form method="post" action="/admin/breaker-config" class="row">
+    ${csrfField(data.csrf)}
+    <label class="muted">每次使用冷却 (ms)</label>
+    <input type="number" name="postUseCooldownMs" min="0" step="500" value="${data.postUseCooldownMs}" required style="max-width:140px;">
+    <label class="muted">熔断基数 (ms)</label>
+    <input type="number" name="breakerBaseMs" min="1000" step="1000" value="${data.breakerBaseMs}" required style="max-width:140px;">
+    <label class="muted">疑似失效 (ms)</label>
+    <input type="number" name="invalidCooldownMs" min="1000" step="3600000" value="${data.invalidCooldownMs}" required style="max-width:140px;">
     <button type="submit">保存</button>
   </form>
 </section>`;
