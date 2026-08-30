@@ -75,9 +75,9 @@ admin.get("/", async (c) => {
       today,
       queueIntervalMs: (await readQueueConfig(kv)).intervalMs,
       queueMaxDepth: (await readQueueConfig(kv)).maxDepth,
-      postUseCooldownMs: (await readBreakerConfig(kv)).postUseCooldownMs,
-      breakerBaseMs: (await readBreakerConfig(kv)).breakerBaseMs,
-      invalidCooldownMs: (await readBreakerConfig(kv)).invalidCooldownMs,
+      postUseCooldownSec: (await readBreakerConfig(kv)).postUseCooldownSec,
+      breakerBaseSec: (await readBreakerConfig(kv)).breakerBaseSec,
+      invalidCooldownSec: (await readBreakerConfig(kv)).invalidCooldownSec,
       csrf: (await getCsrfToken(c)) ?? "",
     })
   );
@@ -106,22 +106,22 @@ admin.post("/queue-config", async (c) => {
 admin.post("/breaker-config", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
-  const postUseCooldownMs = Number(body["postUseCooldownMs"]);
-  const breakerBaseMs = Number(body["breakerBaseMs"]);
-  const invalidCooldownMs = Number(body["invalidCooldownMs"]);
-  if (!Number.isFinite(postUseCooldownMs) || postUseCooldownMs < 0) {
-    return c.html(errorFragment("冷却时长至少为 0ms"), 400);
+  const postUseCooldownSec = Number(body["postUseCooldownSec"]);
+  const breakerBaseSec = Number(body["breakerBaseSec"]);
+  const invalidCooldownSec = Number(body["invalidCooldownSec"]);
+  if (!Number.isFinite(postUseCooldownSec) || postUseCooldownSec < 0) {
+    return c.html(errorFragment("冷却时长至少为 0 秒"), 400);
   }
-  if (!Number.isFinite(breakerBaseMs) || breakerBaseMs < 1000) {
-    return c.html(errorFragment("熔断基数至少 1000ms"), 400);
+  if (!Number.isFinite(breakerBaseSec) || breakerBaseSec < 1) {
+    return c.html(errorFragment("熔断基数至少为 1 秒"), 400);
   }
-  if (!Number.isFinite(invalidCooldownMs) || invalidCooldownMs < 1000) {
-    return c.html(errorFragment("疑似失效冷却至少 1000ms"), 400);
+  if (!Number.isFinite(invalidCooldownSec) || invalidCooldownSec < 1) {
+    return c.html(errorFragment("疑似失效冷却至少为 1 秒"), 400);
   }
   await writeBreakerConfig(c.env.KV, {
-    postUseCooldownMs: Math.round(postUseCooldownMs),
-    breakerBaseMs: Math.round(breakerBaseMs),
-    invalidCooldownMs: Math.round(invalidCooldownMs),
+    postUseCooldownSec: Math.round(postUseCooldownSec),
+    breakerBaseSec: Math.round(breakerBaseSec),
+    invalidCooldownSec: Math.round(invalidCooldownSec),
   });
   return c.redirect("/admin", 303);
 });
