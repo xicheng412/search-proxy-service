@@ -9,6 +9,7 @@ import { getUsageStore } from "../usage-store";
 import { resolvePublicBaseUrl } from "../config";
 import { readQueueConfig, writeQueueConfig } from "../queue-config";
 import { readBreakerConfig, writeBreakerConfig } from "../breaker-config";
+import { readDistCacheConfig, writeDistCacheConfig } from "../dist-cache-config";
 import { EXA, TAVILY } from "../providers";
 import { adminPage, errorFragment, helpPage } from "../views";
 import { exaAdmin } from "./exa";
@@ -80,6 +81,7 @@ admin.get("/", async (c) => {
       postUseCooldownSec: (await readBreakerConfig(kv)).postUseCooldownSec,
       breakerBaseSec: (await readBreakerConfig(kv)).breakerBaseSec,
       invalidCooldownSec: (await readBreakerConfig(kv)).invalidCooldownSec,
+      distCacheTtlSec: (await readDistCacheConfig(kv)).cacheTtlSec,
       csrf: (await getCsrfToken(c)) ?? "",
     })
   );
@@ -125,6 +127,18 @@ admin.post("/breaker-config", async (c) => {
     breakerBaseSec: Math.round(breakerBaseSec),
     invalidCooldownSec: Math.round(invalidCooldownSec),
   });
+  return c.redirect("/admin", 303);
+});
+
+// 更新鉴权缓存 TTL（CSRF 校验 + 数值校验；缓存自然过期或写路径主动失效）
+admin.post("/dist-cache-config", async (c) => {
+  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
+  const body = await c.req.parseBody();
+  const cacheTtlSec = Number(body["cacheTtlSec"]);
+  if (!Number.isFinite(cacheTtlSec) || cacheTtlSec < 1) {
+    return c.html(errorFragment("缓存 TTL 至少为 1 秒"), 400);
+  }
+  await writeDistCacheConfig(c.env.KV, { cacheTtlSec: Math.round(cacheTtlSec) });
   return c.redirect("/admin", 303);
 });
 

@@ -15,6 +15,35 @@ import {
   newDistApiKey,
   newUpstreamId,
 } from "./domain";
+import { cachedDistCacheConfig } from "./dist-cache-config";
+
+const distCacheKey = (apiKey: string) =>
+  `https://search-proxy.internal/dist-key/${encodeURIComponent(apiKey)}`;
+
+async function cacheGetDist(
+  _env: Env,
+  apiKey: string
+): Promise<DistributedKey | null | undefined> {
+  const hit = await caches.default.match(distCacheKey(apiKey));
+  if (!hit) return undefined;
+  const body = await hit.json<{ found: boolean; key?: DistributedKey }>();
+  return body.found ? (body.key as DistributedKey) : null;
+}
+
+async function cachePutDist(
+  _env: Env,
+  apiKey: string,
+  value: DistributedKey | null,
+  ttlSec: number
+): Promise<void> {
+  const resp = new Response(
+    JSON.stringify({ found: value !== null, key: value ?? undefined }),
+    { headers: { "Cache-Control": `max-age=${ttlSec}` } }
+  );
+  await caches.default.put(distCacheKey(apiKey), resp);
+}
+
+const distCacheConfig = cachedDistCacheConfig();
 
 export type UsageKind = "upstream" | "dist";
 
@@ -163,12 +192,17 @@ export async function getDistributedKey(
   env: Env,
   apiKey: string
 ): Promise<DistributedKey | null> {
+  const cached = await cacheGetDist(env, apiKey).catch(() => undefined);
+  if (cached !== undefined) return cached;
   const row = await env.DB.prepare(
     "SELECT api_key, note, status, created_at FROM distributed_keys WHERE api_key = ?1"
   )
     .bind(apiKey)
     .first();
-  return row ? toDistKey(row as Record<string, unknown>) : null;
+  const value = row ? toDistKey(row as Record<string, unknown>) : null;
+  const ttl = (await distCacheConfig.get(env.KV)).cacheTtlSec;
+  await cachePutDist(env, apiKey, value, ttl).catch(() => {});
+  return value;
 }
 
 export async function generateDistributedKey(
@@ -186,6 +220,7 @@ export async function generateDistributedKey(
   )
     .bind(item.api_key, item.note, item.status, item.created_at)
     .run();
+  await caches.default.delete(distCacheKey(final)).catch(() => {});
   return item;
 }
 
@@ -208,9 +243,12 @@ export async function updateDistributedKey(
   const sql =
     `UPDATE distributed_keys SET ${sets.join(", ")} WHERE api_key = ?${binds.length + 1} RETURNING api_key, note, status, created_at`;
   const row = await env.DB.prepare(sql).bind(...binds, apiKey).first();
-  return row ? toDistKey(row as Record<string, unknown>) : null;
+  if (row) {
+    await caches.default.delete(distCacheKey(apiKey)).catch(() => {});
+    return toDistKey(row as Record<string, unknown>);
+  }
+  return null;
 }
-
 export async function deleteDistributedKey(
   env: Env,
   apiKey: string
@@ -218,8 +256,10 @@ export async function deleteDistributedKey(
   const res = await env.DB.prepare("DELETE FROM distributed_keys WHERE api_key = ?1")
     .bind(apiKey)
     .run();
+  await caches.default.delete(distCacheKey(apiKey)).catch(() => {});
   return (res.meta.changes ?? 0) > 0;
 }
+
 
 // ---------------------------------------------------------------
 // 用量小时桶
@@ -277,6 +317,31 @@ export async function sumUsageByProvider(
   }
   return out;
 }
+/** 多 scope 按 provider 分组的求和（一次往返）。返回 scope -> (provider -> window)。 */
+export async function sumUsageByScopes(
+  env: Env,
+  kind: UsageKind,
+  scopes: string[],
+  minHour: string
+): Promise<Record<string, Record<string, UsageWindow>>> {
+  if (scopes.length === 0) return {};
+  const placeholders = scopes.map((_, i) => `?${i + 2}`).join(",");
+  const { results } = await env.DB.prepare(
+    `SELECT scope, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+     FROM usage_counts
+     WHERE kind = ?1 AND scope IN (${placeholders}) AND hour >= ?${scopes.length + 2}
+     GROUP BY scope, provider`
+  ).bind(kind, ...scopes, minHour).all();
+  const out: Record<string, Record<string, UsageWindow>> = {};
+  for (const r of results as Record<string, unknown>[]) {
+    const scope = r.scope as string;
+    (out[scope] ??= {})[r.provider as string] = {
+      success: (r.success as number) ?? 0,
+      fail: (r.fail as number) ?? 0,
+    };
+  }
+  return out;
+}
 
 /** 读某 scope 的小时明细（最近 N 小时 / 24 分段给前端组合统计边界用）。 */
 export async function readHourly(
@@ -323,17 +388,28 @@ export async function readBreakerState(
     : null;
 }
 
-export async function writeBreakerState(
+/** 原子批写某次上游结果的 cooldown 更新 + 可选熔断计数 UPSERT。 */
+export async function applyBreakerOutcome(
   env: Env,
+  def: UpstreamDef,
   id: string,
-  consecutive: number,
-  updatedAt: number,
-  createdAt: number = Date.now()
+  cooldownUntil: number,
+  consecutive: number | null,
+  now: number,
+  createdAt: number = now
 ): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO breaker_state(id,consecutive,updated_at,created_at) VALUES(?1,?2,?3,?4)
-     ON CONFLICT(id) DO UPDATE SET consecutive = excluded.consecutive, updated_at = excluded.updated_at`
-  )
-    .bind(id, consecutive, updatedAt, createdAt)
-    .run();
+  const stmts = [
+    env.DB.prepare(
+      "UPDATE upstream_keys SET cooldown_until = ?1 WHERE provider = ?2 AND id = ?3"
+    ).bind(cooldownUntil, def.provider, id),
+  ];
+  if (consecutive !== null) {
+    stmts.push(
+      env.DB.prepare(
+        `INSERT INTO breaker_state(id,consecutive,updated_at,created_at) VALUES(?1,?2,?3,?4)
+         ON CONFLICT(id) DO UPDATE SET consecutive = excluded.consecutive, updated_at = excluded.updated_at`
+      ).bind(id, consecutive, now, createdAt)
+    );
+  }
+  await env.DB.batch(stmts);
 }

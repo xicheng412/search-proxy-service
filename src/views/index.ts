@@ -179,6 +179,7 @@ export interface DashboardData {
   postUseCooldownSec: number;
   breakerBaseSec: number;
   invalidCooldownSec: number;
+  distCacheTtlSec: number;
   csrf: string;
 }
 
@@ -232,6 +233,16 @@ export function adminPage(data: DashboardData): string {
     <input type="number" name="breakerBaseSec" min="1" step="1" value="${data.breakerBaseSec}" required style="max-width:140px;">
     <label class="muted">疑似失效 (秒)</label>
     <input type="number" name="invalidCooldownSec" min="1" step="60" value="${data.invalidCooldownSec}" required style="max-width:140px;">
+    <button type="submit">保存</button>
+  </form>
+</section>
+<section class="card">
+  <h2>鉴权缓存参数</h2>
+  <p class="hint" style="margin:0 0 12px;">分发 key 鉴权结果缓存在 Cache API 中，命中时无需读取 D1。缓存 TTL 越长，D1 读越少；禁用/删除后的最坏生效延迟也越长。写路径会主动失效缓存。改这里即生效（≤3s 内），无需重新部署。</p>
+  <form method="post" action="/admin/dist-cache-config" class="row">
+    ${csrfField(data.csrf)}
+    <label class="muted">鉴权缓存 TTL (秒)</label>
+    <input type="number" name="cacheTtlSec" min="1" step="1" value="${data.distCacheTtlSec}" required style="max-width:140px;">
     <button type="submit">保存</button>
   </form>
 </section>`;

@@ -10,7 +10,7 @@
 
 import type { Env } from "./types";
 import { UpstreamDef } from "./domain";
-import { setUpstreamCooldown, readBreakerState, writeBreakerState } from "./storage";
+import { setUpstreamCooldown, readBreakerState, applyBreakerOutcome } from "./storage";
 import { cachedBreakerConfig } from "./breaker-config";
 
 const BREAKER_TTL_MS = 10 * 60 * 1000; // 连续失败计数空窗 10 分钟后自动归零
@@ -26,8 +26,7 @@ export async function recordUpstreamSuccess(
   now: number = Date.now()
 ): Promise<void> {
   const { postUseCooldownSec } = await config.get(env.KV);
-  await setUpstreamCooldown(env, def, id, now + postUseCooldownSec * 1000).catch(() => {});
-  await writeBreakerState(env, id, 0, now).catch(() => {});
+  await applyBreakerOutcome(env, def, id, now + postUseCooldownSec * 1000, 0, now).catch(() => {});
 }
 
 /**
@@ -45,8 +44,7 @@ export async function recordUpstreamFailure(
   const consecutive = cur && now - cur.updated_at < BREAKER_TTL_MS ? cur.consecutive + 1 : 1;
   const cooldownMs = breakerBaseSec * 1000 * Math.pow(2, consecutive);
   const until = now + Math.max(postUseCooldownSec * 1000, cooldownMs);
-  await setUpstreamCooldown(env, def, id, until).catch(() => {});
-  await writeBreakerState(env, id, consecutive, now, cur?.created_at ?? now).catch(() => {});
+  await applyBreakerOutcome(env, def, id, until, consecutive, now, cur?.created_at ?? now).catch(() => {});
 }
 
 /**

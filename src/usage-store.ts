@@ -12,6 +12,7 @@ import {
   UsageIncrement,
   mergeUsage,
   readHourly as storeReadHourly,
+  sumUsageByScopes,
   sumUsageByProvider,
 } from "./storage";
 
@@ -131,8 +132,9 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
       now - weightCache.at >= readCacheMs
     ) {
       const base: Record<string, { success: number; fail: number }> = {};
+      const byScope = await sumUsageByScopes(env, "upstream", ids, minHour);
       for (const id of ids) {
-        const byProvider = await sumUsageByProvider(env, "upstream", id, minHour);
+        const byProvider = byScope[id] ?? {};
         let s = 0;
         let f = 0;
         for (const w of Object.values(byProvider)) {
