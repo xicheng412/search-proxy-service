@@ -16,7 +16,12 @@ migrations_dir = "migrations"
 
 # 每 provider 一把队列 Durable Object（idFromName(provider) = "tavily"|"exa"）。
 # 串行放行上游请求（intervalMs 间隔 + maxDepth 拒入），参数运行时经 KV `queue_config` 调整。
-# 新 wrangler 对 DO 旧式导出的加固：显式声明 QueueDO 为 sqlite 存储的 durable-object。
+[[durable_objects.bindings]]
+name = "QUEUE"
+class_name = "QueueDO"
+
+# 新式 DO 声明（wrangler 4.x）：提供 sqlite 存储的 durable-object 导出。
+# 注意：migrations 与 exports 互斥，只用 exports（对应旧式 [[migrations]] v1-queue 迁移已完成）。
 [exports.QueueDO]
 type = "durable-object"
 storage = "sqlite"
