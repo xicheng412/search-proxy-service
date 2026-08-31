@@ -1,9 +1,9 @@
-// Tavily Keys 管理路由（provider 专用文件）。所有数据操作走泛型 kv + TAVILY 描述符。
+// Tavily Keys 管理路由（provider 专用文件）。所有数据操作走泛型 env + TAVILY 描述符。
 
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
-import { autoKeyName, todayDate } from "../domain";
+import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
   deleteUpstreamKey,
@@ -18,23 +18,23 @@ import { tavilyListFragment, tavilyPage } from "../views/tavily";
 export const tavilyAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 tavilyAdmin.get("/", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(kv, TAVILY.upstream);
-  const statsMap = await getUsageStore(kv).readUpstreamTodayStats(
+  const keys = await listUpstreamKeys(env, TAVILY.upstream);
+  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
     keys.map((k) => k.id),
-    todayDate()
+    utcTodayStart()
   );
   return c.html(tavilyPage(csrf, tavilyListFragment(keys, statsMap, csrf, Date.now())));
 });
 
 tavilyAdmin.get("/list", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(kv, TAVILY.upstream);
-  const statsMap = await getUsageStore(kv).readUpstreamTodayStats(
+  const keys = await listUpstreamKeys(env, TAVILY.upstream);
+  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
     keys.map((k) => k.id),
-    todayDate()
+    utcTodayStart()
   );
   return c.html(tavilyListFragment(keys, statsMap, csrf, Date.now()));
 });
@@ -48,7 +48,7 @@ tavilyAdmin.post("/add", async (c) => {
   const doTest = body["test"] === "1";
   if (!key) return c.html(errorFragment("缺少 key"));
   if (!name) name = autoKeyName();
-  const kv = c.env.KV;
+  const env = c.env;
 
   if (doTest) {
     try {
@@ -70,7 +70,7 @@ tavilyAdmin.post("/add", async (c) => {
     }
   }
 
-  await addUpstreamKey(kv, TAVILY.upstream, key, name);
+  await addUpstreamKey(env, TAVILY.upstream, key, name);
   return c.redirect("/admin/tavily/list", 303);
 });
 
@@ -85,14 +85,14 @@ tavilyAdmin.post("/add/batch", async (c) => {
   const rawKeys = keysText.split(/[\n,]+/).map((k) => k.trim()).filter(Boolean);
   if (rawKeys.length === 0) return c.html(errorFragment("未解析到有效 key"));
 
-  const kv = c.env.KV;
+  const env = c.env;
   const pad = String(rawKeys.length).length;
   for (let i = 0; i < rawKeys.length; i++) {
     const key = rawKeys[i];
     const name = namePrefix
       ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}`
       : autoKeyName();
-    await addUpstreamKey(kv, TAVILY.upstream, key, name);
+    await addUpstreamKey(env, TAVILY.upstream, key, name);
   }
 
   return c.redirect("/admin/tavily/list", 303);
@@ -103,18 +103,18 @@ tavilyAdmin.post("/:id/name", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.parseBody();
   const name = (((body["name"] as string) ?? "").trim() || "未命名");
-  const cur = (await listUpstreamKeys(c.env.KV, TAVILY.upstream)).find((k) => k.id === id);
+  const cur = (await listUpstreamKeys(c.env, TAVILY.upstream)).find((k) => k.id === id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateUpstreamKey(c.env.KV, TAVILY.upstream, id, { name });
+  await updateUpstreamKey(c.env, TAVILY.upstream, id, { name });
   return c.redirect("/admin/tavily/list", 303);
 });
 
 tavilyAdmin.post("/:id/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");
-  const cur = (await listUpstreamKeys(c.env.KV, TAVILY.upstream)).find((k) => k.id === id);
+  const cur = (await listUpstreamKeys(c.env, TAVILY.upstream)).find((k) => k.id === id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateUpstreamKey(c.env.KV, TAVILY.upstream, id, {
+  await updateUpstreamKey(c.env, TAVILY.upstream, id, {
     status: cur.status === "enabled" ? "disabled" : "enabled",
   });
   return c.redirect("/admin/tavily/list", 303);
@@ -122,6 +122,6 @@ tavilyAdmin.post("/:id/toggle", async (c) => {
 
 tavilyAdmin.post("/:id/delete", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
-  await deleteUpstreamKey(c.env.KV, TAVILY.upstream, c.req.param("id"));
+  await deleteUpstreamKey(c.env, TAVILY.upstream, c.req.param("id"));
   return c.redirect("/admin/tavily/list", 303);
 });

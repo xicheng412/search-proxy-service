@@ -5,7 +5,7 @@ export const TAVILY: ProviderConfig<"tavily"> = {
   name: "tavily",
   base: "https://api.tavily.com",
   endpoints: { search: "/search" },
-  upstream: { keysKey: "tavily_keys", idPrefix: "tk_" },
+  upstream: { keysKey: "tavily_keys", idPrefix: "tv_", provider: "tavily" },
   admin: { basePath: "/admin/tavily", label: "Tavily Keys" },
   testBody: () => ({ query: "test", max_results: 1 }),
   // Tavily 官方错误体：{ detail: { error } }

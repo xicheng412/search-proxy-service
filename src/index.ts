@@ -41,4 +41,18 @@ app.post("/admin/login", handleLogin);
 app.post("/admin/logout", handleLogout);
 app.route("/admin", admin);
 
-export default app;
+// 用量保留：D1 无 TTL，定时清理超 90 天的 UTC 小时桶行。小时桶价廉，每日一次足够。
+const USAGE_RETENTION_DAYS = 90;
+
+export default {
+  fetch: app.fetch,
+  async scheduled(
+    _event: ScheduledEvent,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    const cutoff =
+      new Date(Date.now() - USAGE_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 13) + ":00";
+    await env.DB.prepare("DELETE FROM usage_counts WHERE hour < ?1").bind(cutoff).run();
+  },
+};

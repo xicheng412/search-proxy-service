@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
-import { DistStats, todayDate } from "../domain";
+import { DistStats, utcTodayStart } from "../domain";
 import {
   deleteDistributedKey,
   generateDistributedKey,
@@ -22,35 +22,35 @@ import {
 export const keysAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 async function buildCallsMap(
-  kv: KVNamespace,
+  env: Env,
   dkeys: { api_key: string }[],
-  date: string
+  minHour: string
 ): Promise<Record<string, DistStats>> {
-  const store = getUsageStore(kv);
+  const store = getUsageStore(env);
   const callsMap: Record<string, DistStats> = {};
   await Promise.all(
     dkeys.map(async (k) => {
-      callsMap[k.api_key] = await store.readDistCalls(k.api_key, date);
+      callsMap[k.api_key] = await store.readDistCalls(k.api_key, minHour);
     })
   );
   return callsMap;
 }
 
 keysAdmin.get("/", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
   const csrf = (await getCsrfToken(c)) ?? "";
   const base = resolvePublicBaseUrl(c.env);
-  const dkeys = await listDistributedKeys(kv);
-  const callsMap = await buildCallsMap(kv, dkeys, todayDate());
+  const dkeys = await listDistributedKeys(env);
+  const callsMap = await buildCallsMap(env, dkeys, utcTodayStart());
   return c.html(keysPage(csrf, distListFragment(dkeys, callsMap, csrf, undefined, base)));
 });
 
 keysAdmin.get("/list", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
   const csrf = (await getCsrfToken(c)) ?? "";
   const base = resolvePublicBaseUrl(c.env);
-  const dkeys = await listDistributedKeys(kv);
-  const callsMap = await buildCallsMap(kv, dkeys, todayDate());
+  const dkeys = await listDistributedKeys(env);
+  const callsMap = await buildCallsMap(env, dkeys, utcTodayStart());
   return c.html(distListFragment(dkeys, callsMap, csrf, undefined, base));
 });
 
@@ -60,10 +60,10 @@ keysAdmin.post("/generate", async (c) => {
   const body = await c.req.parseBody();
   const note = ((body["note"] as string) ?? "").trim();
   if (!note) return c.html(errorFragment("备注必填"));
-  const kv = c.env.KV;
-  const generated = await generateDistributedKey(kv, note);
-  const dkeys = await listDistributedKeys(kv);
-  const callsMap = await buildCallsMap(kv, dkeys, todayDate());
+  const env = c.env;
+  const generated = await generateDistributedKey(env, note);
+  const dkeys = await listDistributedKeys(env);
+  const callsMap = await buildCallsMap(env, dkeys, utcTodayStart());
   const csrf = (await getCsrfToken(c)) ?? "";
   const base = resolvePublicBaseUrl(c.env);
   return c.html(distGenerateResult(generated.api_key, dkeys, callsMap, csrf, base));
@@ -72,9 +72,9 @@ keysAdmin.post("/generate", async (c) => {
 keysAdmin.post("/:apiKey/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const apiKey = c.req.param("apiKey");
-  const cur = (await listDistributedKeys(c.env.KV)).find((k) => k.api_key === apiKey);
+  const cur = (await listDistributedKeys(c.env)).find((k) => k.api_key === apiKey);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateDistributedKey(c.env.KV, apiKey, {
+  await updateDistributedKey(c.env, apiKey, {
     status: cur.status === "enabled" ? "disabled" : "enabled",
   });
   return c.redirect("/admin/keys/list", 303);
@@ -82,6 +82,6 @@ keysAdmin.post("/:apiKey/toggle", async (c) => {
 
 keysAdmin.post("/:apiKey/delete", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
-  await deleteDistributedKey(c.env.KV, c.req.param("apiKey"));
+  await deleteDistributedKey(c.env, c.req.param("apiKey"));
   return c.redirect("/admin/keys/list", 303);
 });

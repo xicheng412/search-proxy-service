@@ -140,8 +140,8 @@ Full step-by-step (new Cloudflare account, custom domain, troubleshooting) is in
 src/
 ├── index.ts             # Hono app + routes
 ├── domain.ts            # pure domain: types, parseDistKey, value semantics
-├── storage.ts           # KV primitives + generic Keys CRUD
-├── usage-store.ts       # per-day stats (write-back, in-memory buffering)
+├── storage.ts           # D1 entity layer (upstream/dist keys, usage hour buckets, breaker state)
+├── usage-store.ts       # hour-bucket usage stats (write-back, in-memory buffering → D1)
 ├── circuit-breaker.ts   # cooldown: post-use + breaker + invalid (params runtime from KV)
 ├── breaker-config.ts    # runtime cooldown params (KV breaker_config, admin-adjustable)
 ├── auth.ts              # login / session / CSRF / logout

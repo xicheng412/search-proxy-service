@@ -1,110 +1,86 @@
-// 基础设施层·存储适配器：Cloudflare KV 的纯读写原语 + Keys 数组 CRUD。
-// 只负责"键格式、JSON 序列化、单次 KV 操作"——不含任何缓冲/节流/熔断策略。
-// 统计的策略在 usage-store.ts（缓冲计数器），熔断策略在 circuit-breaker.ts（续流）。
+// 基础设施层·存储适配器（D1/SQLite）。实体数据全部落 D1：
+//   - upstream_keys / distributed_keys（key 仓库）
+//   - usage_counts（用量小时桶，UTC）
+//   - breaker_state（熔断连续失败计数）
+// 基础配置（breaker_config/queue_config）与登录会话仍留 KV，不在本层。
 // 本层不吞错；"写失败是否静默、何时写"由上层策略决定。
+// 所有函数以 env: Env 为句柄（同时携带 KV 与 DB），实体走 DB，配置/会话走 KV。
 
+import type { Env } from "./types";
 import {
   CoreKey,
   DistributedKey,
+  KeyStatus,
   UpstreamDef,
   newDistApiKey,
   newUpstreamId,
 } from "./domain";
 
-const DIST_KEYS_KEY = "distributed_keys";
+export type UsageKind = "upstream" | "dist";
 
-// ---------------------------------------------------------------
-// 键格式（暴露给上层策略/呈现复用，保证全库同一套命名）
-// ---------------------------------------------------------------
-
-export function statsKey(id: string, date: string): string {
-  return `stats:${id}:${date}`;
+/** 一次用量增量（小时桶）。success/fail 二选一递 1；calls := success + fail 派生。 */
+export interface UsageIncrement {
+  kind: UsageKind;
+  scope: string; // upstream key id | dist api_key
+  provider: string; // 'tavily' | 'exa' | future
+  hour: string; // 'YYYY-MM-DDTHH:00' UTC
+  success: number;
+  fail: number;
 }
 
-export function distStatsKey(apiKey: string, date: string): string {
-  return `dist_stats:${apiKey}:${date}`;
+export interface UsageWindow {
+  success: number;
+  fail: number;
 }
 
-export function breakerKey(id: string): string {
-  return `breaker:${id}`;
+/** 熔断状态行：连续失败 + 更新时间（模拟 KV 的 10min TTL 窗口）。 */
+export interface BreakerState {
+  consecutive: number;
+  updated_at: number;
+  created_at: number;
 }
 
-// ---------------------------------------------------------------
-// 数值值读写原语（统计/熔断共用；值为 JSON 对象，字段均为有限数字）
-// ---------------------------------------------------------------
-
-/** 读取某计数 key 的当前值：容错解析，仅保留有限数值字段，不可解析视为空。 */
-export async function readValueStats(
-  kv: KVNamespace,
-  key: string
-): Promise<Record<string, number>> {
-  const raw = await kv.get(key, "text");
-  if (!raw) return {};
-  try {
-    const p = JSON.parse(raw) as Record<string, unknown>;
-    const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(p)) {
-      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
-  }
+function toCoreKey(r: Record<string, unknown>): CoreKey {
+  return {
+    id: r.id as string,
+    key: r.key as string,
+    name: r.name as string,
+    status: r.status as KeyStatus,
+    cooldown_until: r.cooldown_until as number | null,
+    created_at: r.created_at as number,
+  };
 }
 
-/** 用可选 TTL 覆盖写某个计数 key 的完整值（JSON）。不吞错，由上层策略决定容错。 */
-export async function writeValueStats(
-  kv: KVNamespace,
-  key: string,
-  value: Record<string, number>,
-  ttlSeconds?: number
-): Promise<void> {
-  const body = JSON.stringify(value);
-  if (ttlSeconds) {
-    await kv.put(key, body, { expirationTtl: ttlSeconds });
-  } else {
-    await kv.put(key, body);
-  }
+function toDistKey(r: Record<string, unknown>): DistributedKey {
+  return {
+    api_key: r.api_key as string,
+    note: r.note as string,
+    status: r.status as KeyStatus,
+    created_at: r.created_at as number,
+  };
 }
 
 // ---------------------------------------------------------------
-// Keys 数组 CRUD（上游/分发，泛型朝向 UpstreamDef 定位键与 id 前缀）
+// 上游 keys
 // ---------------------------------------------------------------
-
-async function readJsonArray<T>(kv: KVNamespace, key: string): Promise<T[]> {
-  const raw = await kv.get(key, "text");
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-async function writeJsonArray<T>(
-  kv: KVNamespace,
-  key: string,
-  value: T[]
-): Promise<void> {
-  await kv.put(key, JSON.stringify(value));
-}
 
 export async function listUpstreamKeys(
-  kv: KVNamespace,
+  env: Env,
   def: UpstreamDef
 ): Promise<CoreKey[]> {
-  return readJsonArray<CoreKey>(kv, def.keysKey);
+  const { results } = await env.DB.prepare(
+    "SELECT id, key, name, status, cooldown_until, created_at FROM upstream_keys WHERE provider = ?1 ORDER BY created_at"
+  ).bind(def.provider).all();
+  return (results as Record<string, unknown>[]).map(toCoreKey);
 }
 
 export async function addUpstreamKey(
-  kv: KVNamespace,
+  env: Env,
   def: UpstreamDef,
   key: string,
   name: string,
   now: number = Date.now()
 ): Promise<CoreKey> {
-  const keys = await listUpstreamKeys(kv, def);
   const item: CoreKey = {
     id: newUpstreamId(def),
     key,
@@ -113,106 +89,251 @@ export async function addUpstreamKey(
     cooldown_until: null,
     created_at: now,
   };
-  keys.push(item);
-  await writeJsonArray(kv, def.keysKey, keys);
+  await env.DB.prepare(
+    "INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)"
+  )
+    .bind(def.provider, item.id, item.key, item.name, item.status, null, item.created_at)
+    .run();
   return item;
 }
 
 export async function updateUpstreamKey(
-  kv: KVNamespace,
+  env: Env,
   def: UpstreamDef,
   id: string,
   patch: Partial<Pick<CoreKey, "name" | "status">>
 ): Promise<CoreKey | null> {
-  const keys = await listUpstreamKeys(kv, def);
-  const idx = keys.findIndex((k) => k.id === id);
-  if (idx === -1) return null;
-  const updated: CoreKey = { ...keys[idx], ...patch };
-  keys[idx] = updated;
-  await writeJsonArray(kv, def.keysKey, keys);
-  return updated;
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (patch.name !== undefined) {
+    sets.push("name = ?" + (binds.length + 1));
+    binds.push(patch.name);
+  }
+  if (patch.status !== undefined) {
+    sets.push("status = ?" + (binds.length + 1));
+    binds.push(patch.status);
+  }
+  if (sets.length === 0) return listUpstreamKeys(env, def).then((ks) => ks.find((k) => k.id === id) ?? null);
+  const whereIdx = binds.length + 1;
+  const sql =
+    `UPDATE upstream_keys SET ${sets.join(", ")} WHERE provider = ?${whereIdx} AND id = ?${whereIdx + 1} RETURNING id, key, name, status, cooldown_until, created_at`;
+  const row = await env.DB.prepare(sql).bind(...binds, def.provider, id).first();
+  return row ? toCoreKey(row as Record<string, unknown>) : null;
 }
 
-/** 设置熔断冷却结束时间戳（null 表示解除冷却）。 */
 export async function setUpstreamCooldown(
-  kv: KVNamespace,
+  env: Env,
   def: UpstreamDef,
   id: string,
   cooldown_until: number | null
 ): Promise<CoreKey | null> {
-  const keys = await listUpstreamKeys(kv, def);
-  const idx = keys.findIndex((k) => k.id === id);
-  if (idx === -1) return null;
-  keys[idx] = { ...keys[idx], cooldown_until };
-  await writeJsonArray(kv, def.keysKey, keys);
-  return keys[idx];
+  const row = await env.DB.prepare(
+    "UPDATE upstream_keys SET cooldown_until = ?1 WHERE provider = ?2 AND id = ?3 RETURNING id, key, name, status, cooldown_until, created_at"
+  )
+    .bind(cooldown_until, def.provider, id)
+    .first();
+  return row ? toCoreKey(row as Record<string, unknown>) : null;
 }
 
 export async function deleteUpstreamKey(
-  kv: KVNamespace,
+  env: Env,
   def: UpstreamDef,
   id: string
 ): Promise<boolean> {
-  const keys = await listUpstreamKeys(kv, def);
-  const next = keys.filter((k) => k.id !== id);
-  if (next.length === keys.length) return false;
-  await writeJsonArray(kv, def.keysKey, next);
-  return true;
+  const res = await env.DB.prepare(
+    "DELETE FROM upstream_keys WHERE provider = ?1 AND id = ?2"
+  )
+    .bind(def.provider, id)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
-export async function listDistributedKeys(
-  kv: KVNamespace
-): Promise<DistributedKey[]> {
-  return readJsonArray<DistributedKey>(kv, DIST_KEYS_KEY);
+// ---------------------------------------------------------------
+// 分发 keys
+// ---------------------------------------------------------------
+
+export async function listDistributedKeys(env: Env): Promise<DistributedKey[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT api_key, note, status, created_at FROM distributed_keys ORDER BY created_at"
+  ).all();
+  return (results as Record<string, unknown>[]).map(toDistKey);
 }
 
 export async function getDistributedKey(
-  kv: KVNamespace,
+  env: Env,
   apiKey: string
 ): Promise<DistributedKey | null> {
-  const keys = await listDistributedKeys(kv);
-  return keys.find((k) => k.api_key === apiKey) ?? null;
+  const row = await env.DB.prepare(
+    "SELECT api_key, note, status, created_at FROM distributed_keys WHERE api_key = ?1"
+  )
+    .bind(apiKey)
+    .first();
+  return row ? toDistKey(row as Record<string, unknown>) : null;
 }
 
 export async function generateDistributedKey(
-  kv: KVNamespace,
+  env: Env,
   note: string,
   now: number = Date.now()
 ): Promise<DistributedKey> {
-  const keys = await listDistributedKeys(kv);
   const apiKey = newDistApiKey();
   // 极低概率碰撞，重试一次
-  const item: DistributedKey = {
-    api_key: keys.some((k) => k.api_key === apiKey) ? newDistApiKey() : apiKey,
-    note,
-    status: "enabled",
-    created_at: now,
-  };
-  keys.push(item);
-  await writeJsonArray(kv, DIST_KEYS_KEY, keys);
+  const final =
+    (await getDistributedKey(env, apiKey)) !== null ? newDistApiKey() : apiKey;
+  const item: DistributedKey = { api_key: final, note, status: "enabled", created_at: now };
+  await env.DB.prepare(
+    "INSERT INTO distributed_keys(api_key,note,status,created_at) VALUES(?1,?2,?3,?4)"
+  )
+    .bind(item.api_key, item.note, item.status, item.created_at)
+    .run();
   return item;
 }
 
 export async function updateDistributedKey(
-  kv: KVNamespace,
+  env: Env,
   apiKey: string,
   patch: Partial<Pick<DistributedKey, "note" | "status">>
 ): Promise<DistributedKey | null> {
-  const keys = await listDistributedKeys(kv);
-  const idx = keys.findIndex((k) => k.api_key === apiKey);
-  if (idx === -1) return null;
-  keys[idx] = { ...keys[idx], ...patch };
-  await writeJsonArray(kv, DIST_KEYS_KEY, keys);
-  return keys[idx];
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (patch.note !== undefined) {
+    sets.push("note = ?" + (binds.length + 1));
+    binds.push(patch.note);
+  }
+  if (patch.status !== undefined) {
+    sets.push("status = ?" + (binds.length + 1));
+    binds.push(patch.status);
+  }
+  if (sets.length === 0) return getDistributedKey(env, apiKey);
+  const sql =
+    `UPDATE distributed_keys SET ${sets.join(", ")} WHERE api_key = ?${binds.length + 1} RETURNING api_key, note, status, created_at`;
+  const row = await env.DB.prepare(sql).bind(...binds, apiKey).first();
+  return row ? toDistKey(row as Record<string, unknown>) : null;
 }
 
 export async function deleteDistributedKey(
-  kv: KVNamespace,
+  env: Env,
   apiKey: string
 ): Promise<boolean> {
-  const keys = await listDistributedKeys(kv);
-  const next = keys.filter((k) => k.api_key !== apiKey);
-  if (next.length === keys.length) return false;
-  await writeJsonArray(kv, DIST_KEYS_KEY, next);
-  return true;
+  const res = await env.DB.prepare("DELETE FROM distributed_keys WHERE api_key = ?1")
+    .bind(apiKey)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------
+// 用量小时桶
+// ---------------------------------------------------------------
+
+/** 批量 merge 用量增量（UPSERT 求和）。用 DB.batch 一次性事务提交。 */
+export async function mergeUsage(env: Env, rows: UsageIncrement[]): Promise<void> {
+  if (rows.length === 0) return;
+  const stmts = rows.map((r) =>
+    env.DB.prepare(
+      `INSERT INTO usage_counts(kind,scope,provider,hour,success,fail)
+       VALUES(?1,?2,?3,?4,?5,?6)
+       ON CONFLICT(kind,scope,provider,hour) DO UPDATE SET
+         success = success + excluded.success,
+         fail    = fail + excluded.fail`
+    ).bind(r.kind, r.scope, r.provider, r.hour, r.success, r.fail)
+  );
+  await env.DB.batch(stmts);
+}
+
+/** 按时间窗求和（hour >= minHour 的 UTC 小时桶）。 */
+export async function sumUsage(
+  env: Env,
+  kind: UsageKind,
+  scope: string,
+  provider: string,
+  minHour: string
+): Promise<UsageWindow> {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+     FROM usage_counts WHERE kind = ?1 AND scope = ?2 AND provider = ?3 AND hour >= ?4`
+  )
+    .bind(kind, scope, provider, minHour)
+    .first();
+  return { success: (row?.success as number) ?? 0, fail: (row?.fail as number) ?? 0 };
+}
+
+/** 按 provider 分组的时间窗求和（分发侧"某客户各 provider 用量"用）。 */
+export async function sumUsageByProvider(
+  env: Env,
+  kind: UsageKind,
+  scope: string,
+  minHour: string
+): Promise<Record<string, UsageWindow>> {
+  const { results } = await env.DB.prepare(
+    `SELECT provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+     FROM usage_counts WHERE kind = ?1 AND scope = ?2 AND hour >= ?3
+     GROUP BY provider`
+  )
+    .bind(kind, scope, minHour)
+    .all();
+  const out: Record<string, UsageWindow> = {};
+  for (const r of results as Record<string, unknown>[]) {
+    out[r.provider as string] = { success: (r.success as number) ?? 0, fail: (r.fail as number) ?? 0 };
+  }
+  return out;
+}
+
+/** 读某 scope 的小时明细（最近 N 小时 / 24 分段给前端组合统计边界用）。 */
+export async function readHourly(
+  env: Env,
+  kind: UsageKind,
+  scope: string,
+  minHour: string
+): Promise<UsageIncrement[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT kind, scope, provider, hour, success, fail
+     FROM usage_counts WHERE kind = ?1 AND scope = ?2 AND hour >= ?3 ORDER BY hour`
+  )
+    .bind(kind, scope, minHour)
+    .all();
+  return (results as Record<string, unknown>[]).map((r) => ({
+    kind,
+    scope,
+    provider: r.provider as string,
+    hour: r.hour as string,
+    success: (r.success as number) ?? 0,
+    fail: (r.fail as number) ?? 0,
+  }));
+}
+
+// ---------------------------------------------------------------
+// 熔断状态（breaker_state）
+// ---------------------------------------------------------------
+
+export async function readBreakerState(
+  env: Env,
+  id: string
+): Promise<BreakerState | null> {
+  const row = await env.DB.prepare(
+    "SELECT consecutive, updated_at, created_at FROM breaker_state WHERE id = ?1"
+  )
+    .bind(id)
+    .first();
+  return row
+    ? {
+        consecutive: row.consecutive as number,
+        updated_at: row.updated_at as number,
+        created_at: row.created_at as number,
+      }
+    : null;
+}
+
+export async function writeBreakerState(
+  env: Env,
+  id: string,
+  consecutive: number,
+  updatedAt: number,
+  createdAt: number = Date.now()
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO breaker_state(id,consecutive,updated_at,created_at) VALUES(?1,?2,?3,?4)
+     ON CONFLICT(id) DO UPDATE SET consecutive = excluded.consecutive, updated_at = excluded.updated_at`
+  )
+    .bind(id, consecutive, updatedAt, createdAt)
+    .run();
 }

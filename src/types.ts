@@ -2,6 +2,8 @@
 
 export type Env = {
   KV: KVNamespace;
+  /** D1 数据库：实体数据（上游/分发 key、用量小时桶、熔断状态）。 */
+  DB: D1Database;
   /** 每 provider 一把队列 DO（idFromName(provider)），串行放行上游请求。 */
   QUEUE: DurableObjectNamespace;
   ADMIN_PASSWORD: string;

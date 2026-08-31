@@ -9,10 +9,12 @@ export type WireProtocol = "native" | "searxng";
 
 export type KeyStatus = "enabled" | "disabled";
 
-/** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 KV 数组键与 id 前缀。 */
+/** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 provider 维度。 */
 export interface UpstreamDef {
   keysKey: string;
   idPrefix: string;
+  /** 表 provider 维度（'tavily' | 'exa' | 未来）。 */
+  provider: Provider;
 }
 
 export interface CoreKey {
@@ -125,6 +127,19 @@ export function todayDate(t: number = Date.now()): string {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date(t));
+}
+
+/**
+ * 用量小时桶键（UTC）：'YYYY-MM-DDTHH:00'。后端全部时间口径用 UTC，
+ * "今日/最近N小时"边界由前端用小时分段自行组合。
+ */
+export function hourKey(t: number = Date.now()): string {
+  return new Date(t).toISOString().slice(0, 13) + ":00";
+}
+
+/** 给定时间点所在 UTC 日的 00:00 小时桶键（服务端内部"今日"口径用）。 */
+export function utcTodayStart(t: number = Date.now()): string {
+  return new Date(t).toISOString().slice(0, 10) + "T00:00";
 }
 
 /**

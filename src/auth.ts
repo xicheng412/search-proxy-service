@@ -36,7 +36,8 @@ export async function createSession(
     httpOnly: true,
     sameSite: "Lax",
     path: "/",
-    secure: true,
+    // Secure 仅在 https 下置位：否则 http://localhost(本地 dev) 上传不回去程 cookie，登录后 302 循环。
+    secure: c.req.url.startsWith("https://"),
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });
 }

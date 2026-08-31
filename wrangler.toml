@@ -2,22 +2,28 @@ name = "tavily-cf-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-11-01"
 
-# KV namespace for all application data (tavily keys, distributed keys, stats).
-# Run `pnpm kv:create -- <PREFIX>` or `wrangler kv namespace create <PREFIX>`
-# to provision, then paste the generated id below.
+# KV namespace：基础配置（breaker_config / queue_config）与登录会话仍留 KV。
 [[kv_namespaces]]
 binding = "KV"
 id = "ff56ea82daa846538fdf11e6bff662eb"
 
+# D1 数据库：实体数据（上游/分发 key、用量小时桶、熔断状态）迁到 SQLite。
+[[d1_databases]]
+binding = "DB"
+database_name = "search-proxy"
+database_id = "2bc00217-ccb0-44c0-a1aa-138fc2ca400e"
+migrations_dir = "migrations"
+
 # 每 provider 一把队列 Durable Object（idFromName(provider) = "tavily"|"exa"）。
 # 串行放行上游请求（intervalMs 间隔 + maxDepth 拒入），参数运行时经 KV `queue_config` 调整。
-[[durable_objects.bindings]]
-name = "QUEUE"
-class_name = "QueueDO"
+# 新 wrangler 对 DO 旧式导出的加固：显式声明 QueueDO 为 sqlite 存储的 durable-object。
+[exports.QueueDO]
+type = "durable-object"
+storage = "sqlite"
 
-[[migrations]]
-tag = "v1-queue"
-new_sqlite_classes = ["QueueDO"]
+# 用量保留清理：每天 UTC 03:00 删除超保留期的 usage_counts 小时桶。
+[triggers]
+crons = ["0 3 * * *"]
 
 # 对外 API 地址 PUBLIC_BASE_URL 是普通变量（非 secret）：生产经 scripts/deploy.sh 从
 # gitignored 的 config/prod.env 以 `--var PUBLIC_BASE_URL:https://…` 注入（注意 --var 用冒号分隔）；

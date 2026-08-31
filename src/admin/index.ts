@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getSession, getCsrfToken, validateCsrf } from "../auth";
-import { todayDate } from "../domain";
+import { todayDate, utcTodayStart } from "../domain";
 import { listDistributedKeys, listUpstreamKeys } from "../storage";
 import { getUsageStore } from "../usage-store";
 import { resolvePublicBaseUrl } from "../config";
@@ -46,19 +46,21 @@ admin.use("*", async (c, next) => {
 
 // ---------- Dashboard 总览页 ----------
 admin.get("/", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
+  const kv = c.env.KV; // 基础配置（queue/breaker）与会话仍走 KV
   const today = todayDate();
+  const minHour = utcTodayStart();
   const [tkeys, ekeys, dkeys] = await Promise.all([
-    listUpstreamKeys(kv, TAVILY.upstream),
-    listUpstreamKeys(kv, EXA.upstream),
-    listDistributedKeys(kv),
+    listUpstreamKeys(env, TAVILY.upstream),
+    listUpstreamKeys(env, EXA.upstream),
+    listDistributedKeys(env),
   ]);
 
   let todayCalls = 0;
-  const store = getUsageStore(kv);
+  const store = getUsageStore(env);
   await Promise.all(
     dkeys.map(async (k) => {
-      const s = await store.readDistCalls(k.api_key, today);
+      const s = await store.readDistCalls(k.api_key, minHour);
       todayCalls += s.tavily + s.exa;
     })
   );

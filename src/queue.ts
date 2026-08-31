@@ -106,7 +106,7 @@ export class QueueDO extends DurableObject<Env> {
       }
       try {
         const deps = {
-          kv: this.env.KV,
+          env: this.env,
           executionCtx: { waitUntil: (p: Promise<unknown>) => void this.ctx.waitUntil(p) },
         };
         const def = PROVIDERS[item.provider];

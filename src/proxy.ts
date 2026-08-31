@@ -26,7 +26,8 @@ import {
   Provider,
   WireProtocol,
   parseDistKey,
-  todayDate,
+  hourKey,
+  utcTodayStart,
 } from "./domain";
 import { getDistributedKey, listUpstreamKeys } from "./storage";
 import { getUsageStore } from "./usage-store";
@@ -53,7 +54,7 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 
 /** 队列 DO 执行所需的最小依赖（替代整颗 Hono Context）。 */
 export interface CoreDeps {
-  kv: KVNamespace;
+  env: Env;
   executionCtx: { waitUntil(p: Promise<unknown>): void };
 }
 
@@ -172,7 +173,7 @@ async function authenticate(
     );
     return null;
   }
-  const distKey = await getDistributedKey(c.env.KV, parsed.apiKey);
+  const distKey = await getDistributedKey(c.env, parsed.apiKey);
   if (!distKey || distKey.status !== "enabled") {
     // 错误体按线协议选择：native 用该 provider 官方格式；searxng 用官方 `{error}` 格式
     c.res =
@@ -193,7 +194,7 @@ async function authenticate(
 }
 
 /**
- * 通用重试核：鉴权后由各协议路径共用。签名与请求方 Context 解耦——只依赖 KV 与
+ * 通用重试核：鉴权后由各协议路径共用。签名与请求方 Context 解耦——只依赖 env 与
  * waitUntil，因此队列 DO（无 Hono Context）也能直接调用。
  * - 每次尝试选不同 key；命中"不可重试"分类提前返回，避免浪费配额/流量。
  * - 无 key 配置 / 全部冷却禁用 → 503（经 onFailure 渲染）。
@@ -205,23 +206,24 @@ export async function searchWithRetry(
   request: { path: string; body: string; contentType: string },
   cb: RetryCallbacks
 ): Promise<Response> {
-  const store = getUsageStore(deps.kv);
-  const kv = deps.kv;
+  const store = getUsageStore(deps.env);
+  const env = deps.env;
 
-  // 1. 增加分发 key 当日调用计数（按 provider 拆分，进内存缓冲，尽力而为）
-  const date = todayDate();
-  store.recordDistCall(apiKey, def.name, date);
+  // 1. 增加分发 key 调用计数（按 provider + 结果拆分，进内存缓冲，尽力而为）
+  const hour = hourKey();
+  const minHour = utcTodayStart();
+  store.recordDistCall(apiKey, def.name, hour, "success");
   // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
   store.flushSoon(deps.executionCtx);
 
   // 2. 选出该 provider 的上游 key；未配置任何 key -> 503
-  const keys = await listUpstreamKeys(kv, def.upstream);
+  const keys = await listUpstreamKeys(env, def.upstream);
   if (keys.length === 0) {
     return cb.onFailure({ kind: "no-keys", lastRes: null });
   }
   const statsMap = await store.readUpstreamTodayStats(
     keys.map((k) => k.id),
-    date
+    minHour
   );
 
   // 3. 候选预检：全部冷却/禁用 -> 503
@@ -251,8 +253,8 @@ export async function searchWithRetry(
       res = await proxyToUpstream(def, request.path, key.key, request.body, request.contentType);
     } catch {
       // 网络异常/超时：视为失败，换 key 重试
-      store.recordUpstreamResult(key.id, "fail", date);
-      await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
+      store.recordUpstreamResult(key.id, def.name, hour, "fail");
+      await recordUpstreamFailure(env, def.upstream, key.id, now).catch(() => {});
       continue;
     }
 
@@ -260,13 +262,13 @@ export async function searchWithRetry(
     if (res.ok) {
       const out = await cb.onSuccess(res);
       if (out) {
-        store.recordUpstreamResult(key.id, "success", date);
-        await recordUpstreamSuccess(kv, def.upstream, key.id, now).catch(() => {});
+        store.recordUpstreamResult(key.id, def.name, hour, "success");
+        await recordUpstreamSuccess(env, def.upstream, key.id, now).catch(() => {});
         return out;
       }
       lastRes = res;
-      store.recordUpstreamResult(key.id, "fail", date);
-      await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
+      store.recordUpstreamResult(key.id, def.name, hour, "fail");
+      await recordUpstreamFailure(env, def.upstream, key.id, now).catch(() => {});
       continue;
     }
 
@@ -274,7 +276,7 @@ export async function searchWithRetry(
 
     // 429 限流 → 换 key 重试，仅 post-use 冷却
     if (res.status === 429) {
-      await recordUpstreamRateLimit(kv, def.upstream, key.id, now).catch(() => {});
+      await recordUpstreamRateLimit(env, def.upstream, key.id, now).catch(() => {});
       continue;
     }
 
@@ -285,14 +287,14 @@ export async function searchWithRetry(
 
     // 401/403 key 级错误 → 记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h），换 key
     if (res.status === 401 || res.status === 403) {
-      store.recordUpstreamResult(key.id, "fail", date);
-      await recordUpstreamInvalid(kv, def.upstream, key.id, now).catch(() => {});
+      store.recordUpstreamResult(key.id, def.name, hour, "fail");
+      await recordUpstreamInvalid(env, def.upstream, key.id, now).catch(() => {});
       continue;
     }
 
     // 其余（5xx / 未知状态）→ 记录失败 + 指数退避冷却，换 key 重试
-    store.recordUpstreamResult(key.id, "fail", date);
-    await recordUpstreamFailure(kv, def.upstream, key.id, now).catch(() => {});
+    store.recordUpstreamResult(key.id, def.name, hour, "fail");
+    await recordUpstreamFailure(env, def.upstream, key.id, now).catch(() => {});
   }
 
   // 5. 重试耗尽 → onFailure（透传最后错误响应，或 503/502）
@@ -453,14 +455,15 @@ export async function handleSearch(
     if (!authRes) return c.res; // 错误响应已在 authenticate 写入
     const def = PROVIDERS[authRes.provider];
     const apiKey = authRes.distKey.api_key;
+    const hour = hourKey();
 
     if (authRes.protocol === "searxng") {
       const params = await collectSearxngParams(c);
       const { params: parsed, error } = parseSearxngParams(params);
       if (error) {
-        // 参数错误也记一次调用（口径：分发 key 调用次数，而非成功次数）
-        const store = getUsageStore(c.env.KV);
-        store.recordDistCall(apiKey, def.name, todayDate());
+        // 参数错误也记一次调用（结果记 fail）
+        const store = getUsageStore(c.env);
+        store.recordDistCall(apiKey, def.name, hour, "fail");
         store.flushSoon(c.executionCtx);
         return searxngError(error.status, error.message);
       }
@@ -469,8 +472,8 @@ export async function handleSearch(
       }
       // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
       if (parsed.pageno && parsed.pageno > 1) {
-        const store = getUsageStore(c.env.KV);
-        store.recordDistCall(apiKey, def.name, todayDate());
+        const store = getUsageStore(c.env);
+        store.recordDistCall(apiKey, def.name, hour, "success");
         store.flushSoon(c.executionCtx);
         const empty = toSearxngResponse(
           { results: [] },

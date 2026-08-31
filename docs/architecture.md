@@ -147,8 +147,8 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 | 模块 | 职责 | 不做什么 |
 |---|---|---|
 | `domain.ts` | 词汇 + 规则 + 纯函数 | 不 import 任何仓库模块；不读 KV |
-| `storage.ts` | KV 读写 + Keys CRUD | 不做节流/不吞错/不写策略 |
-| `usage-store.ts` | 内存累积 + 节流 flush + 读叠加 | 不改 domain 规则；不直接被 admin 写 |
+| `storage.ts` | D1 实体读写（上游/分发 key、用量小时桶、熔断状态）+ Keys CRUD | 不做节流/不吞错/不写策略 |
+| `usage-store.ts` | 内存累积 + 节流 flush + 读叠加（按 UTC 小时桶） | 不改 domain 规则；不直接被 admin 写 |
 | `circuit-breaker.ts` | 连续失败计数 → 冷却（读 KV `breaker_config` 运行时参数） | 不感知 provider；失败静默 |
 | `providers/` | 一个 provider 的全部事实（base、endpoints、KV 键、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV |

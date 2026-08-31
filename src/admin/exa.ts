@@ -1,9 +1,9 @@
-// Exa Keys 管理路由（provider 专用文件）。所有数据操作走泛型 kv + EXA 描述符。
+// Exa Keys 管理路由（provider 专用文件）。所有数据操作走泛型 env + EXA 描述符。
 
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
-import { autoKeyName, todayDate } from "../domain";
+import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
   deleteUpstreamKey,
@@ -18,23 +18,23 @@ import { exaListFragment, exaPage } from "../views/exa";
 export const exaAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 exaAdmin.get("/", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(kv, EXA.upstream);
-  const statsMap = await getUsageStore(kv).readUpstreamTodayStats(
+  const keys = await listUpstreamKeys(env, EXA.upstream);
+  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
     keys.map((k) => k.id),
-    todayDate()
+    utcTodayStart()
   );
   return c.html(exaPage(csrf, exaListFragment(keys, statsMap, csrf, Date.now())));
 });
 
 exaAdmin.get("/list", async (c) => {
-  const kv = c.env.KV;
+  const env = c.env;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(kv, EXA.upstream);
-  const statsMap = await getUsageStore(kv).readUpstreamTodayStats(
+  const keys = await listUpstreamKeys(env, EXA.upstream);
+  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
     keys.map((k) => k.id),
-    todayDate()
+    utcTodayStart()
   );
   return c.html(exaListFragment(keys, statsMap, csrf, Date.now()));
 });
@@ -48,7 +48,7 @@ exaAdmin.post("/add", async (c) => {
   const doTest = body["test"] === "1";
   if (!key) return c.html(errorFragment("缺少 key"));
   if (!name) name = autoKeyName();
-  const kv = c.env.KV;
+  const env = c.env;
 
   if (doTest) {
     try {
@@ -70,7 +70,7 @@ exaAdmin.post("/add", async (c) => {
     }
   }
 
-  await addUpstreamKey(kv, EXA.upstream, key, name);
+  await addUpstreamKey(env, EXA.upstream, key, name);
   return c.redirect("/admin/exa/list", 303);
 });
 
@@ -85,14 +85,14 @@ exaAdmin.post("/add/batch", async (c) => {
   const rawKeys = keysText.split(/[\n,]+/).map((k) => k.trim()).filter(Boolean);
   if (rawKeys.length === 0) return c.html(errorFragment("未解析到有效 key"));
 
-  const kv = c.env.KV;
+  const env = c.env;
   const pad = String(rawKeys.length).length;
   for (let i = 0; i < rawKeys.length; i++) {
     const key = rawKeys[i];
     const name = namePrefix
       ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}`
       : autoKeyName();
-    await addUpstreamKey(kv, EXA.upstream, key, name);
+    await addUpstreamKey(env, EXA.upstream, key, name);
   }
 
   return c.redirect("/admin/exa/list", 303);
@@ -103,18 +103,18 @@ exaAdmin.post("/:id/name", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.parseBody();
   const name = (((body["name"] as string) ?? "").trim() || "未命名");
-  const cur = (await listUpstreamKeys(c.env.KV, EXA.upstream)).find((k) => k.id === id);
+  const cur = (await listUpstreamKeys(c.env, EXA.upstream)).find((k) => k.id === id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateUpstreamKey(c.env.KV, EXA.upstream, id, { name });
+  await updateUpstreamKey(c.env, EXA.upstream, id, { name });
   return c.redirect("/admin/exa/list", 303);
 });
 
 exaAdmin.post("/:id/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");
-  const cur = (await listUpstreamKeys(c.env.KV, EXA.upstream)).find((k) => k.id === id);
+  const cur = (await listUpstreamKeys(c.env, EXA.upstream)).find((k) => k.id === id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateUpstreamKey(c.env.KV, EXA.upstream, id, {
+  await updateUpstreamKey(c.env, EXA.upstream, id, {
     status: cur.status === "enabled" ? "disabled" : "enabled",
   });
   return c.redirect("/admin/exa/list", 303);
@@ -122,6 +122,6 @@ exaAdmin.post("/:id/toggle", async (c) => {
 
 exaAdmin.post("/:id/delete", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
-  await deleteUpstreamKey(c.env.KV, EXA.upstream, c.req.param("id"));
+  await deleteUpstreamKey(c.env, EXA.upstream, c.req.param("id"));
   return c.redirect("/admin/exa/list", 303);
 });
