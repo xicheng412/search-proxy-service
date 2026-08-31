@@ -17,9 +17,8 @@ build/
 # 生产部署配置（真实域名等，gitignored；模板见 config/prod.env.example）
 config/prod.env
 
-# Environment / secrets (never commit real keys)
-.env
-.env.*
+# 线上 KV 全量备份（含真实上游/分发 key，勿提交）
+backup-online-kv.json
 
 # Logs
 *.log
