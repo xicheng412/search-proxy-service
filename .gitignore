@@ -20,6 +20,9 @@ config/prod.env
 # 线上 KV 全量备份（含真实上游/分发 key，勿提交）
 backup-online-kv.json
 
+# Wrangler 自动生成的绑定类型（wrangler types，可在任意时刻再生）
+worker-configuration.d.ts
+
 # Logs
 *.log
 npm-debug.log*
