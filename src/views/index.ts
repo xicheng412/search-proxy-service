@@ -21,6 +21,47 @@ export function csrfField(token: string): string {
   return `<input type="hidden" name="csrf_token" value="${esc(token)}">`;
 }
 
+// ---------------------------------------------------------------
+// 上游 Key 管理页分页（Tavily/Exa 共享）
+// ---------------------------------------------------------------
+
+export interface UpstreamPaginationLink {
+  href: string;
+  hxGet: string;
+}
+
+export interface UpstreamPagination {
+  page: number;
+  first: UpstreamPaginationLink | null;
+  previous: UpstreamPaginationLink | null;
+  next: UpstreamPaginationLink | null;
+}
+
+/**
+ * 渲染列表下方的分页控件：
+ * - 显示 `第 N 页 · 每页 20 条`。
+ * - first/previous/next 为 null 时不渲染对应按钮；首页第一页不渲染"首页/上一页"。
+ * - 空列表（hasRows=false）仍渲染唯一"首页"链接，恢复到无 cursor 的第一页。
+ * - 每个链接同时带 href（完整页）与 hx-get（HTMX fragment），hx-target 指向对应列表容器。
+ */
+export function upstreamPaginationHtml(
+  pagination: UpstreamPagination,
+  hasRows: boolean,
+  targetId: string
+): string {
+  const btn = (link: UpstreamPaginationLink, label: string): string =>
+    `<a class="page-btn" href="${esc(link.href)}" hx-get="${esc(link.hxGet)}" hx-target="${targetId}" hx-swap="innerHTML">${label}</a>`;
+  const parts: string[] = [
+    `<span class="muted">第 ${pagination.page} 页 · 每页 20 条</span>`,
+  ];
+  if (pagination.first && (pagination.page > 1 || !hasRows)) {
+    parts.push(btn(pagination.first, "首页"));
+  }
+  if (pagination.previous) parts.push(btn(pagination.previous, "上一页"));
+  if (pagination.next) parts.push(btn(pagination.next, "下一页"));
+  return `<div class="pagination" style="margin-top:10px;display:flex;gap:8px;align-items:center;">${parts.join("")}</div>`;
+}
+
 type NavKey = "dashboard" | "tavily" | "exa" | "keys" | "help";
 
 const NAV_ITEMS: { key: NavKey; href: string; label: string }[] = [

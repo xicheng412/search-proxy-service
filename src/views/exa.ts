@@ -1,7 +1,13 @@
 // Exa Keys 管理页模板（按确认与 Tavily 各维护一份，路径/文案为本 provider 专用）。
 
 import { ExaKey, TavilyStats, maskKey } from "../domain";
-import { esc, csrfField, layout } from "./index";
+import {
+  UpstreamPagination,
+  esc,
+  csrfField,
+  layout,
+  upstreamPaginationHtml,
+} from "./index";
 
 export function exaPage(csrf: string, fragment: string): string {
   const body = `
@@ -22,6 +28,7 @@ export function exaListFragment(
   statsMap: Record<string, TavilyStats>,
   csrf: string,
   now: number,
+  pagination: UpstreamPagination,
   flash?: string
 ): string {
   const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
@@ -74,7 +81,8 @@ export function exaListFragment(
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>冷却</th>
       <th>当日成功</th><th>当日失败</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table>
+  ${upstreamPaginationHtml(pagination, keys.length > 0, "#exa-list")}`;
 }
 
 export function exaEditFragment(csrf: string): string {

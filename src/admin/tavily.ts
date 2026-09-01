@@ -1,42 +1,75 @@
 // Tavily Keys 管理路由（provider 专用文件）。所有数据操作走泛型 env + TAVILY 描述符。
 
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
 import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
   deleteUpstreamKey,
-  listUpstreamKeys,
+  getUpstreamKey,
+  listUpstreamKeysPage,
+  UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage";
 import { getUsageStore } from "../usage-store";
 import { TAVILY } from "../providers";
 import { errorFragment } from "../views";
+import {
+  UPSTREAM_PAGE_SIZE,
+  buildUpstreamPagination,
+  parseUpstreamPageQuery,
+} from "./pagination";
 import { tavilyListFragment, tavilyPage } from "../views/tavily";
 
 export const tavilyAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
+/** 读取当前页 key 并返回分页结果；query 参数非法时返回 400，不访问 D1。 */
+async function loadUpstreamPage(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>
+): Promise<Response | { pageNumber: number; page: UpstreamKeyPage }> {
+  const query = parseUpstreamPageQuery(c);
+  if (!query.ok) return c.html(errorFragment(query.message), 400);
+  let page: UpstreamKeyPage;
+  try {
+    page = await listUpstreamKeysPage(c.env, TAVILY.upstream, {
+      after: query.after,
+      before: query.before,
+      limit: UPSTREAM_PAGE_SIZE,
+    });
+  } catch {
+    return c.html(errorFragment("参数错误"), 400);
+  }
+  return { pageNumber: query.page, page };
+}
+
 tavilyAdmin.get("/", async (c) => {
-  const env = c.env;
+  const loaded = await loadUpstreamPage(c);
+  if (loaded instanceof Response) return loaded;
+  const { pageNumber, page } = loaded;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(env, TAVILY.upstream);
-  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
-    keys.map((k) => k.id),
+  const statsMap = await getUsageStore(c.env).readUpstreamTodayStats(
+    page.keys.map((k) => k.id),
     utcTodayStart()
   );
-  return c.html(tavilyPage(csrf, tavilyListFragment(keys, statsMap, csrf, Date.now())));
+  const pagination = buildUpstreamPagination("/admin/tavily", pageNumber, page);
+  return c.html(
+    tavilyPage(csrf, tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination))
+  );
 });
 
 tavilyAdmin.get("/list", async (c) => {
-  const env = c.env;
+  const loaded = await loadUpstreamPage(c);
+  if (loaded instanceof Response) return loaded;
+  const { pageNumber, page } = loaded;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(env, TAVILY.upstream);
-  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
-    keys.map((k) => k.id),
+  const statsMap = await getUsageStore(c.env).readUpstreamTodayStats(
+    page.keys.map((k) => k.id),
     utcTodayStart()
   );
-  return c.html(tavilyListFragment(keys, statsMap, csrf, Date.now()));
+  const pagination = buildUpstreamPagination("/admin/tavily", pageNumber, page);
+  return c.html(tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination));
 });
 
 // 新增 Tavily key（可附带 test call；name 可选，未填则自动生成）
@@ -103,7 +136,7 @@ tavilyAdmin.post("/:id/name", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.parseBody();
   const name = (((body["name"] as string) ?? "").trim() || "未命名");
-  const cur = (await listUpstreamKeys(c.env, TAVILY.upstream)).find((k) => k.id === id);
+  const cur = await getUpstreamKey(c.env, TAVILY.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateUpstreamKey(c.env, TAVILY.upstream, id, { name });
   return c.redirect("/admin/tavily/list", 303);
@@ -112,7 +145,7 @@ tavilyAdmin.post("/:id/name", async (c) => {
 tavilyAdmin.post("/:id/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");
-  const cur = (await listUpstreamKeys(c.env, TAVILY.upstream)).find((k) => k.id === id);
+  const cur = await getUpstreamKey(c.env, TAVILY.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateUpstreamKey(c.env, TAVILY.upstream, id, {
     status: cur.status === "enabled" ? "disabled" : "enabled",

@@ -1,42 +1,75 @@
 // Exa Keys 管理路由（provider 专用文件）。所有数据操作走泛型 env + EXA 描述符。
 
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
 import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
   deleteUpstreamKey,
-  listUpstreamKeys,
+  getUpstreamKey,
+  listUpstreamKeysPage,
+  UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage";
 import { getUsageStore } from "../usage-store";
 import { EXA } from "../providers";
 import { errorFragment } from "../views";
+import {
+  UPSTREAM_PAGE_SIZE,
+  buildUpstreamPagination,
+  parseUpstreamPageQuery,
+} from "./pagination";
 import { exaListFragment, exaPage } from "../views/exa";
 
 export const exaAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
+/** 读取当前页 key 并返回分页结果；query 参数非法时返回 400，不访问 D1。 */
+async function loadUpstreamPage(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>
+): Promise<Response | { pageNumber: number; page: UpstreamKeyPage }> {
+  const query = parseUpstreamPageQuery(c);
+  if (!query.ok) return c.html(errorFragment(query.message), 400);
+  let page: UpstreamKeyPage;
+  try {
+    page = await listUpstreamKeysPage(c.env, EXA.upstream, {
+      after: query.after,
+      before: query.before,
+      limit: UPSTREAM_PAGE_SIZE,
+    });
+  } catch {
+    return c.html(errorFragment("参数错误"), 400);
+  }
+  return { pageNumber: query.page, page };
+}
+
 exaAdmin.get("/", async (c) => {
-  const env = c.env;
+  const loaded = await loadUpstreamPage(c);
+  if (loaded instanceof Response) return loaded;
+  const { pageNumber, page } = loaded;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(env, EXA.upstream);
-  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
-    keys.map((k) => k.id),
+  const statsMap = await getUsageStore(c.env).readUpstreamTodayStats(
+    page.keys.map((k) => k.id),
     utcTodayStart()
   );
-  return c.html(exaPage(csrf, exaListFragment(keys, statsMap, csrf, Date.now())));
+  const pagination = buildUpstreamPagination("/admin/exa", pageNumber, page);
+  return c.html(
+    exaPage(csrf, exaListFragment(page.keys, statsMap, csrf, Date.now(), pagination))
+  );
 });
 
 exaAdmin.get("/list", async (c) => {
-  const env = c.env;
+  const loaded = await loadUpstreamPage(c);
+  if (loaded instanceof Response) return loaded;
+  const { pageNumber, page } = loaded;
   const csrf = (await getCsrfToken(c)) ?? "";
-  const keys = await listUpstreamKeys(env, EXA.upstream);
-  const statsMap = await getUsageStore(env).readUpstreamTodayStats(
-    keys.map((k) => k.id),
+  const statsMap = await getUsageStore(c.env).readUpstreamTodayStats(
+    page.keys.map((k) => k.id),
     utcTodayStart()
   );
-  return c.html(exaListFragment(keys, statsMap, csrf, Date.now()));
+  const pagination = buildUpstreamPagination("/admin/exa", pageNumber, page);
+  return c.html(exaListFragment(page.keys, statsMap, csrf, Date.now(), pagination));
 });
 
 // 新增 Exa key（可附带 test call；name 可选，未填则自动生成）
@@ -103,7 +136,7 @@ exaAdmin.post("/:id/name", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.parseBody();
   const name = (((body["name"] as string) ?? "").trim() || "未命名");
-  const cur = (await listUpstreamKeys(c.env, EXA.upstream)).find((k) => k.id === id);
+  const cur = await getUpstreamKey(c.env, EXA.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateUpstreamKey(c.env, EXA.upstream, id, { name });
   return c.redirect("/admin/exa/list", 303);
@@ -112,7 +145,7 @@ exaAdmin.post("/:id/name", async (c) => {
 exaAdmin.post("/:id/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");
-  const cur = (await listUpstreamKeys(c.env, EXA.upstream)).find((k) => k.id === id);
+  const cur = await getUpstreamKey(c.env, EXA.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateUpstreamKey(c.env, EXA.upstream, id, {
     status: cur.status === "enabled" ? "disabled" : "enabled",
