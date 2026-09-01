@@ -13,7 +13,6 @@ import {
   mergeUsage,
   readHourly as storeReadHourly,
   sumUsageByScopes,
-  sumUsageByProvider,
 } from "./storage";
 
 type Result = "success" | "fail";
@@ -28,8 +27,11 @@ export interface UsageStore {
     ids: string[],
     minHour: string
   ): Promise<Record<string, { success: number; fail: number }>>;
-  /** 读分发 key 某 UTC 日统计（展示用）：D1 现值 + 本实例增量叠加。 */
-  readDistCalls(apiKey: string, minHour: string): Promise<DistStats>;
+  /** 批量读多个分发 key 某 UTC 日统计（展示用）：D1 现值 + 本实例增量叠加。 */
+  readDistCallsByScopes(
+    apiKeys: string[],
+    minHour: string
+  ): Promise<Record<string, DistStats>>;
   /** 读某 scope 的小时明细（给前端组合"今日/最近N小时"边界用）。 */
   readHourly(kind: "upstream" | "dist", scope: string, minHour: string): Promise<UsageIncrement[]>;
   /** 节流调度 flush：距上次 ≥interval 且缓冲非空才排入 waitUntil，不阻塞请求。 */
@@ -57,6 +59,12 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     minHour: string;
     at: number;
     base: Record<string, { success: number; fail: number }>;
+  } | null = null;
+  let distCache: {
+    ids: string;
+    minHour: string;
+    at: number;
+    base: Record<string, DistStats>;
   } | null = null;
 
   async function flush(): Promise<void> {
@@ -161,15 +169,45 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     return result;
   }
 
-  async function readDistCalls(apiKey: string, minHour: string): Promise<DistStats> {
-    const byProvider = await sumUsageByProvider(env, "dist", apiKey, minHour);
+  const callsOf = (w: { success: number; fail: number } | undefined): number =>
+    w ? w.success + w.fail : 0;
+
+  async function readDistCallsByScopes(
+    apiKeys: string[],
+    minHour: string
+  ): Promise<Record<string, DistStats>> {
+    if (apiKeys.length === 0) return {};
+    const idsKey = [...apiKeys].sort().join(",");
+    const now = Date.now();
+    if (
+      !distCache ||
+      distCache.ids !== idsKey ||
+      distCache.minHour !== minHour ||
+      now - distCache.at >= readCacheMs
+    ) {
+      const base: Record<string, DistStats> = {};
+      const byScope = await sumUsageByScopes(env, "dist", apiKeys, minHour);
+      for (const key of apiKeys) {
+        const byProvider = byScope[key] ?? {};
+        base[key] = {
+          tavily: callsOf(byProvider["tavily"]),
+          exa: callsOf(byProvider["exa"]),
+        };
+      }
+      distCache = { ids: idsKey, minHour, at: now, base };
+    }
     const nowHour = new Date().toISOString().slice(0, 13) + ":00";
-    const perProvider = (p: string): number => {
-      const d = byProvider[p] ?? { success: 0, fail: 0 };
-      const loc = withPending("dist", apiKey, p, nowHour);
-      return d.success + d.fail + loc.success + loc.fail;
-    };
-    return { tavily: perProvider("tavily"), exa: perProvider("exa") };
+    const result: Record<string, DistStats> = {};
+    for (const key of apiKeys) {
+      const b = distCache.base[key] ?? { tavily: 0, exa: 0 };
+      const pt = withPending("dist", key, "tavily", nowHour);
+      const pe = withPending("dist", key, "exa", nowHour);
+      result[key] = {
+        tavily: b.tavily + pt.success + pt.fail,
+        exa: b.exa + pe.success + pe.fail,
+      };
+    }
+    return result;
   }
 
   function withPending(
@@ -193,7 +231,7 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     recordUpstreamResult,
     recordDistCall,
     readUpstreamTodayStats,
-    readDistCalls,
+    readDistCallsByScopes,
     readHourly,
     flushSoon,
   };

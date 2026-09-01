@@ -403,26 +403,6 @@ export async function sumUsage(
   return { success: (row?.success as number) ?? 0, fail: (row?.fail as number) ?? 0 };
 }
 
-/** 按 provider 分组的时间窗求和（分发侧"某客户各 provider 用量"用）。 */
-export async function sumUsageByProvider(
-  env: Env,
-  kind: UsageKind,
-  scope: string,
-  minHour: string
-): Promise<Record<string, UsageWindow>> {
-  const { results } = await env.DB.prepare(
-    `SELECT provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
-     FROM usage_counts WHERE kind = ?1 AND scope = ?2 AND hour >= ?3
-     GROUP BY provider`
-  )
-    .bind(kind, scope, minHour)
-    .all();
-  const out: Record<string, UsageWindow> = {};
-  for (const r of results as Record<string, unknown>[]) {
-    out[r.provider as string] = { success: (r.success as number) ?? 0, fail: (r.fail as number) ?? 0 };
-  }
-  return out;
-}
 /** 多 scope 按 provider 分组的求和（一次往返）。返回 scope -> (provider -> window)。 */
 export async function sumUsageByScopes(
   env: Env,

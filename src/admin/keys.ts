@@ -27,13 +27,10 @@ async function buildCallsMap(
   minHour: string
 ): Promise<Record<string, DistStats>> {
   const store = getUsageStore(env);
-  const callsMap: Record<string, DistStats> = {};
-  await Promise.all(
-    dkeys.map(async (k) => {
-      callsMap[k.api_key] = await store.readDistCalls(k.api_key, minHour);
-    })
+  return store.readDistCallsByScopes(
+    dkeys.map((k) => k.api_key),
+    minHour
   );
-  return callsMap;
 }
 
 keysAdmin.get("/", async (c) => {

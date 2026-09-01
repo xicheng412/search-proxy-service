@@ -57,14 +57,13 @@ admin.get("/", async (c) => {
     listDistributedKeys(env),
   ]);
 
-  let todayCalls = 0;
   const store = getUsageStore(env);
-  await Promise.all(
-    dkeys.map(async (k) => {
-      const s = await store.readDistCalls(k.api_key, minHour);
-      todayCalls += s.tavily + s.exa;
-    })
+  const callsMap = await store.readDistCallsByScopes(
+    dkeys.map((k) => k.api_key),
+    minHour
   );
+  let todayCalls = 0;
+  for (const s of Object.values(callsMap)) todayCalls += s.tavily + s.exa;
 
   return c.html(
     adminPage({
