@@ -138,7 +138,10 @@ export function layout(
     .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
              gap:20px; margin-bottom:20px; }
     .card.chart { grid-column: 1 / -1; }
-    .card.chart canvas { width:100%; height:300px; }
+    /* 固定高度容器承接 Chart.js responsive：容器高度由本处定死、不随 canvas 内联高度
+       变化，避免 Chart.js #5805/#11821 的「容器高度↔canvas 高度」反馈无限拉高。 */
+    .card.chart .chart-box { position:relative; height:300px; width:100%; }
+    .card.chart .chart-box canvas { display:block; width:100%; height:100%; }
     .card { background:var(--card); border:1px solid var(--line);
             border-radius:12px; padding:16px; }
     .card h2 { font-size:15px; margin:0 0 12px; color:var(--accent); }
@@ -259,7 +262,7 @@ export function adminPage(data: DashboardData): string {
   </div>
   <div class="card chart">
     <h2>近 5 天调用趋势</h2>
-    <canvas id="calls-chart"></canvas>
+    <div class="chart-box"><canvas id="calls-chart"></canvas></div>
   </div>
 </section>
 <section class="card">
