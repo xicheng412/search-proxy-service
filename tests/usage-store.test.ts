@@ -87,3 +87,63 @@ describe("readDistCallsByScopes", () => {
     expect(count()).toBe(3);
   });
 });
+
+describe("readUpstreamWeightSignal", () => {
+  // fake D1：all() 返回固定聚合行；batch() 空返回（让 flush 可跑）；各自计数。
+  function makeSignalDb(rows: Record<string, unknown>[]) {
+    let allCount = 0;
+    let batchCount = 0;
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async all() {
+                allCount += 1;
+                return { results: rows, success: true } as never;
+              },
+            };
+          },
+        };
+      },
+      async batch(stmts: unknown[]) {
+        batchCount += 1;
+        return stmts.map(() => ({ results: [], success: true }));
+      },
+    };
+    return { db, allCount: () => allCount, batchCount: () => batchCount };
+  }
+
+  it("信号读不发 D1（空 base、无 pending）", async () => {
+    const { db, allCount } = makeSignalDb([]);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 0 });
+    expect(allCount()).toBe(0);
+  });
+
+  it("pending 叠加且不新增 D1", async () => {
+    const { db, allCount } = makeSignalDb([]);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail");
+    await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 1 });
+    expect(allCount()).toBe(0);
+  });
+
+  it("flush 刷新 base 并合并；重复信号读不再查 D1", async () => {
+    const signalRows = [{ scope: "key-a", provider: "tavily", success: 3, fail: 2 }];
+    const { db, allCount } = makeSignalDb(signalRows);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    store.recordUpstreamResult("key-a", "tavily", hourKey(), "success"); // 让 flush 有东西可写
+    let captured: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
+    expect(captured).toBeDefined();
+    await captured;
+    await expect(store.readUpstreamWeightSignal(["key-a", "key-b"])).resolves.toEqual({
+      "key-a": 2, // 仅来自 base 快照（pending 已被 flush 清空）
+      "key-b": 0,
+    });
+    expect(allCount()).toBe(1); // 只有 flush 内刷新一次
+    await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 2 });
+    expect(allCount()).toBe(1); // 第二次信号读不加 D1
+  });
+});

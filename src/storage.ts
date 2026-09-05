@@ -414,15 +414,7 @@ export async function sumUsageByScopes(
   // D1/SQLite caps numbered bind variables at ?100; kind + minHour use two slots.
   const maxScopesPerQuery = 98;
   const out: Record<string, Record<string, UsageWindow>> = {};
-  for (let offset = 0; offset < scopes.length; offset += maxScopesPerQuery) {
-    const scopeBatch = scopes.slice(offset, offset + maxScopesPerQuery);
-    const placeholders = scopeBatch.map((_, i) => `?${i + 2}`).join(",");
-    const { results } = await env.DB.prepare(
-      `SELECT scope, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
-       FROM usage_counts
-       WHERE kind = ?1 AND scope IN (${placeholders}) AND hour >= ?${scopeBatch.length + 2}
-       GROUP BY scope, provider`
-    ).bind(kind, ...scopeBatch, minHour).all();
+  const mergeRows = (results: unknown[]) => {
     for (const r of results as Record<string, unknown>[]) {
       const scope = r.scope as string;
       (out[scope] ??= {})[r.provider as string] = {
@@ -430,7 +422,37 @@ export async function sumUsageByScopes(
         fail: (r.fail as number) ?? 0,
       };
     }
+  };
+
+  if (scopes.length <= maxScopesPerQuery) {
+    // 单批：保持原有 .all() 路径（fake D1 无 batch 的测试契约）。
+    const placeholders = scopes.map((_, i) => `?${i + 2}`).join(",");
+    const { results } = await env.DB.prepare(
+      `SELECT scope, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+       FROM usage_counts
+       WHERE kind = ?1 AND scope IN (${placeholders}) AND hour >= ?${scopes.length + 2}
+       GROUP BY scope, provider`
+    ).bind(kind, ...scopes, minHour).all();
+    mergeRows(results);
+    return out;
   }
+
+  // 多批（>98）：构造全部 stmt 后用 DB.batch 一次往返，替代逐批串行 await。
+  const stmts: Parameters<typeof env.DB.batch>[0] = [];
+  for (let offset = 0; offset < scopes.length; offset += maxScopesPerQuery) {
+    const scopeBatch = scopes.slice(offset, offset + maxScopesPerQuery);
+    const placeholders = scopeBatch.map((_, i) => `?${i + 2}`).join(",");
+    stmts.push(
+      env.DB.prepare(
+        `SELECT scope, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+         FROM usage_counts
+         WHERE kind = ?1 AND scope IN (${placeholders}) AND hour >= ?${scopeBatch.length + 2}
+         GROUP BY scope, provider`
+      ).bind(kind, ...scopeBatch, minHour)
+    );
+  }
+  const batchResults = await env.DB.batch(stmts);
+  for (const r of batchResults) mergeRows(r.results);
   return out;
 }
 

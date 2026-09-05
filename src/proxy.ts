@@ -27,7 +27,6 @@ import {
   WireProtocol,
   parseDistKey,
   hourKey,
-  utcTodayStart,
 } from "./domain";
 import { getDistributedKey, listUpstreamKeys } from "./storage";
 import { getUsageStore } from "./usage-store";
@@ -77,11 +76,12 @@ export interface RetryCallbacks {
 
 /**
  * 加权随机：只从 status=enabled、未冷却 且 未被排除的 key 中选择；
- * 权重 = 1 / (当日失败数 + 1)，即失败越少权重越高（0 失败最高）。
+ * 权重 = 1 / (该 key 今日失败数信号 + 1)，即失败越少权重越高（0 失败最高）。
+ * statsMap 为空（单选候选时跳过统计）则退化为均匀权重。
  */
 export function selectUpstreamKey(
   keys: CoreKey[],
-  statsMap: Record<string, { success: number; fail: number }>,
+  statsMap: Record<string, number>,
   now: number = Date.now(),
   excludeIds?: Set<string>
 ): CoreKey | null {
@@ -94,7 +94,7 @@ export function selectUpstreamKey(
   if (candidates.length === 0) return null;
 
   const weights = candidates.map((k) => {
-    const fail = statsMap[k.id]?.fail ?? 0;
+    const fail = statsMap[k.id] ?? 0;
     return 1 / (fail + 1);
   });
   const total = weights.reduce((a, b) => a + b, 0);
@@ -211,7 +211,6 @@ export async function searchWithRetry(
 
   // 1. 增加分发 key 调用计数（按 provider + 结果拆分，进内存缓冲，尽力而为）
   const hour = hourKey();
-  const minHour = utcTodayStart();
   store.recordDistCall(apiKey, def.name, hour, "success");
   // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
   store.flushSoon(deps.executionCtx);
@@ -221,21 +220,19 @@ export async function searchWithRetry(
   if (keys.length === 0) {
     return cb.onFailure({ kind: "no-keys", lastRes: null });
   }
-  const statsMap = await store.readUpstreamTodayStats(
-    keys.map((k) => k.id),
-    minHour
-  );
 
-  // 3. 候选预检：全部冷却/禁用 -> 503
+  // 3. 候选预检：全部冷却/禁用 -> 503；仅候选 ≥2 才读权重信号（内存信号，0 次 D1 往返）
   const now0 = Date.now();
-  const hasCandidate = keys.some(
+  const candidates = keys.filter(
     (k) =>
       k.status === "enabled" &&
       (k.cooldown_until == null || k.cooldown_until <= now0)
   );
-  if (!hasCandidate) {
+  if (candidates.length === 0) {
     return cb.onFailure({ kind: "unavailable", lastRes: null });
   }
+  const statsMap =
+    candidates.length < 2 ? {} : await store.readUpstreamWeightSignal(candidates.map((k) => k.id));
 
   const tried = new Set<string>();
   let lastRes: Response | null = null;
