@@ -5,7 +5,16 @@
 import { describe, it, expect, vi, afterEach, type Mock } from "vitest";
 import type { Env } from "../src/types";
 import { TAVILY } from "../src/providers";
-import { searchWithRetry, type CoreDeps } from "../src/retry";
+import type { CoreKey } from "../src/domain";
+import type { UsageStore } from "../src/usage-store";
+import {
+  searchWithRetry,
+  TRANSITIONS,
+  emit,
+  type CoreDeps,
+  type RetryContext,
+  type RetryState,
+} from "../src/retry";
 import { makeConstantD1 } from "./helpers/fake-d1";
 
 const fakeKV = { get: async () => null, put: async () => {} };
@@ -241,5 +250,93 @@ describe("searchWithRetry 重试矩阵", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(bearerSet(fetchMock).size).toBe(2); // 两次尝试不同 key
     expect(await res.text()).toBe("ok");
+  });
+});
+
+// ---- 重试状态机（FSM）单测：零 fetch，直测迁移表与 emit（src/retry.ts 的 test-only 导出）----
+
+/**
+ * 构造 emit("pick") 最小上下文：非 pick 读取路径不触 env/store/cb，用惰性 stub。
+ * 每次调用返回全新实例（tried 默认空 Set），避免测试间串状态。
+ */
+function pickCtx(
+  keys: CoreKey[],
+  attempt = 0,
+  tried = new Set<string>()
+): RetryContext {
+  return {
+    env: makeEnv([]),
+    def: TAVILY,
+    request: req,
+    // 仅 emit("pick")：该路径不触 store/cb，stub 即可
+    cb: {
+      onSuccess: async () => null,
+      onFailure: async () => new Response("fail", { status: 502 }),
+    },
+    store: {} as UsageStore,
+    hour: "",
+    keys,
+    statsMap: {},
+    tried,
+    lastRes: null,
+    attempt,
+    currentKey: null,
+  };
+}
+
+describe("重试状态机（FSM）", () => {
+  /** 迁移表 12 行逐行断言；第三列 = 是否应携带副作用 action。 */
+  const table: Array<[key: string, to: RetryState, hasAction: boolean]> = [
+    ["init:no-keys", "no-keys", false],
+    ["init:empty-candidates", "unavailable", false],
+    ["init:ready", "pick", false],
+    ["pick:picked", "in-flight", false],
+    ["pick:depleted", "exhausted", false],
+    ["in-flight:success", "success", true],
+    ["in-flight:unusable", "pick", true],
+    ["in-flight:network", "pick", true],
+    ["in-flight:rate-limit", "pick", true],
+    ["in-flight:client-error", "client-error", false],
+    ["in-flight:auth-error", "pick", true],
+    ["in-flight:server-error", "pick", true],
+  ];
+
+  it("迁移表：12 行键齐全（缺配/多配即失败）、to 正确、action 有无与副作用表一致", () => {
+    // 守卫：未来新增事件或漏配迁移，键集合变差即失败
+    expect(Object.keys(TRANSITIONS).sort()).toEqual(table.map(([k]) => k).sort());
+
+    for (const [key, to, hasAction] of table) {
+      expect(TRANSITIONS[key].to).toBe(to);
+      if (hasAction) {
+        expect(TRANSITIONS[key].action).toBeDefined();
+      } else {
+        expect(TRANSITIONS[key].action).toBeUndefined();
+      }
+    }
+  });
+
+  it('emit("pick") 达到 MAX_ATTEMPTS 上限 → depleted，不再选 key', async () => {
+    const ctx = pickCtx([keyRow("k-g1")], 3 /* = MAX_ATTEMPTS */);
+    const ev = await emit("pick", ctx);
+    expect(ev).toEqual({ kind: "depleted" });
+    expect(ctx.attempt).toBe(3);
+    expect(ctx.currentKey).toBeNull();
+  });
+
+  it('emit("pick") 首个可用候选 → picked 并推进 attempt/tried/currentKey', async () => {
+    const ctx = pickCtx([keyRow("k-g1")]);
+    const ev = await emit("pick", ctx);
+    expect(ev).toMatchObject({ kind: "picked", key: { id: "k-g1" } });
+    expect(ctx.attempt).toBe(1);
+    expect(ctx.tried.size).toBe(1);
+    expect(ctx.tried.has("k-g1")).toBe(true);
+    expect(ctx.currentKey?.id).toBe("k-g1");
+  });
+
+  it('emit("pick") 候选已全部尝试（tried 占满）→ depleted', async () => {
+    const ctx = pickCtx([keyRow("k-g1")], 0, new Set(["k-g1"]));
+    const ev = await emit("pick", ctx);
+    expect(ev).toEqual({ kind: "depleted" });
+    expect(ctx.attempt).toBe(0);
   });
 });

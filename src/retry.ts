@@ -1,4 +1,9 @@
-// 领域层·重试策略核 + 上游传输（searchWithRetry）。
+// 领域层·重试状态机（FSM）+ 上游传输（src/retry.ts）。
+// searchWithRetry 以声明式状态机驱动重试：状态（init/pick/in-flight + 终态）、
+// 扁平事件（RetryEvent：每个失败类一个 kind，无子分派）、迁移表（TRANSITIONS：
+// key = `${state}:${kind}`，含可选 action）+ 少量行驱动器。读取进 emit、写副作用进
+// 迁移 action、请求级 bookkeeping 进 prologue。
+//
 // 一次请求最多尝试 MAX_ATTEMPTS 个不同上游 key，每次失败按分类走冷却/统计/换 key：
 //   - 2xx        → 调用 onSuccess；返回 null 视为"成功但响应不可用"，按失败换 key 重试
 //   - 429        → 换 key 重试，仅 post-use 冷却，不计熔断
@@ -6,6 +11,9 @@
 //   - 401/403    → key 级错误：记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调），换 key
 //   - 其余/网络  → 记录失败 + 指数退避冷却，换 key 重试
 //   候选池耗尽或达到上限 → onFailure（透传最后一个错误响应，或 503/502）
+//
+// TRANSITIONS / emit / RetryState / RetryEvent / RetryContext 仅供 tests 引用
+// （FSM 单测的唯一触达面，别无实现出口）。
 //
 // 注意：上游传输（proxyToUpstream / UPSTREAM_TIMEOUT_MS）随核在此，因为 searchWithRetry
 // 内部直接调用它；若留在 proxy.ts 会造成 retry.ts ←→ proxy.ts 循环依赖。
@@ -129,7 +137,7 @@ function classifyStatus(
   }
 }
 
-// ---- 副作用捆绑 helper：把"内存统计 + 熔断状态写入"成对打包，供重试循环各分支复用 ----
+// ---- 副作用捆绑 helper：把"内存统计 + 熔断状态写入"成对打包，供迁移 action 复用 ----
 
 /** 成功：记一次 usage 成功 + 熔断成功（连续失败归零，保留 post-use 冷却）。 */
 async function markSuccess(
@@ -180,9 +188,227 @@ async function markInvalid(
   await recordUpstreamInvalid(env, def.upstream, id, now).catch(() => {});
 }
 
+// ---- 重试状态机（FSM）：状态 / 事件 / 上下文 / 迁移表 / 读取 / 渲染 ----
+// 终态集合 = RetryOutcome 全部类别：success → res 直接返回；其余 → onFailure。
+// usage/熔断持久态/队列 DO/协议渲染不进机器：写副作用在迁移 action，读在 emit，
+// 协议渲染经 RetryCallbacks（cb）访问。
+
+type RetryState =
+  | "init"
+  | "pick"
+  | "in-flight"
+  | "success"
+  | "no-keys"
+  | "unavailable"
+  | "client-error"
+  | "exhausted";
+
+type RetryEvent =
+  | { kind: "no-keys" }
+  | { kind: "empty-candidates" }
+  | { kind: "ready" }
+  | { kind: "picked"; key: CoreKey }
+  | { kind: "depleted" }
+  | { kind: "success"; res: Response }
+  | { kind: "unusable"; res: Response }
+  | { kind: "network" }
+  | { kind: "rate-limit"; res: Response }
+  | { kind: "client-error"; res: Response }
+  | { kind: "auth-error"; res: Response }
+  | { kind: "server-error"; res: Response };
+
+interface RetryContext {
+  env: Env;
+  def: ProviderConfig;
+  request: { path: string; body: string; contentType: string };
+  cb: RetryCallbacks;
+  store: UsageStore;
+  hour: string;
+  keys: CoreKey[];
+  statsMap: Record<string, number>;
+  tried: Set<string>;
+  lastRes: Response | null;
+  attempt: number;
+  currentKey: CoreKey | null;
+}
+
+// type 擦除，运行时无面：仅供 tests 引用（见文件头注释）
+export type { RetryState, RetryEvent, RetryContext };
+
+type Transition = {
+  to: RetryState;
+  action?: (ctx: RetryContext, ev: RetryEvent) => Promise<void>;
+};
+
+const TERMINAL = new Set<RetryState>([
+  "success",
+  "no-keys",
+  "unavailable",
+  "client-error",
+  "exhausted",
+]);
+
+function isTerminal(s: RetryState): boolean {
+  return TERMINAL.has(s);
+}
+
+/**
+ * 迁移表：key = `${state}:${event.kind}`，每个可到事件必有迁移（缺配即驱动抛错）。
+ * action 为副作用壳，复用现有 mark* helper；非重试性/终止路径无 action（现状行为）。
+ */
+export const TRANSITIONS: Record<string, Transition> = {
+  "init:no-keys": { to: "no-keys" },
+  "init:empty-candidates": { to: "unavailable" },
+  "init:ready": { to: "pick" },
+  "pick:picked": { to: "in-flight" },
+  "pick:depleted": { to: "exhausted" },
+  "in-flight:success": {
+    to: "success",
+    action: (ctx) =>
+      markSuccess(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+  },
+  "in-flight:unusable": {
+    to: "pick",
+    action: (ctx) =>
+      markFail(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+  },
+  "in-flight:network": {
+    to: "pick",
+    action: (ctx) =>
+      markFail(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+  },
+  "in-flight:rate-limit": {
+    to: "pick",
+    action: (ctx) =>
+      markRateLimit(ctx.env, ctx.def, ctx.currentKey!.id, Date.now()),
+  },
+  "in-flight:client-error": { to: "client-error" },
+  "in-flight:auth-error": {
+    to: "pick",
+    action: (ctx) =>
+      markInvalid(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+  },
+  "in-flight:server-error": {
+    to: "pick",
+    action: (ctx) =>
+      markFail(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+  },
+};
+
+/**
+ * 读取/推进：根据当前状态产出下一个事件，并就地更新 ctx（bookkeeping）。
+ * 只读 + 状态推进，副作用一律留给对应迁移 action。
+ */
+export async function emit(state: RetryState, ctx: RetryContext): Promise<RetryEvent> {
+  switch (state) {
+    case "init": {
+      ctx.keys = await listUpstreamKeys(ctx.env, ctx.def.upstream);
+      if (ctx.keys.length === 0) return { kind: "no-keys" };
+
+      const now0 = Date.now();
+      const candidates = ctx.keys.filter((k) => isCandidate(k, now0));
+      if (candidates.length === 0) return { kind: "empty-candidates" };
+
+      ctx.statsMap =
+        candidates.length < 2
+          ? {}
+          : await ctx.store.readUpstreamWeightSignal(candidates.map((k) => k.id));
+      return { kind: "ready" };
+    }
+
+    case "pick": {
+      if (ctx.attempt >= MAX_ATTEMPTS) return { kind: "depleted" };
+
+      const key = selectUpstreamKey(ctx.keys, ctx.statsMap, Date.now(), ctx.tried);
+      if (!key) return { kind: "depleted" };
+
+      ctx.tried.add(key.id);
+      ctx.currentKey = key;
+      ctx.attempt += 1;
+      return { kind: "picked", key };
+    }
+
+    case "in-flight": {
+      const key = ctx.currentKey!;
+      let res: Response;
+      try {
+        res = await proxyToUpstream(
+          ctx.def,
+          ctx.request.path,
+          key.key,
+          ctx.request.body,
+          ctx.request.contentType
+        );
+      } catch {
+        // 网络异常/超时：lastRes 不变，交由 migration 按失败换 key
+        return { kind: "network" };
+      }
+
+      if (res.ok) {
+        const out = await ctx.cb.onSuccess(res);
+        if (out) return { kind: "success", res: out };
+        // 2xx 但响应不可用：视为失败换 key
+        ctx.lastRes = res;
+        return { kind: "unusable", res };
+      }
+
+      ctx.lastRes = res;
+      switch (classifyStatus(res.status)) {
+        case "rate-limit":
+          return { kind: "rate-limit", res };
+        case "client-error":
+          return { kind: "client-error", res };
+        case "auth-error":
+          return { kind: "auth-error", res };
+        default:
+          return { kind: "server-error", res };
+      }
+    }
+
+    default:
+      // init/pick/in-flight 之外的（终态）状态不应再 emit
+      throw new Error(`emit called in non-emitting state: ${state}`);
+  }
+}
+
+/** 取携带 res 的终态事件（success / client-error）的响应；其它事件不应出现在此处。 */
+function terminalRes(finalEvent: RetryEvent): Response {
+  if ("res" in finalEvent) return finalEvent.res;
+  throw new Error("terminal event has no res: " + finalEvent.kind);
+}
+
+/**
+ * 终态渲染：state 必为终态，finalEvent 为该终态对应的最后一个事件。
+ * success 直接返回 onSuccess 产物；其余按 RetryOutcome 交 cb.onFailure 协议渲染。
+ */
+function render(
+  state: RetryState,
+  finalEvent: RetryEvent,
+  ctx: RetryContext,
+  cb: RetryCallbacks
+): Promise<Response> {
+  switch (state) {
+    case "success":
+      return Promise.resolve(terminalRes(finalEvent)); // onSuccess 产物
+    case "no-keys":
+      return cb.onFailure({ kind: "no-keys", lastRes: null });
+    case "unavailable":
+      return cb.onFailure({ kind: "unavailable", lastRes: null });
+    case "client-error":
+      return cb.onFailure({ kind: "client-error", lastRes: terminalRes(finalEvent) });
+    case "exhausted":
+      return cb.onFailure({ kind: "exhausted", lastRes: ctx.lastRes });
+    default:
+      // init/pick/in-flight 不应出现在这里
+      return cb.onFailure({ kind: "exhausted", lastRes: ctx.lastRes });
+  }
+}
+
 /**
  * 通用重试核：鉴权后由各协议路径共用。签名与请求方 Context 解耦——只依赖 env 与
  * waitUntil，因此队列 DO（无 Hono Context）也能直接调用。
+ * 以声明式状态机驱动：读取进 emit、写副作用进迁移 action、请求级 bookkeeping 进
+ * prologue（见 TRANSITIONS / emit / render）。
  * - 每次尝试选不同 key；命中"不可重试"分类提前返回，避免浪费配额/流量。
  * - 无 key 配置 / 全部冷却禁用 → 503（经 onFailure 渲染）。
  */
@@ -196,77 +422,36 @@ export async function searchWithRetry(
   const store = getUsageStore(deps.env);
   const env = deps.env;
 
-  // 1. 增加分发 key 调用计数（按 provider + 结果拆分，进内存缓冲，尽力而为）
+  // prologue：增加分发 key 调用计数（按 provider + 结果拆分，进内存缓冲，尽力而为）
   const hour = hourKey();
   store.recordDistCall(apiKey, def.name, hour, "success");
   // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
   store.flushSoon(deps.executionCtx);
 
-  // 2. 选出该 provider 的上游 key；未配置任何 key -> 503
-  const keys = await listUpstreamKeys(env, def.upstream);
-  if (keys.length === 0) {
-    return cb.onFailure({ kind: "no-keys", lastRes: null });
+  const ctx: RetryContext = {
+    env,
+    def,
+    request,
+    cb,
+    store,
+    hour,
+    keys: [],
+    statsMap: {},
+    tried: new Set(),
+    lastRes: null,
+    attempt: 0,
+    currentKey: null,
+  };
+
+  // 驱动器：迁移表 + isTerminal + render，表即文档
+  let state: RetryState = "init";
+  let finalEvent: RetryEvent | null = null;
+  while (!isTerminal(state)) {
+    const ev = await emit(state, ctx);
+    const tr: Transition = TRANSITIONS[`${state}:${ev.kind}`]!; // 每 (state,kind) 必有迁移（见表）
+    await tr.action?.(ctx, ev);
+    state = tr.to;
+    finalEvent = ev;
   }
-
-  // 3. 候选预检：全部冷却/禁用 -> 503；仅候选 ≥2 才读权重信号（内存信号，0 次 D1 往返）
-  const now0 = Date.now();
-  const candidates = keys.filter((k) => isCandidate(k, now0));
-  if (candidates.length === 0) {
-    return cb.onFailure({ kind: "unavailable", lastRes: null });
-  }
-  const statsMap =
-    candidates.length < 2 ? {} : await store.readUpstreamWeightSignal(candidates.map((k) => k.id));
-
-  const tried = new Set<string>();
-  let lastRes: Response | null = null;
-
-  // 4. 重试循环：最多 MAX_ATTEMPTS 次，每次选不同的 key
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const now = Date.now();
-    const key = selectUpstreamKey(keys, statsMap, now, tried);
-    if (!key) break; // 候选池耗尽
-    tried.add(key.id);
-
-    // 发起上游请求（fetch 可能抛出网络异常/超时）
-    let res: Response;
-    try {
-      res = await proxyToUpstream(def, request.path, key.key, request.body, request.contentType);
-    } catch {
-      // 网络异常/超时：视为失败，换 key 重试
-      await markFail(store, env, def, key.id, hour, now);
-      continue;
-    }
-
-    // 2xx 成功 → 交给 onSuccess；返回 null 表示响应不可用，按失败换 key
-    if (res.ok) {
-      const out = await cb.onSuccess(res);
-      if (out) {
-        await markSuccess(store, env, def, key.id, hour, now);
-        return out;
-      }
-      lastRes = res;
-      await markFail(store, env, def, key.id, hour, now);
-      continue;
-    }
-
-    lastRes = res;
-
-    // 非 ok 分支：按状态分类处理（429 不客户端终止；400/404/422 立即返回；401/403 换 key）
-    switch (classifyStatus(res.status)) {
-      case "rate-limit":
-        await markRateLimit(env, def, key.id, now);
-        continue;
-      case "client-error":
-        return cb.onFailure({ kind: "client-error", lastRes: res });
-      case "auth-error":
-        await markInvalid(store, env, def, key.id, hour, now);
-        continue;
-      case "server-error":
-        await markFail(store, env, def, key.id, hour, now);
-        continue;
-    }
-  }
-
-  // 5. 重试耗尽 → onFailure（透传最后错误响应，或 503/502）
-  return cb.onFailure({ kind: "exhausted", lastRes });
+  return render(state, finalEvent!, ctx, cb);
 }

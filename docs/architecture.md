@@ -67,7 +67,7 @@ Authorization: Bearer <proto?-><provider>-<key>
 │  ① authenticate：parseDistKey(协议+provider) → 查库   │
 │  ② searxng 协议？adapters/searxng 参数→Tavily 请求体   │
 ├──────────────────────────────────────────────────────┤
-│ searchWithRetry (src/retry.ts) 领域重试核              │
+│ searchWithRetry (src/retry.ts) 重试状态机(FSM)        │
 │  ③ recordDistCall +1, flush                          │
 │  ④ selectUpstreamKey：从 enabled∧未冷却 中按权重选     │
 │     └─ 无 key / 全冷却 → 503（按协议错误体）           │
@@ -129,7 +129,7 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 └─────────┘ └─────────────────┘ └──────────┬───────────────────┘
          ↑                                │
 ┌────────┴─────────────────────────────────┴───────────────────┐
-│ retry.ts (领域重试核 + 选 key + 上游传输)                     │
+│ retry.ts (重试状态机 FSM + 选 key + 上游传输)                 │
 │   searchWithRetry / selectUpstreamKey / proxyToUpstream(30s)  │
 │ queue-task.ts (叶模块：NativeTask / SearxngTask / QueueTask)  │
 │ proxy.ts (边界：handleSearch / authenticate / runNativeTask /  │
@@ -156,7 +156,7 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 | `circuit-breaker.ts` | 连续失败计数 → 冷却（读 KV `breaker_config` 运行时参数） | 不感知 provider；失败静默 |
 | `providers/` | 一个 provider 的全部事实（base、endpoints、KV 键、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV |
-| `retry.ts` | 通用重试核（`searchWithRetry`）+ 选 key（`selectUpstreamKey`）+ 上游传输（`proxyToUpstream`，30s 超时） | 不接触 Hono Context；不含协议适配 |
+| `retry.ts` | 重试状态机（FSM）+ 选 key + 上游传输（`proxyToUpstream`，30s 超时） | 不接触 Hono Context；不含协议适配 |
 | `queue-task.ts` | 队列任务 DTO（`NativeTask` / `SearxngTask` / `QueueTask`） | 零依赖叶模块，不读 KV/DB |
 | `proxy.ts` | 边界：鉴权 + 任务打装 + 队列转发 + native/searxng 执行器（经 retry 核 callbacks 注入） | 不含重试策略；不读视图模板 |
 | `auth.ts` | 登录 / 会话 / CSRF / 登出 | 不写业务数据 |
@@ -263,6 +263,75 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
 - 未配置任何上游 key / 全部冷却或禁用 → `503`（3xx 用 provider 错误体，searxng 用 `{error}`）。
 - 候选池耗尽或达到 3 次上限 → 透传最后一个错误响应；无响应可得 → `502`。
 
+#### 6.3.1 FSM 规约（声明式状态机）
+
+实现是**声明式状态机**：状态（`init`/`pick`/`in-flight` + 终态）、扁平事件（`RetryEvent`，每个失败类一个 `kind`，无子分派）、迁移表（`TRANSITIONS`，key = `` `${state}:${kind}` ``，含可选 action）+ 少量行驱动器。读取进 `emit`、写副作用进迁移 action、请求级 bookkeeping 进 prologue。
+
+```
+init ──no-keys───────────────► no-keys           (终态=503)
+  │   ──empty-candidates────► unavailable        (终态=503 全冷却/禁用)
+  │   ──ready───────────────► pick
+pick ──picked(key)──────────► in-flight
+  │   ──depleted / guard(attempt≥MAX)──► exhausted   (终态)
+in-flight ──success──[markSuccess]──────► success    (终态, 直接返回 res)
+  │        ──unusable──[markFail]───────► pick       (2xx 但 onSuccess→null)
+  │        ──network──[markFail]────────► pick       (fetch 异常/超时)
+  │        ──rate-limit──[markRateLimit]► pick       (仅 post-use 冷却, 不记 usage)
+  │        ──client-error───────────────► client-error (终态, 无副作用)
+  │        ──auth-error──[markInvalid]──► pick       (记 fail + 疑似失效长冷却)
+  │        ──server-error──[markFail]───► pick       (记 fail + 指数退避)
+
+终态 ↔ RetryOutcome：success=res 直接返回；no-keys/unavailable/client-error/
+exhausted → onFailure（透传最后响应或 503/502）。
+```
+
+**事件表（`RetryEvent`，12 个 kind）**
+
+| kind | 触发 |
+|---|---|
+| `no-keys` | `init`：该 provider 未配置任何上游 key |
+| `empty-candidates` | `init`：全部冷却/禁用 |
+| `ready` | `init`：候选 ≥1，已读权重信号 |
+| `picked key` | `pick`：选到可用 key |
+| `depleted` | `pick`：候选池耗尽或 attempt ≥ MAX |
+| `success res` | `in-flight`：2xx 且 onSuccess 产物非空 |
+| `unusable res` | `in-flight`：2xx 但 onSuccess→null |
+| `network` | `in-flight`：fetch 异常/超时 |
+| `rate-limit res` | `in-flight`：429 |
+| `client-error res` | `in-flight`：400/404/422 |
+| `auth-error res` | `in-flight`：401/403 |
+| `server-error res` | `in-flight`：其余（5xx/未知） |
+
+**迁移表（`TRANSITIONS`，key = `` `${state}:${kind}` ``）**
+
+| key | action | to |
+|---|---|---|
+| `init:no-keys` | — | `no-keys` |
+| `init:empty-candidates` | — | `unavailable` |
+| `init:ready` | — | `pick` |
+| `pick:picked` | — | `in-flight` |
+| `pick:depleted` | — | `exhausted` |
+| `in-flight:success` | `markSuccess` 壳 | `success` |
+| `in-flight:unusable` | `markFail` 壳 | `pick` |
+| `in-flight:network` | `markFail` 壳 | `pick` |
+| `in-flight:rate-limit` | `markRateLimit` 壳 | `pick` |
+| `in-flight:client-error` | — | `client-error` |
+| `in-flight:auth-error` | `markInvalid` 壳 | `pick` |
+| `in-flight:server-error` | `markFail` 壳 | `pick` |
+
+**上下文（`RetryContext`）**
+
+| 字段 | 语义 |
+|---|---|
+| `env` / `def` / `request` / `cb` | 请求参数与依赖 |
+| `store` / `hour` | usage 缓冲与当前小时桶 |
+| `keys` / `statsMap` | 上游 key 列表与权重信号 |
+| `tried` / `attempt` | 已试 key 集合 / 尝试计数 |
+| `lastRes` | 最后一次错误响应（`exhausted` 透传） |
+| `currentKey` | 本次在飞请求所用 key |
+
+> `TRANSITIONS` / `emit` / `RetryState` / `RetryEvent` / `RetryContext` 为 **test-only 导出**（FSM 单测的唯一触达面）。usage/熔断持久态/队列 DO/协议渲染不进机器：写副作用在迁移 action，读在 `emit`，协议渲染经 `RetryCallbacks`（`cb`）访问；机器拥有执行/传输（transport 随核在此，避免 proxy↔retry 循环依赖）。
+
 ### 6.4 错误体格式
 
 | provider | 错误响应 | 来源 |
@@ -308,7 +377,7 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
 │   ├── circuit-breaker.ts # 熔断策略
 │   ├── config.ts          # PUBLIC_BASE_URL 唯一取值
 │   ├── auth.ts            # 登录 / 会话 / CSRF / 登出
-│   ├── retry.ts           # 领域重试核 + 选 key + 上游传输
+│   ├── retry.ts           # 重试状态机(FSM) + 选 key + 上游传输
 │   ├── queue-task.ts      # 队列任务 DTO（零依赖叶模块）
 │   ├── proxy.ts           # 边界：鉴权 + 任务打装 + 队列转发 + 执行器
 │   ├── providers/         # 防腐层：tavily.ts / exa.ts + 注册表
