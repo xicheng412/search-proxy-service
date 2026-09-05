@@ -13,7 +13,8 @@ import { DurableObject } from "cloudflare:workers";
 import { Env } from "./types";
 import { Provider } from "./domain";
 import { PROVIDERS } from "./providers";
-import { runNativeTask, runSearxngTask, QueueTask } from "./proxy";
+import { runNativeTask, runSearxngTask } from "./proxy";
+import { QueueTask } from "./queue-task";
 import { searxngError } from "./adapters/searxng";
 import { cachedQueueConfig } from "./queue-config";
 

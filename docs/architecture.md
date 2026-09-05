@@ -63,20 +63,22 @@ Authorization: Bearer <proto?-><provider>-<key>
        │
        ▼
 ┌──────────────────────────────────────────────────────┐
-│ handleSearch (src/proxy.ts)                          │
-│  ① authenticate:  parseDistKey(协议+provider) → 查库 │
-│  ② searxng 协议?  adapters/searxng 参数→Tavily 请求体 │
-│  ③ searchWithRetry 核:  recordDistCall +1, flush     │
-│  ④ selectUpstreamKey:  从 enabled∧未冷却 中按权重选   │
-│     ├─ 无 key / 全冷却 → 503（按协议错误体）          │
-│  ⑤ fetch 上游（30s 超时, 每次换 key, 最多 3 次）      │
-│  ⑥ 分类处理:                                          │
-│     - 2xx   → 记 success, 重置连续失败, 协议响应      │
-│     - 429   → 仅 post-use 冷却, 换 key 重试           │
+│ handleSearch (src/proxy.ts) 边界                       │
+│  ① authenticate：parseDistKey(协议+provider) → 查库   │
+│  ② searxng 协议？adapters/searxng 参数→Tavily 请求体   │
+├──────────────────────────────────────────────────────┤
+│ searchWithRetry (src/retry.ts) 领域重试核              │
+│  ③ recordDistCall +1, flush                          │
+│  ④ selectUpstreamKey：从 enabled∧未冷却 中按权重选     │
+│     └─ 无 key / 全冷却 → 503（按协议错误体）           │
+│  ⑤ fetch 上游（30s 超时, 每次换 key, 最多 3 次）       │
+│  ⑥ 分类处理：                                          │
+│     - 2xx   → 记 success, 重置连续失败, 协议响应       │
+│     - 429   → 仅 post-use 冷却, 换 key 重试            │
 │     - 400/404/422 → 立即返回, 不记失败不烧 key        │
-│     - 401/403 → 记 stats fail + 仅 post-use 冷却,换key│
+│     - 401/403 → 记 stats fail + 疑似失效长冷却, 换 key│
 │     - 5xx/网络 → 记 fail + 指数退避, 换 key 重试      │
-│  ⑦ 耗尽 → 透传最后错误 / 502（按协议错误体）          │
+│  ⑦ 耗尽 → 透传最后错误 / 502（按协议错误体）           │
 └──────────────────────────────────────────────────────┘
        │
        ▼ (fetch)
@@ -127,9 +129,11 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 └─────────┘ └─────────────────┘ └──────────┬───────────────────┘
          ↑                                │
 ┌────────┴─────────────────────────────────┴───────────────────┐
-│ proxy.ts (应用编排)                                            │
-│  searchWithRetry 通用重试核 + handleProviderProxy(native)     │
-│  + handleSearxng(searxng) + authenticate + selectUpstreamKey  │
+│ retry.ts (领域重试核 + 选 key + 上游传输)                     │
+│   searchWithRetry / selectUpstreamKey / proxyToUpstream(30s)  │
+│ queue-task.ts (叶模块：NativeTask / SearxngTask / QueueTask)  │
+│ proxy.ts (边界：handleSearch / authenticate / runNativeTask /  │
+│   runSearxngTask / forwardToQueue)                            │
 └───────────────────────────────────────────────────────────────┘
          ↑
          │   ┌────────────────────────────┐
@@ -152,7 +156,9 @@ POST /admin/{provider}/{id}/...  → 写操作, 都校验 CSRF
 | `circuit-breaker.ts` | 连续失败计数 → 冷却（读 KV `breaker_config` 运行时参数） | 不感知 provider；失败静默 |
 | `providers/` | 一个 provider 的全部事实（base、endpoints、KV 键、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV |
-| `proxy.ts` | 鉴权 + 选 key + 通用重试核 + native/searxng 协议路径 | 不读视图模板 |
+| `retry.ts` | 通用重试核（`searchWithRetry`）+ 选 key（`selectUpstreamKey`）+ 上游传输（`proxyToUpstream`，30s 超时） | 不接触 Hono Context；不含协议适配 |
+| `queue-task.ts` | 队列任务 DTO（`NativeTask` / `SearxngTask` / `QueueTask`） | 零依赖叶模块，不读 KV/DB |
+| `proxy.ts` | 边界：鉴权 + 任务打装 + 队列转发 + native/searxng 执行器（经 retry 核 callbacks 注入） | 不含重试策略；不读视图模板 |
 | `auth.ts` | 登录 / 会话 / CSRF / 登出 | 不写业务数据 |
 | `admin/` | 路由 + 鉴权校验 + 调 storage / usage-store | 不直接拼 HTML；视图在 views/ |
 | `views/` | 模板片段（HTMX 友好）+ 渲染函数 | 不写 IO |
@@ -243,7 +249,7 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
 - breaker 计数本身有 10 分钟 TTL——10 分钟内无新失败则视为"该 key 已恢复"。
 - **post-use / base / invalid 三个时长存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（≤3s 生效），无需重新部署**（见 `src/breaker-config.ts`）。
 
-### 6.3 自动重试（`searchWithRetry` 核）
+### 6.3 自动重试（`searchWithRetry` 核，位于 `src/retry.ts`）
 
 - 单次请求最多尝试 3 个不同的上游 key（`MAX_ATTEMPTS`）。
 - 每次尝试换 key；网络异常/超时（30s）视为失败并换 key。
@@ -302,7 +308,9 @@ breaker:<upstreamKeyId>       → { consecutive }                   (TTL = 10 �
 │   ├── circuit-breaker.ts # 熔断策略
 │   ├── config.ts          # PUBLIC_BASE_URL 唯一取值
 │   ├── auth.ts            # 登录 / 会话 / CSRF / 登出
-│   ├── proxy.ts           # 应用编排：鉴权 + 选 key + 转发 + 分类
+│   ├── retry.ts           # 领域重试核 + 选 key + 上游传输
+│   ├── queue-task.ts      # 队列任务 DTO（零依赖叶模块）
+│   ├── proxy.ts           # 边界：鉴权 + 任务打装 + 队列转发 + 执行器
 │   ├── providers/         # 防腐层：tavily.ts / exa.ts + 注册表
 │   ├── admin/             # 后台路由：index.ts + tavily.ts + exa.ts + keys.ts
 │   └── views/             # 后台模板：index.ts + tavily.ts + exa.ts
