@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getSession, getCsrfToken, validateCsrf } from "../auth";
-import { todayDate, utcTodayStart } from "../domain";
+import { hourKey } from "../domain";
 import { listDistributedKeys } from "../storage/dist-keys";
 import { listUpstreamKeys } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
@@ -50,8 +50,6 @@ admin.use("*", async (c, next) => {
 admin.get("/", async (c) => {
   const env = c.env;
   const kv = c.env.KV; // 基础配置（queue/breaker）与会话仍走 KV
-  const today = todayDate();
-  const minHour = utcTodayStart();
   const [tkeys, ekeys, dkeys] = await Promise.all([
     listUpstreamKeys(env, TAVILY.upstream),
     listUpstreamKeys(env, EXA.upstream),
@@ -59,12 +57,8 @@ admin.get("/", async (c) => {
   ]);
 
   const store = getUsageStore(env);
-  const callsMap = await store.readDistCallsByScopes(
-    dkeys.map((k) => k.api_key),
-    minHour
-  );
-  let todayCalls = 0;
-  for (const s of Object.values(callsMap)) todayCalls += s.tavily + s.exa;
+  const seriesMinHour = hourKey(Date.now() - 5 * 86_400_000);
+  const callsSeries = JSON.stringify(await store.readCallSeries(seriesMinHour));
 
   return c.html(
     adminPage({
@@ -74,8 +68,7 @@ admin.get("/", async (c) => {
       exaEnabled: ekeys.filter((k) => k.status === "enabled").length,
       distTotal: dkeys.length,
       distEnabled: dkeys.filter((k) => k.status === "enabled").length,
-      todayCalls,
-      today,
+      callsSeries,
       queueIntervalMs: (await readQueueConfig(kv)).intervalMs,
       queueMaxDepth: (await readQueueConfig(kv)).maxDepth,
       postUseCooldownSec: (await readBreakerConfig(kv)).postUseCooldownSec,

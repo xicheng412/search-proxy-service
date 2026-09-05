@@ -200,6 +200,8 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 
 其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
 
+> **已知例外（Dashboard 调用趋势序列）**：`usage-store.ts` 的 `readCallSeries` + `CallSeriesPoint` 与 `views/index.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`CallSeriesPoint` 类型、`readCallSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
+
 > **协议与 provider 正交**：线协议（native / searxng）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径（经 `searchWithRetry` callbacks 注入）。例见 `searxng`。
 
 ---

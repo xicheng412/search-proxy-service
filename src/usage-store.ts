@@ -12,6 +12,7 @@ import {
   UsageIncrement,
   mergeUsage,
   readHourly as storeReadHourly,
+  readSeriesByProvider as storeReadSeriesByProvider,
   sumUsageByScopes,
 } from "./storage/usage";
 
@@ -36,8 +37,21 @@ export interface UsageStore {
   ): Promise<Record<string, DistStats>>;
   /** 读某 scope 的小时明细（给前端组合"今日/最近N小时"边界用）。 */
   readHourly(kind: "upstream" | "dist", scope: string, minHour: string): Promise<UsageIncrement[]>;
+  /** 读全部分发 key 的 dist 小时序列（Memory TTL + pending 叠加）；给 dashboard 折线图/24h/昨日卡。 */
+  readCallSeries(minHour: string): Promise<CallSeriesPoint[]>;
   /** 节流调度 flush：距上次 ≥interval 且缓冲非空才排入 waitUntil，不阻塞请求。 */
   flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void;
+}
+
+/**
+ * dashboard 折线图单个数据点：某 UTC 小时桶 × provider 的调用数（success+fail）。
+ * 刻意固化为 tavily/exa 两个字段（计划审批"两条线"展示，见 docs/architecture.md §4.2 已知例外）。
+ * 新增 provider 时须同步扩展：本类型、readCallSeries 内两处 provider 折叠、views/index.ts dashboardScript。
+ */
+export interface CallSeriesPoint {
+  hour: string;
+  tavily: number;
+  exa: number;
 }
 
 export interface UsageStoreOpts {
@@ -45,6 +59,8 @@ export interface UsageStoreOpts {
   readCacheMs?: number;
   /** 后台统计信号快照最大陈旧时长；默认 120s，测试可缩短窗口。 */
   signalBaseTtlMs?: number;
+  /** 跨 scope 小时序列缓存 TTL；默认 30min（每 isolate 每小时 ≤2 次历史读）。 */
+  seriesTtlMs?: number;
 }
 
 const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "hour">) =>
@@ -54,6 +70,7 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
   const flushIntervalMs = opts.flushIntervalMs ?? 5_000;
   const readCacheMs = opts.readCacheMs ?? 30_000;
   const signalBaseTtlMs = opts.signalBaseTtlMs ?? 120_000;
+  const seriesTtlMs = opts.seriesTtlMs ?? 1_800_000;
 
   // ---- 模块状态（每个 store 实例独立；一个 isolate 一份）----
   const pending = new Map<string, { success: number; fail: number }>();
@@ -71,6 +88,8 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     at: number;
     base: Record<string, DistStats>;
   } | null = null;
+  // 跨 scope dist 小时序列 base（D1 聚合结果），读时叠加 pending；TTL seriesTtlMs。
+  let seriesCache: { minHour: string; at: number; base: CallSeriesPoint[] } | null = null;
   // 热路径选 key 信号：今日失败数快照，由 flush 后台刷新，最长陈旧 signalBaseTtlMs。
   let signalBase: { minHour: string; at: number; fail: Record<string, number> } | null = null;
 
@@ -265,6 +284,56 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     return storeReadHourly(env, kind, scope, minHour);
   }
 
+  /**
+   * 全部分发 key 的 dist 小时序列（D1 base + pending 叠加；TTL seriesTtlMs）。
+   * 下方两处 `if (provider === ...)` 折叠（D1 base 与 pending）按 provider 名硬编码 tavily/exa，
+   * 属 docs/architecture.md §4.2 的已知例外：新增 provider 时须扩展 CallSeriesPoint、
+   * 本函数两处折叠与 views/index.ts dashboardScript 三处（见接口注释）。
+   */
+  async function readCallSeries(minHour: string): Promise<CallSeriesPoint[]> {
+    const now = Date.now();
+    if (
+      !seriesCache ||
+      seriesCache.minHour !== minHour ||
+      now - seriesCache.at >= seriesTtlMs
+    ) {
+      const rows = await storeReadSeriesByProvider(env, "dist", minHour);
+      const byHour = new Map<string, { tavily: number; exa: number }>();
+      for (const r of rows) {
+        const cur = byHour.get(r.hour) ?? { tavily: 0, exa: 0 };
+        const calls = r.success + r.fail;
+        if (r.provider === "tavily") cur.tavily += calls;
+        else if (r.provider === "exa") cur.exa += calls;
+        byHour.set(r.hour, cur);
+      }
+      seriesCache = {
+        minHour,
+        at: now,
+        base: [...byHour.entries()]
+          .map(([hour, v]) => ({ hour, tavily: v.tavily, exa: v.exa }))
+          .sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0)),
+      };
+    }
+    const result: CallSeriesPoint[] = seriesCache.base.map((p) => ({ ...p }));
+    const idx = new Map(result.map((p, i) => [p.hour, i]));
+    // pending 叠加：仅 dist 且 hour >= minHour（pending 小时桶可能不在 D1 base 里，兜底 0）。
+    for (const [k, v] of pending) {
+      const [kind, , provider, hour] = k.split("\u0000");
+      if (kind !== "dist" || hour < minHour) continue;
+      let entry = result[idx.get(hour) ?? -1];
+      if (!entry) {
+        entry = { hour, tavily: 0, exa: 0 };
+        idx.set(hour, result.length);
+        result.push(entry);
+      }
+      const calls = v.success + v.fail;
+      if (provider === "tavily") entry.tavily += calls;
+      else if (provider === "exa") entry.exa += calls;
+    }
+    result.sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0));
+    return result;
+  }
+
   return {
     recordUpstreamResult,
     recordDistCall,
@@ -272,6 +341,7 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     readUpstreamWeightSignal,
     readDistCallsByScopes,
     readHourly,
+    readCallSeries,
     flushSoon,
   };
 }

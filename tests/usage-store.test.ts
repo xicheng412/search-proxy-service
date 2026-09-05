@@ -104,3 +104,68 @@ describe("readUpstreamWeightSignal", () => {
     expect(allCalls()).toBe(1); // 第二次信号读不加 D1
   });
 });
+
+describe("readCallSeries", () => {
+  const seriesRows = [
+    { hour: "2026-09-01T08:00", provider: "tavily", success: 3, fail: 1 },
+    { hour: "2026-09-01T08:00", provider: "exa", success: 2, fail: 0 },
+    { hour: "2026-09-01T09:00", provider: "tavily", success: 1, fail: 0 },
+  ];
+  const seriesMinHour = "2026-09-01T00:00";
+
+  it("按小时升序聚合各 provider 的 success+fail，缺失 provider 补 0", async () => {
+    const { db, allCalls } = makeConstantD1(seriesRows);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    const res = await store.readCallSeries(seriesMinHour);
+    expect(res).toEqual([
+      { hour: "2026-09-01T08:00", tavily: 4, exa: 2 },
+      { hour: "2026-09-01T09:00", tavily: 1, exa: 0 },
+    ]);
+    expect(allCalls()).toBe(1);
+  });
+
+  it("相同 minHour 的第二次读取不新增 D1 查询", async () => {
+    const { db, allCalls } = makeConstantD1(seriesRows);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    await store.readCallSeries(seriesMinHour);
+    const res = await store.readCallSeries(seriesMinHour);
+    expect(res).toHaveLength(2);
+    expect(allCalls()).toBe(1);
+  });
+
+  it("pending 叠加且不新增 D1 查询；小时桶不在 base 时兜底创建", async () => {
+    const { db, allCalls } = makeConstantD1(seriesRows);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    await store.readCallSeries(seriesMinHour); // 填缓存
+    const h = "2026-09-01T10:00";
+    store.recordDistCall("key-x", "tavily", h, "success");
+    store.recordDistCall("key-x", "tavily", h, "success");
+    store.recordDistCall("key-x", "exa", h, "fail");
+    store.recordUpstreamResult("up-9", "tavily", h, "success"); // 不应混入 dist
+
+    const res = await store.readCallSeries(seriesMinHour);
+    expect(res).toEqual([
+      { hour: "2026-09-01T08:00", tavily: 4, exa: 2 },
+      { hour: "2026-09-01T09:00", tavily: 1, exa: 0 },
+      { hour: "2026-09-01T10:00", tavily: 2, exa: 1 },
+    ]);
+    expect(allCalls()).toBe(1); // 仍在 TTL 窗口内，无新 D1 查询
+  });
+
+  it("seriesTtlMs=0 时每次读取都重新查询 D1", async () => {
+    const { db, allCalls } = makeConstantD1([]);
+    const store = createUsageStore({ DB: db } as unknown as Env, { seriesTtlMs: 0 });
+    await store.readCallSeries(seriesMinHour);
+    await store.readCallSeries(seriesMinHour);
+    expect(allCalls()).toBe(2);
+  });
+
+  it("不同 minHour 触发重新查询", async () => {
+    const { db, allCalls } = makeConstantD1(seriesRows);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    await store.readCallSeries(seriesMinHour);
+    const res = await store.readCallSeries("2026-09-02T00:00");
+    expect(res).toHaveLength(2);
+    expect(allCalls()).toBe(2);
+  });
+});

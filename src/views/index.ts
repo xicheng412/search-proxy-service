@@ -82,7 +82,7 @@ function nav(active: NavKey): string {
 export function layout(
   title: string,
   body: string,
-  opts: { header?: boolean; active?: NavKey } = {}
+  opts: { header?: boolean; active?: NavKey; scripts?: string } = {}
 ): string {
   const showHeader = opts.header !== false;
   const active = opts.active ?? "dashboard";
@@ -135,8 +135,10 @@ export function layout(
     .nav-item:hover { color:var(--txt); background:var(--card); }
     .nav-item.active { color:#04121f; background:var(--accent); font-weight:600; }
     .wrap { max-width:1180px; margin:0 auto; padding:24px; }
-    .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+    .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
              gap:20px; margin-bottom:20px; }
+    .card.chart { grid-column: 1 / -1; }
+    .card.chart canvas { width:100%; height:300px; }
     .card { background:var(--card); border:1px solid var(--line);
             border-radius:12px; padding:16px; }
     .card h2 { font-size:15px; margin:0 0 12px; color:var(--accent); }
@@ -180,6 +182,7 @@ export function layout(
 <body>
 ${header}
 <main class="wrap">${body}</main>
+${opts.scripts ?? ""}
 </body>
 </html>`;
 }
@@ -213,8 +216,7 @@ export interface DashboardData {
   exaEnabled: number;
   distTotal: number;
   distEnabled: number;
-  todayCalls: number;
-  today: string;
+  callsSeries: string;
   queueIntervalMs: number;
   queueMaxDepth: number;
   postUseCooldownSec: number;
@@ -246,9 +248,18 @@ export function adminPage(data: DashboardData): string {
     <a class="btn" href="/admin/keys">进入管理 →</a>
   </div>
   <div class="card stat">
-    <h2>今日调用</h2>
-    <div class="stat-num">${data.todayCalls}</div>
-    <div class="muted">统计日：${esc(data.today)}</div>
+    <h2>最近24小时调用</h2>
+    <div class="stat-num" id="calls-24h">–</div>
+    <div class="muted">含当前小时 · 终端时区</div>
+  </div>
+  <div class="card stat">
+    <h2>昨日调用总计</h2>
+    <div class="stat-num" id="calls-yesterday">–</div>
+    <div class="muted">按终端本地时区计算</div>
+  </div>
+  <div class="card chart">
+    <h2>近 5 天调用趋势</h2>
+    <canvas id="calls-chart"></canvas>
   </div>
 </section>
 <section class="card">
@@ -287,7 +298,101 @@ export function adminPage(data: DashboardData): string {
     <button type="submit">保存</button>
   </form>
 </section>`;
-  return layout("总览 · Tavily Proxy", body, { active: "dashboard" });
+  return layout("总览 · Tavily Proxy", body, {
+    active: "dashboard",
+    scripts: dashboardScript(data.callsSeries),
+  });
+}
+
+/**
+ * Dashboard 图表脚本：内嵌序列 JSON + Chart.js CDN + 内联渲染。
+ * JSON 注入用 `\u003c` 而非 HTML esc：`<script>` 内容是 raw text，实体不反解码，
+ * esc 把 `"` 变 `&quot;` 会破坏 JSON；`\u003c` 是合法 JSON 转义且防 `</script`/`<!--`。
+ * 下方 Chart.datasets 按 provider 名硬编码 tavily/exa（标签与配色），与 usage-store 的
+ * CallSeriesPoint 同属 §4.2 已知例外：新增 provider 时须在此加一条 dataset。
+ */
+function dashboardScript(seriesJson: string): string {
+  return `<script type="application/json" id="calls-series">${seriesJson.replace(/</g, "\\u003c")}</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  var seriesEl = document.getElementById('calls-series');
+  if (!seriesEl) return;
+  var series;
+  try { series = JSON.parse(seriesEl.textContent); } catch (e) { series = null; }
+  var setNum = function (id, n) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = String(typeof n === 'number' && isFinite(n) ? n : 0);
+  };
+  if (!Array.isArray(series)) {
+    setNum('calls-24h', 0);
+    setNum('calls-yesterday', 0);
+    return;
+  }
+  var tv = function (p, k) {
+    var v = p[k];
+    return typeof v === 'number' && isFinite(v) ? v : 0;
+  };
+  // hour 为 UTC 小时桶，裸解析会被当成本地时间错 8 小时 → 必须补 'Z'。
+  var pts = series.map(function (p) {
+    return { t: Date.parse(p.hour + 'Z'), tavily: tv(p, 'tavily'), exa: tv(p, 'exa') };
+  });
+
+  // 最近 24 小时（含当前不完整小时）总计：tavily+exa。
+  var cutoff = Date.now() - 24 * 3600 * 1000;
+  var sum24 = 0;
+  for (var i = 0; i < pts.length; i++) {
+    if (pts[i].t >= cutoff) sum24 += pts[i].tavily + pts[i].exa;
+  }
+  setNum('calls-24h', sum24);
+
+  // 昨日总计：按浏览器本地时区把 UTC 小时桶归到日期后求和。
+  var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+  var y = new Date();
+  y.setDate(y.getDate() - 1);
+  var ymd = y.getFullYear() + '-' + p2(y.getMonth() + 1) + '-' + p2(y.getDate());
+  var sumY = 0;
+  for (var j = 0; j < pts.length; j++) {
+    var d = new Date(pts[j].t);
+    var k = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+    if (k === ymd) sumY += pts[j].tavily + pts[j].exa;
+  }
+  setNum('calls-yesterday', sumY);
+
+  var canvas = document.getElementById('calls-chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: pts.map(function (p) {
+        return new Date(p.t).toLocaleString('zh-CN', {
+          month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false,
+        });
+      }),
+      datasets: [
+        { label: 'Tavily', data: pts.map(function (p) { return p.tavily; }),
+          borderColor: '#38bdf8', backgroundColor: '#38bdf8', fill: false,
+          spanGaps: true, pointRadius: 1.5 },
+        { label: 'Exa', data: pts.map(function (p) { return p.exa; }),
+          borderColor: '#a78bfa', backgroundColor: '#a78bfa', fill: false,
+          spanGaps: true, pointRadius: 1.5 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { color: '#94a3b8', maxTicksLimit: 10, maxRotation: 0 },
+             grid: { color: '#334155' } },
+        y: { beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 },
+             grid: { color: '#334155' } },
+      },
+      plugins: { legend: { labels: { color: '#e2e8f0' } } },
+    },
+  });
+})();
+</script>`;
 }
 
 // ---------------------------------------------------------------

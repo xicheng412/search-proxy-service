@@ -24,6 +24,14 @@ export interface UsageWindow {
   fail: number;
 }
 
+/** 某个小时桶 × provider 的聚合行（跨全部 scope）。 */
+export interface HourlyRow {
+  hour: string;
+  provider: string;
+  success: number;
+  fail: number;
+}
+
 /** 批量 merge 用量增量（UPSERT 求和）。用 DB.batch 一次性事务提交。 */
 export async function mergeUsage(env: Env, rows: UsageIncrement[]): Promise<void> {
   if (rows.length === 0) return;
@@ -127,6 +135,29 @@ export async function readHourly(
     scope,
     provider: r.provider as string,
     hour: r.hour as string,
+    success: (r.success as number) ?? 0,
+    fail: (r.fail as number) ?? 0,
+  }));
+}
+
+/** 跨全部 scope 按小时桶 × provider 聚合（dashboard 折线序列用）。复用 idx_usage_window 索引。 */
+export async function readSeriesByProvider(
+  env: Env,
+  kind: UsageKind,
+  minHour: string
+): Promise<HourlyRow[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT hour, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+     FROM usage_counts
+     WHERE kind = ?1 AND hour >= ?2
+     GROUP BY hour, provider
+     ORDER BY hour`
+  )
+    .bind(kind, minHour)
+    .all();
+  return (results as Record<string, unknown>[]).map((r) => ({
+    hour: r.hour as string,
+    provider: r.provider as string,
     success: (r.success as number) ?? 0,
     fail: (r.fail as number) ?? 0,
   }));
