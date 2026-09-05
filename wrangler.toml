@@ -2,6 +2,10 @@ name = "tavily-cf-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-11-01"
 
+# 关闭默认的 *.workers.dev 路由：正式域名远程已绑定（tavily.13126036.xyz），
+# dev 子域不再对外服务；本地 pnpm dev 不受影响。
+workers_dev = false
+
 # KV namespace：基础配置（breaker_config / queue_config）与登录会话仍留 KV。
 [[kv_namespaces]]
 binding = "KV"
