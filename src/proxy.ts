@@ -28,7 +28,8 @@ import {
   parseDistKey,
   hourKey,
 } from "./domain";
-import { getDistributedKey, listUpstreamKeys } from "./storage";
+import { getDistributedKey } from "./storage/dist-keys";
+import { listUpstreamKeys } from "./storage/upstream-keys";
 import { getUsageStore } from "./usage-store";
 import {
   recordUpstreamFailure,

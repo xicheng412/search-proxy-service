@@ -9,7 +9,7 @@ import {
   generateDistributedKey,
   listDistributedKeys,
   updateDistributedKey,
-} from "../storage";
+} from "../storage/dist-keys";
 import { getUsageStore } from "../usage-store";
 import { resolvePublicBaseUrl } from "../config";
 import {

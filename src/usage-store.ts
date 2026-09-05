@@ -13,7 +13,7 @@ import {
   mergeUsage,
   readHourly as storeReadHourly,
   sumUsageByScopes,
-} from "./storage";
+} from "./storage/usage";
 
 type Result = "success" | "fail";
 

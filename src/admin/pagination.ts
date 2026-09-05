@@ -3,7 +3,7 @@
 
 import type { Context } from "hono";
 import type { Env, AppVariables } from "../types";
-import type { UpstreamKeyCursor } from "../storage";
+import type { UpstreamKeyCursor } from "../storage/upstream-keys";
 import type { UpstreamPagination, UpstreamPaginationLink } from "../views";
 
 /** 固定页大小；不支持客户端自定义 limit，避免放大 D1 查询与 HTML 响应。 */

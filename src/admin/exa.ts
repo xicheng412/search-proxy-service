@@ -12,7 +12,7 @@ import {
   listUpstreamKeysPage,
   UpstreamKeyPage,
   updateUpstreamKey,
-} from "../storage";
+} from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
 import { EXA } from "../providers";
 import { errorFragment } from "../views";

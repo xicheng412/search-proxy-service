@@ -10,7 +10,7 @@
 
 import type { Env } from "./types";
 import { UpstreamDef } from "./domain";
-import { setUpstreamCooldown, readBreakerState, applyBreakerOutcome } from "./storage";
+import { setUpstreamCooldown, readBreakerState, applyBreakerOutcome } from "./storage/upstream-keys";
 import { cachedBreakerConfig } from "./breaker-config";
 
 const BREAKER_TTL_MS = 10 * 60 * 1000; // 连续失败计数空窗 10 分钟后自动归零
