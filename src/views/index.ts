@@ -118,6 +118,17 @@ export function layout(
         setTimeout(function () { btn.textContent = orig; }, 1200);
       });
     });
+
+    // 本地时区渲染：把 data-epoch 毫秒时间按浏览器本地时区显示（无 JS 时服务端已输出 UTC 兜底）
+    function formatLocalTimes() {
+      var list = document.querySelectorAll('[data-local-time]');
+      for (var i = 0; i < list.length; i++) {
+        var t = parseInt(list[i].getAttribute('data-epoch') || '', 10);
+        if (!isNaN(t)) list[i].textContent = new Date(t).toLocaleString('zh-CN');
+      }
+    }
+    document.addEventListener('DOMContentLoaded', formatLocalTimes);
+    document.addEventListener('htmx:afterSwap', formatLocalTimes);
   </script>
   <style>
     :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0;
@@ -432,16 +443,13 @@ export function distListFragment(
             k.status === "enabled"
               ? `<span class="badge ok">enabled</span>`
               : `<span class="badge off">disabled</span>`;
-          const created = new Date(k.created_at).toLocaleString("zh-CN", {
-            timeZone: "Asia/Shanghai",
-          });
           const s = callsMap[k.api_key] ?? { tavily: 0, exa: 0 };
           const total = s.tavily + s.exa;
           return `<tr>
             <td>${esc(maskKey(k.api_key))}</td>
             <td>${esc(k.note)}</td>
             <td>${st}</td>
-            <td class="muted">${esc(created)}</td>
+            <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
             <td title="Tavily ${s.tavily} · Exa ${s.exa}">${total} <span class="muted" style="font-size:11px;">(T ${s.tavily}/E ${s.exa})</span></td>
             <td>
               <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
@@ -478,7 +486,7 @@ export function distListFragment(
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th>当日调用</th><th>操作</th></tr></thead>
+      <th title="最近24小时（含当前小时）">最近24h调用</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -557,9 +565,9 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <h2>后台功能与文档</h2>
   <ul class="muted">
     <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
-    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，一键复制调用凭据；当日调用按 provider 拆分（T/E）。</li>
+    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，一键复制调用凭据；最近24h调用按 provider 拆分（T/E）。</li>
     <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
-    <li><strong>统计</strong>：每日统计按 Asia/Shanghai 时区结算，KV 近似值、允许少量误差。</li>
+    <li><strong>统计</strong>：调用按 UTC 小时桶结算（分发 Keys 页为最近24小时滚动），Dashboard 图表与「昨日」按浏览器本地时区显示；统计为近似值、允许少量误差。</li>
     <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
   </ul>
 </div>`;

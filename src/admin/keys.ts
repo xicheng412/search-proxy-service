@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken, validateCsrf } from "../auth";
-import { DistStats, utcTodayStart } from "../domain";
+import { DistStats, hourKey } from "../domain";
 import {
   deleteDistributedKey,
   generateDistributedKey,
@@ -38,7 +38,7 @@ keysAdmin.get("/", async (c) => {
   const csrf = (await getCsrfToken(c)) ?? "";
   const base = resolvePublicBaseUrl(c.env);
   const dkeys = await listDistributedKeys(env);
-  const callsMap = await buildCallsMap(env, dkeys, utcTodayStart());
+  const callsMap = await buildCallsMap(env, dkeys, hourKey(Date.now() - 24 * 3600 * 1000));
   return c.html(keysPage(csrf, distListFragment(dkeys, callsMap, csrf, undefined, base)));
 });
 
@@ -47,7 +47,7 @@ keysAdmin.get("/list", async (c) => {
   const csrf = (await getCsrfToken(c)) ?? "";
   const base = resolvePublicBaseUrl(c.env);
   const dkeys = await listDistributedKeys(env);
-  const callsMap = await buildCallsMap(env, dkeys, utcTodayStart());
+  const callsMap = await buildCallsMap(env, dkeys, hourKey(Date.now() - 24 * 3600 * 1000));
   return c.html(distListFragment(dkeys, callsMap, csrf, undefined, base));
 });
 
@@ -60,7 +60,7 @@ keysAdmin.post("/generate", async (c) => {
   const env = c.env;
   const generated = await generateDistributedKey(env, note);
   const dkeys = await listDistributedKeys(env);
-  const callsMap = await buildCallsMap(env, dkeys, utcTodayStart());
+  const callsMap = await buildCallsMap(env, dkeys, hourKey(Date.now() - 24 * 3600 * 1000));
   const csrf = (await getCsrfToken(c)) ?? "";
   const base = resolvePublicBaseUrl(c.env);
   return c.html(distGenerateResult(generated.api_key, dkeys, callsMap, csrf, base));

@@ -117,19 +117,6 @@ export function maskKey(key: string): string {
 }
 
 /**
- * 按 Asia/Shanghai 时区计算"今天"的日期字符串 YYYY-MM-DD。
- * 用 Intl 的 en-CA 格式可直接得到 YYYY-MM-DD。
- */
-export function todayDate(t: number = Date.now()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(t));
-}
-
-/**
  * 用量小时桶键（UTC）：'YYYY-MM-DDTHH:00'。后端全部时间口径用 UTC，
  * "今日/最近N小时"边界由前端用小时分段自行组合。
  */
