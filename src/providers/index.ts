@@ -9,7 +9,10 @@ import { EXA } from "./exa";
 export interface ProviderConfig<P extends Provider = Provider> {
   name: P;
   base: string;                          // 上游 API base，如 https://api.exa.ai
-  endpoints: { search: string };         // 本服务对外透明转发的端点（当前阶段的唯一端点）
+  endpoints: {
+    search: string;                      // 本服务对外透明转发的搜索端点
+    extract?: string;                    // 本服务对外透明转发的提取端点（仅支持 native 透传的 provider 才配，如 Tavily）
+  };
   upstream: UpstreamDef;                 // KV 数组键 + id 前缀，供泛型 CRUD/统计/熔断定位
   admin: { basePath: string; label: string }; // 后台挂载路径与导航标签
   /** 新增上游 key 时的可选验证（test call）请求体 */

@@ -12,7 +12,7 @@
 - **代理链路**：外部用分发 key 调用 → 本服务校验 → 按前缀路由选上游 → 进 provider 队列 DO 串行放行 → 选自带冷却的上游 key → 透明转发 → 原样返回。
 - **管理链路**：管理员密码登录后台 → 管理上游 key（多个，可加可删可熔断）/ 分发 key（生成、禁用、删除）/ 查看当日统计与小时明细 / 运行时调三组参数（冷却、队列、鉴权缓存）。
 
-唯一对外数据面是 `GET|POST /search`（同时是代理与文档约定的"主端点"）；`GET /` 返回服务信息 JSON；其余 `/admin/*` 是管理后台。
+唯一对外数据面是 `GET|POST /search`（主端点：native 透传 + searxng 兼容）与 `POST /extract`（Tavily Extract 透传，仅 native，见 §3.3）；`GET /` 返回服务信息 JSON；其余 `/admin/*` 是管理后台。
 
 ---
 
@@ -106,6 +106,19 @@ POST /admin/breaker-config / queue-config / dist-cache-config → 写 KV 运行�
 GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 ```
 所有写操作（POST）一律校验 CSRF；未经登录的页面 GET → 302 跳登录。
+
+### 3.3 Extract 透传（`POST /extract`）
+
+与 /search 完全同构，只是把 `NativeTask.path` 换成 `endpoints.extract`（见 §4.1 providers 表）：
+鉴权 → 门禁 → 打装 `NativeTask{ kind:"native", path:"/extract" }` → 进 tavily 队列 DO → `runNativeTask` → 同一颗重试核（选 key / 冷却 / 熔断 / 用量统计）。因此 **/extract 的所有统计维度与 /search 共用同一套账**：上游 key 成败、熔断冷却、分发 key 调用计数、dashboard 的 tavily 上游趋势线，全部自动落账，无需端点维度的额外埋点。
+
+门禁（**不触达重试核 → 不记统计、不耗上游配额**）：
+- 仅 `Bearer tavily-<key>`（native 透传）；`searxng-tavily-<key>` → 405；`exa-<key>` → 404（exa 未声明 extract 端点）。
+- 分发 key 缺失/禁用 → 401（与 /search 同一 authenticate）。
+
+与 /search 的差异只有一处：**上游响应码分类新增两条 Tavily Extract 专属规则**（`src/retry.ts` classifyStatus，对 /search 同样生效）：
+- `432`（key/plan limit exceeded）→ 按限流处理：换 key 试一把、仅 post-use 冷却，**不记败不熔断**。key 粒度限额外换 key 可能成功；plan 粒度也只多一次无害尝试。
+- `433`（PayGo limit exceeded）→ 客户端确定性错误（同 400/404/422）：**立即返回、不重试、不记败不冷却**。PayGo 余额耗尽重试必再失败；且上游 key 与 search 共用，若按 server-error 记败+熔断会把健康 key 误伤冷却、连带 /search 一起 503。
 
 ---
 

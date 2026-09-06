@@ -302,3 +302,51 @@ export async function handleSearch(
     );
   }
 }
+
+/**
+ * /extract 入口：Tavily Extract 的透明转发，仅支持 native 线协议（Bearer tavily-<key>）。
+ * - extract 无 searxng 语义（searxng 是搜索协议转换），searxng 前缀在此确定性 405，不记统计。
+ * - 只有声明了 `endpoints.extract` 的 provider 才开放；exa 等未声明 → 404，不记统计。
+ * - 命中则复用 native 透传：任务打成 NativeTask{path=extract} 进队列 DO，走与 /search 完全相同的
+ *   重试/熔断/用量统计链路（上游 key 成败 + 冷却 + 分发 key 调用计数自动落账）。
+ * 前置门禁（405/404/401）不触达重试核 → 不计调用、不耗上游配额。
+ */
+export async function handleExtract(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>
+): Promise<Response> {
+  try {
+    const authRes = await authenticate(c);
+    if (!authRes) return c.res; // 错误响应已在 authenticate 写入
+
+    const def = PROVIDERS[authRes.provider];
+    if (authRes.protocol !== "native") {
+      // extract 只属于 native 透传；searxng 协议按 provider 官方错误体给 405
+      return def.errorBody(
+        405,
+        `"extract" is only supported with native credentials (Bearer ${authRes.provider}-<key>).`
+      );
+    }
+    const path = def.endpoints.extract;
+    if (!path) {
+      return def.errorBody(
+        404,
+        `${def.name} does not expose an /extract endpoint.`
+      );
+    }
+
+    // native 透传：读一次 body 固定，转发给队列 DO（与 /search 的 native 分支同构）
+    const task: NativeTask = {
+      kind: "native",
+      path,
+      body: await c.req.text(),
+      contentType: c.req.header("content-type") ?? "application/json",
+    };
+    return await forwardToQueue(c, def, authRes.distKey.api_key, task);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return Response.json(
+      { detail: { error: "Internal proxy error: " + msg } },
+      { status: 502 }
+    );
+  }
+}

@@ -131,7 +131,31 @@ describe("searchWithRetry 重试矩阵", () => {
     expect(bearerSet(fetchMock).size).toBe(2);
   });
 
-  it.each([400, 404, 422])(
+  it("3b. 432 (Tavily key/plan limit) 类 429：换 key 重试，不客户端终止、不记失败熔断", async () => {
+    // 432 是配额条件而非 key 故障：按限流处理（换 key 试一把、仅 post-use 冷却），
+    // 而非 server-error 的"记败 + 指数退避冷却"——否则打爆 plan 会把共用 key 误伤冷却。
+    const fetchMock = fetchMockWith(432, 432);
+    vi.stubGlobal("fetch", fetchMock);
+    const onSuccess = vi.fn(async () => new Response("ok"));
+    const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+
+    await searchWithRetry(
+      makeDeps([keyRow("k-t3b-a"), keyRow("k-t3b-b")]),
+      TAVILY,
+      "api-t3b",
+      req,
+      { onSuccess, onFailure }
+    );
+
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][0]).toMatchObject({ kind: "exhausted" });
+    expect(onFailure.mock.calls[0][0].lastRes?.status).toBe(432);
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(bearerSet(fetchMock).size).toBe(2);
+  });
+
+  it.each([400, 404, 422, 433])(
     "4. %s → 立即 client-error，不重试、不换 key",
     async (status) => {
       const fetchMock = fetchMockWith(status);

@@ -4,7 +4,7 @@ import type { ProviderConfig } from "./index";
 export const TAVILY: ProviderConfig<"tavily"> = {
   name: "tavily",
   base: "https://api.tavily.com",
-  endpoints: { search: "/search" },
+  endpoints: { search: "/search", extract: "/extract" },
   upstream: { keysKey: "tavily_keys", idPrefix: "tv_", provider: "tavily" },
   admin: { basePath: "/admin/tavily", label: "Tavily Keys" },
   testBody: () => ({ query: "test", max_results: 1 }),

@@ -115,6 +115,10 @@ async function proxyToUpstream(
 /**
  * 上游响应状态分类，决定重试循环的非 ok 分支动作：
  *   429         → 限流，仅 post-use 冷却，换 key 重试
+ *   432         → Tavily "key or plan limit exceeded"：key 粒度限额时换 key 可能成功；
+ *                 配额条件非 key 故障 —— 不记败不熔断，按限流换 key 试一把
+ *   433         → Tavily "PayGo limit exceeded"：Plan 余额耗尽，重试必再失败；
+ *                 视为客户端确定性错误，立即返回，不重试不记败不冷却（保护共用 key 不被误伤）
  *   400/404/422 → 客户端确定性错误，立即返回，不重试
  *   401/403     → key 级错误（疑似失效），长冷却，换 key
  *   其余（5xx）  → 服务端/未知错误，失败记录 + 指数退避冷却，换 key
@@ -124,7 +128,10 @@ function classifyStatus(
 ): "rate-limit" | "client-error" | "auth-error" | "server-error" {
   switch (status) {
     case 429:
+    case 432:
       return "rate-limit";
+    case 433:
+      return "client-error";
     case 400:
     case 404:
     case 422:

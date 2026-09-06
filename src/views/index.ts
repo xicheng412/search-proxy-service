@@ -562,8 +562,14 @@ export function helpPage(publicBaseUrl: string = ""): string {
 </div>
 
 <div class="card">
-  <h2>调用示例（三种方式）</h2>
-  <p class="muted">原生透传端点：<code>POST ${base}/search</code>（请求体请用对应上游官方的格式）；SearXNG 兼容端点：<code>GET|POST ${base}/search</code>。</p>
+  <h2>调用示例</h2>
+  <p class="muted">原生透传端点：<code>POST ${base}/search</code>（请求体请用对应上游官方的格式）；SearXNG 兼容端点：<code>GET|POST ${base}/search</code>；Tavily Extract 透传端点：<code>POST ${base}/extract</code>（仅 Bearer <code>tavily-&lt;key&gt;</code>，请求体用 Tavily Extract 官方格式，统计与 /search 同链路）。</p>
+
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式四：走 Tavily Extract</h3>
+<pre class="code">curl -X POST ${base}/extract \\
+  -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
+  -H "Content-Type: application/json" \\
+  -d '{"urls":["https://en.wikipedia.org/wiki/Artificial_intelligence"],"extract_depth":"basic"}'</pre>
 
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：走 Tavily</h3>
 <pre class="code">curl -X POST ${base}/search \\

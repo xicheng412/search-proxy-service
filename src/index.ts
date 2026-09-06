@@ -4,7 +4,7 @@ import type { Env, AppVariables } from "./types";
 import { handleLogin, handleLogout } from "./auth";
 import { admin } from "./admin";
 import { loginPage } from "./views";
-import { handleSearch } from "./proxy";
+import { handleSearch, handleExtract } from "./proxy";
 
 export type { Env } from "./types";
 export { QueueDO } from "./queue";
@@ -22,6 +22,7 @@ app.get("/", (c) => {
     protocols: ["native", "searxng"],
     endpoints: {
       search: "GET|POST /search", // native: POST Bearer <tavily|exa>-<key>；searxng: GET|POST Bearer searxng-tavily-<key>
+      extract: "POST /extract",   // native only: POST Bearer tavily-<key>（Tavily Extract 透传）
       admin: "/admin",
     },
   });
@@ -32,6 +33,10 @@ app.get("/", (c) => {
 // - native 透传（POST）：Bearer <tavily|exa>-<key>，原样透传上游协议。
 // - searxng 兼容（GET|POST）：Bearer searxng-tavily-<key>，入参/返回值按 SearXNG 标准。
 app.all("/search", handleSearch);
+
+// /extract：Tavily Extract 透明转发（native only，Bearer tavily-<key>），
+// 复用与 /search 相同的重试/熔断/用量统计链路。仅 POST。
+app.post("/extract", handleExtract);
 
 // ---------- 管理员认证 ----------
 app.get("/admin/login", (c) => {
