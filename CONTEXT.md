@@ -55,12 +55,24 @@ _Avoid_: retry loop、重试循环
 ### 统计概念
 
 **当日（today）**:
-Asia/Shanghai 时区的 `YYYY-MM-DD` 日期（`todayDate()`）。用量跨天自然归零，无定时任务。
+用量统计的时间边界，UTC 日 00:00（`utcTodayStart()`），upstream / dist 两线共用。管理页「当日成功/失败」按此口径；跨天自然归零，无定时任务。
 _Avoid_: 今天、每日
 
 **小时桶（hour bucket）**:
-用量聚合的最小单位，UTC 整点时段 `YYYY-MM-DDTHH:00`。"今日 / 最近 N 小时"边界由前端按小时分段自行组合。
+用量聚合的最小单位，UTC 整点时段 `YYYY-MM-DDTHH:00`，upstream / dist 两线共用。"今日 / 最近 N 小时"边界由前端按小时分段自行组合。
 _Avoid_: 日桶、time bucket
+
+**upstream 统计（upstream stats, `kind='upstream'`）**:
+按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条（成功/失败按响应分类；429 与 400/404/422 不记），`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。**
+_Avoid_: 上游调用统计、接口统计
+
+**dist 统计（dist stats, `kind='dist'`）**:
+按「分发 key 请求」记账：每单进入重试核的请求记成功（无论上游最终成败；耗尽/无可用 key 亦算），searxng 参数错误记失败，`scope` = 分发 api_key。回答「每个分发 key 发出多少单」——消费方配额与用量。供 Dashboard「最近24小时/昨日/折线」（跨全部分发 key 汇总）、分发 Keys 页「最近24h调用」（逐 key）消费。**与 upstream 统计是不同维度，不要求一致。**
+_Avoid_: 调用统计、请求统计
+
+**统计选数（stat source）**:
+用哪条统计线先定问题：问官方 key 的消耗/健康 → `upstream`；问分发 key 的用量/账单 → `dist`。两线记账粒度和分类不同——一次请求可放大成多条 upstream 记录（重试）、只一条 dist 记录；503 也记 dist 成功；鉴权失败的请求两线都不记。**不要拿它们对账。**
+_Avoid_: 直接对比 upstream/dist 数字
 
 **写回式近似统计（write-back approximate stats）**:
 用量先在 isolate 内存累积、节流 flush 落库的近似统计：写失败静默、读失败按 0，绝不阻塞主流程。精确度是显式、可消费的设计变量。

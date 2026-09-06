@@ -282,15 +282,15 @@ export function adminPage(data: DashboardData): string {
   <div class="card stat">
     <h2>最近24小时调用</h2>
     <div class="stat-num" id="calls-24h">–</div>
-    <div class="muted">含当前小时 · 终端时区</div>
+    <div class="muted">分发 key 请求量 · 含当前小时 · 终端时区</div>
   </div>
   <div class="card stat">
     <h2>昨日调用总计</h2>
     <div class="stat-num" id="calls-yesterday">–</div>
-    <div class="muted">按终端本地时区计算</div>
+    <div class="muted">分发 key 请求量 · 按终端本地时区计算</div>
   </div>
   <div class="card chart">
-    <h2>近 5 天调用趋势</h2>
+    <h2 title="每个 UTC 小时桶内全部分发 key 的请求量，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（分发 key 请求量）</span></h2>
     <div class="chart-box"><canvas id="calls-chart"></canvas></div>
   </div>
 </section>
@@ -467,8 +467,8 @@ export function distListFragment(
             <td>${esc(k.note)}</td>
             <td>${st}</td>
             <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
-            <td title="最近24小时 Tavily 调用（含当前小时）">${s.tavily}</td>
-            <td title="最近24小时 Exa 调用（含当前小时）">${s.exa}</td>
+            <td title="该分发 key 最近24小时（含当前小时）的 Tavily 请求数">${s.tavily}</td>
+            <td title="该分发 key 最近24小时（含当前小时）的 Exa 请求数">${s.exa}</td>
             <td>
               <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
                 <div class="menu-wrap">
@@ -509,7 +509,7 @@ export function distListFragment(
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th title="最近24小时（含当前小时）">Tavily(24H)</th><th title="最近24小时（含当前小时）">EXA(24H)</th><th>操作</th></tr>
+      <th title="该分发 key 最近24小时（含当前小时）的 Tavily 请求数">Tavily(24H)</th><th title="该分发 key 最近24小时（含当前小时）的 Exa 请求数">EXA(24H)</th><th>操作</th></tr>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -590,7 +590,7 @@ export function helpPage(publicBaseUrl: string = ""): string {
     <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
     <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，操作列「复制」下拉一键复制调用凭据；最近24h调用拆为 Tavily(24H) / EXA(24H) 两列。</li>
     <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
-    <li><strong>统计</strong>：调用按 UTC 小时桶结算（分发 Keys 页为最近24小时滚动），Dashboard 图表与「昨日」按浏览器本地时区显示；统计为近似值、允许少量误差。</li>
+    <li><strong>统计</strong>：两条线均按 UTC 小时桶结算，先定看什么再选数——<strong>上游 Keys 页</strong>的「当日成功/失败」统计上游官方 key 的<strong>真实调用尝试次数</strong>（每次尝试一条，重试会放大；429 与 400/404/422 不记）；<strong>Dashboard / 分发 Keys 页</strong>统计分发 key 的<strong>请求次数</strong>（每单一条，503 也计入；24h 为最近24小时滚动，Dashboard 图表与「昨日」按浏览器本地时区显示）。两条线维度不同，勿互相核对；统计为近似值、允许少量误差。</li>
     <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
   </ul>
 </div>`;

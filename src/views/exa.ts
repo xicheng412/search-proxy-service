@@ -77,9 +77,11 @@ export function exaListFragment(
     : `<tr><td colspan="7" class="muted">暂无 Exa key，请先添加。</td></tr>`;
 
   return `${flashHtml}
+  <p class="hint" style="margin:0 0 8px;">「当日成功/失败」= 该官方 key 的<strong>上游调用尝试次数</strong>（UTC 当日 00:00 起；一次请求重试会记多条，429 与 400/404/422 不记）——与 Dashboard / 分发 Keys 页的<strong>分发 key 请求量</strong>是不同维度，勿直接对比。</p>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>冷却</th>
-      <th>当日成功</th><th>当日失败</th><th>操作</th></tr></thead>
+      <th title="当日（UTC 00:00 起）该官方 key 的上游调用成功尝试数">当日成功</th>
+      <th title="当日（UTC 00:00 起）该官方 key 的上游调用失败尝试数">当日失败</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
   ${upstreamPaginationHtml(pagination, keys.length > 0, "#exa-list")}`;
