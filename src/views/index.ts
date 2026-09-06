@@ -597,6 +597,8 @@ export function helpPage(publicBaseUrl: string = ""): string {
     <tbody>
       <tr><td>2xx</td><td><code>native</code>：上游原始响应原样透传（结构由上游决定）；<code>searxng</code>：转成 SearXNG 标准 JSON</td></tr>
       <tr><td>429</td><td>自动换另一个可用上游 key 重试一次；仍 429 返回上游错误</td></tr>
+      <tr><td>432</td><td>（Tavily）key / plan 限额耗尽：自动换 key 重试一次；仍 432 透传上游错误</td></tr>
+      <tr><td>433</td><td>（Tavily）PayGo 余额耗尽：立即透传上游错误，不重试</td></tr>
       <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code>、<code>exa-</code> 或 <code>searxng-tavily-</code>）</td></tr>
       <tr><td>400</td><td>（searxng）缺 <code>q</code> 或 <code>format</code> 非 json；<code>native</code> 路径透传上游 400</td></tr>
       <tr><td>503</td><td>该 provider 无可用的上游 key（全部禁用或冷却中）</td></tr>
