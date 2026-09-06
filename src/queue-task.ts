@@ -16,4 +16,9 @@ export interface SearxngTask {
   contentType: string;
   // searxng 协议仅服务 Search 能力（无 path 字段：协议层绑定 Search，上游 path 由 provider 描述符决定）。
 }
-export type QueueTask = NativeTask | SearxngTask;
+export interface ReaderTask {
+  kind: "reader";
+  url: string;
+  // reader 协议仅服务 Extract 能力（无 path/body 字段：协议层绑定 Extract，上游 path/请求体由 provider 描述符 + adapters/reader 决定）。
+}
+export type QueueTask = NativeTask | SearxngTask | ReaderTask;

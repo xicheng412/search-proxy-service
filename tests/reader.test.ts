@@ -1,12 +1,11 @@
-// /extract 入口单测：直挂 handleExtract（Hono 路由），配 fake QUEUE/DB/KV/caches，
-// 断言路由层契约 —— 鉴权 / 协议门禁（native-only）/ provider 门禁（仅 tavily）/ 任务打装
-// （path=/extract + body/contentType 透传）转发到队列 DO。
-// 不 assert 重试核内部（retry.test.ts 覆盖）：本文件只证明"统计链路的前置门禁不误记、
-// 命中 extract 的任务确实带对 path 进队列"，这是 /extract 各维度统计正确的起点。
+// /reader 入口单测：直挂 handleReader（Hono 路由），配 fake QUEUE/DB/KV/caches，
+// 断言路由层契约 —— 鉴权 / 协议门禁（reader-only）/ 目标 URL 解析 / 任务打装
+// （ReaderTask{kind=reader,url}）转发到队列 DO。
+// 不 assert 重试核内部（retry.test.ts 覆盖）：本文件只证明 reader 路由的门禁与打装。
 
 import { describe, it, expect, vi, type Mock } from "vitest";
 import { Hono } from "hono";
-import { handleExtract } from "../src/proxy";
+import { handleReader } from "../src/proxy";
 import type { AppVariables, Env } from "../src/types";
 import { makeConstantD1 } from "./helpers/fake-d1";
 
@@ -18,12 +17,7 @@ interface QueueCapture {
 
 function makeQueue(): QueueCapture {
   const stub = {
-    fetch: vi.fn(async () => {
-      return new Response('{"results":[],"failed_results":[]}', {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }),
+    fetch: vi.fn(async () => new Response("page text", { status: 200 })),
   };
   return { stub };
 }
@@ -41,28 +35,17 @@ function buildApp(distRows: Record<string, unknown>[]) {
     PUBLIC_BASE_URL: "https://proxy.example",
   } as unknown as Env;
   const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
-  app.post("/extract", handleExtract);
+  app.get("/reader/*", handleReader);
   return { app, env, queue };
 }
 
-function callExtract(
+function callReader(
   app: Hono<{ Bindings: Env; Variables: AppVariables }>,
   env: Env,
   bearer: string,
-  body = '{"urls":"https://example.com"}'
+  path: string
 ) {
-  return app.request(
-    "/extract",
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${bearer}`,
-        "content-type": "application/json",
-      },
-      body,
-    },
-    env
-  );
+  return app.request(path, { headers: { authorization: `Bearer ${bearer}` } }, env);
 }
 
 const enabledRow = (apiKey: string, status: string = "enabled") => ({
@@ -72,56 +55,61 @@ const enabledRow = (apiKey: string, status: string = "enabled") => ({
   created_at: Date.now(),
 });
 
-describe("POST /extract", () => {
-  it("tavily native 分发 key：任务转发 path=/extract，body/contentType 原样透传，走队列 DO", async () => {
+describe("GET /reader/*", () => {
+  it("reader-tavily 分发 key：任务转发 {kind=reader,url} 到 tavily 队列 DO", async () => {
     const apiKey = "abcd" + "1234";
     const { app, env, queue } = buildApp([enabledRow(apiKey)]);
-    const body = '{"urls":["https://a.com","https://b.com"],"extract_depth":"advanced"}';
 
-    const res = await callExtract(app, env, `tavily-${apiKey}`, body);
+    const res = await callReader(app, env, `reader-tavily-${apiKey}`, "/reader/https://www.example.com");
 
     expect(res.status).toBe(200);
+    expect(await res.text()).toBe("page text");
     expect(queue.stub.fetch).toHaveBeenCalledTimes(1);
     const init = queue.stub.fetch.mock.calls[0][1] as unknown as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual({
       provider: "tavily",
       apiKey,
-      task: {
-        kind: "native",
-        path: "/extract",
-        body,
-        contentType: "application/json",
-      },
+      task: { kind: "reader", url: "https://www.example.com" },
     });
   });
 
-  it("searxng 前缀（searxng-tavily-<key>）：405，不转发队列、不计调用", async () => {
+  it("缺目标 URL：400，不转发队列、不计调用", async () => {
     const apiKey = "abcd" + "1234";
     const { app, env, queue } = buildApp([enabledRow(apiKey)]);
 
-    const res = await callExtract(app, env, `searxng-tavily-${apiKey}`);
+    const res = await callReader(app, env, `reader-tavily-${apiKey}`, "/reader/");
+
+    expect(res.status).toBe(400);
+    expect(queue.stub.fetch).not.toHaveBeenCalled();
+  });
+
+  it("native 前缀（tavily-<key>）打 /reader：405，不转发队列", async () => {
+    const apiKey = "abcd" + "1234";
+    const { app, env, queue } = buildApp([enabledRow(apiKey)]);
+
+    const res = await callReader(app, env, `tavily-${apiKey}`, "/reader/https://www.example.com");
 
     expect(res.status).toBe(405);
     expect(queue.stub.fetch).not.toHaveBeenCalled();
   });
 
-  it("reader 前缀（reader-tavily-<key>）：405（reader 有自己的 /reader 入口，不走 /extract），不转发队列", async () => {
+  it("searxng 前缀（searxng-tavily-<key>）打 /reader：405，不转发队列", async () => {
     const apiKey = "abcd" + "1234";
     const { app, env, queue } = buildApp([enabledRow(apiKey)]);
 
-    const res = await callExtract(app, env, `reader-tavily-${apiKey}`);
+    const res = await callReader(app, env, `searxng-tavily-${apiKey}`, "/reader/https://www.example.com");
 
     expect(res.status).toBe(405);
     expect(queue.stub.fetch).not.toHaveBeenCalled();
   });
 
-  it("exa 分发 key（无 extract 端点）：404，不转发队列、不计调用", async () => {
+  it("exa 前缀（exa-<key>）打 /reader：405（非 reader 协议），不转发队列", async () => {
     const apiKey = "abcd" + "1234";
     const { app, env, queue } = buildApp([enabledRow(apiKey)]);
 
-    const res = await callExtract(app, env, `exa-${apiKey}`);
+    const res = await callReader(app, env, `exa-${apiKey}`, "/reader/https://www.example.com");
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(405);
     expect(queue.stub.fetch).not.toHaveBeenCalled();
   });
 
@@ -129,7 +117,7 @@ describe("POST /extract", () => {
     const apiKey = "abcd" + "1234";
     const { app, env, queue } = buildApp([enabledRow(apiKey, "disabled")]);
 
-    const res = await callExtract(app, env, `tavily-${apiKey}`);
+    const res = await callReader(app, env, `reader-tavily-${apiKey}`, "/reader/https://www.example.com");
 
     expect(res.status).toBe(401);
     expect(queue.stub.fetch).not.toHaveBeenCalled();
@@ -138,7 +126,7 @@ describe("POST /extract", () => {
   it("未知分发 key：401，不转发队列", async () => {
     const { app, env, queue } = buildApp([]);
 
-    const res = await callExtract(app, env, "tavily-0000unknown");
+    const res = await callReader(app, env, "reader-tavily-0000unknown", "/reader/https://www.example.com");
 
     expect(res.status).toBe(401);
     expect(queue.stub.fetch).not.toHaveBeenCalled();

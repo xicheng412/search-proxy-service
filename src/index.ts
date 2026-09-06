@@ -4,7 +4,7 @@ import type { Env, AppVariables } from "./types";
 import { handleLogin, handleLogout } from "./auth";
 import { admin } from "./admin";
 import { loginPage } from "./views";
-import { handleSearch, handleExtract } from "./proxy";
+import { handleSearch, handleExtract, handleReader } from "./proxy";
 
 export type { Env } from "./types";
 export { QueueDO } from "./queue";
@@ -19,11 +19,12 @@ app.get("/", (c) => {
     name: "tavily-cf-proxy",
     status: "ok",
     providers: ["tavily", "exa"],
-    protocols: ["native", "searxng"],
+    protocols: ["native", "searxng", "reader"],
     capabilities: ["search", "extract"],
     endpoints: {
       search: "GET|POST /search", // Search 能力：native POST（Bearer tavily-|exa-<key>，透传）；searxng GET|POST（Bearer searxng-tavily-<key>）
       extract: "POST /extract",   // Extract 能力：native only（Bearer tavily-<key>，Tavily Extract 透传）
+      reader: "GET /reader/<url>", // Extract 能力：reader 协议（Bearer reader-tavily-<key>，URL→文本）
       admin: "/admin",
     },
   });
@@ -33,11 +34,16 @@ app.get("/", (c) => {
 // 端点按能力、token 前缀按 provider 分派：
 // - /search 承载 Search 能力（POST native 透传 Bearer <tavily|exa>-<key>；GET|POST searxng Bearer searxng-tavily-<key>）。
 // - /extract 承载 Extract 能力（POST native 透传 Bearer tavily-<key>）；无 searxng 语义、exa 无此能力。
+// - /reader 承载 Extract 能力（GET reader 协议 Bearer reader-tavily-<key>，URL→文本）。
 app.all("/search", handleSearch);
 
 // /extract：Tavily Extract 透明转发（native only，Bearer tavily-<key>），
 // 复用与 /search 相同的重试/熔断/用量统计链路。仅 POST。
 app.post("/extract", handleExtract);
+
+// /reader：URL→文本（reader 协议，Bearer reader-tavily-<key>），后端 Tavily Extract，
+// 复用与 /search、/extract 相同的重试/熔断/用量统计链路。仅 GET；目标 URL 在路径里。
+app.get("/reader/*", handleReader);
 
 // ---------- 管理员认证 ----------
 app.get("/admin/login", (c) => {

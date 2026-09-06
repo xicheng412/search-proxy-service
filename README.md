@@ -24,13 +24,14 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 
 ## Features
 
-- **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider or capability with a descriptor file.
+- **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`); `GET /reader/<url>` serves **Tavily Extract as plain text** (`Bearer reader-tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider or capability with a descriptor file.
 - **Tavily Extract passthrough.** `POST /extract` with `Bearer tavily-…` transparently forwards to Tavily Extract, sharing the exact same retry/breaker/usage-accounting pipeline as `/search` (native-only by design).
 - **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed.
 - **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` park the key with a 12h suspected-invalid cooldown then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped — across both capability endpoints (`/search`, `/extract`).
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily Search request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
-- **Distributed keys carry no provider binding.** One key; the prefix picks the provider — `tavily-<key>` for any Tavily capability (Search via `/search`, Extract via `/extract`), `exa-<key>` for Exa Search, `searxng-tavily-<key>` for Tavily Search via the SearXNG protocol. Operators choose at call time.
+- **Reader-style protocol adapter.** `reader-tavily-<key>` + `GET /reader/<url>` returns the target page's text (`text/plain`) via Tavily Extract — a URL→text gateway like Jina Reader, reusing the same retry/circuit-breaker/usage pipeline. Returns Tavily-extracted raw text (not Jina's polished Markdown); target URLs that carry their own query string must be percent-encoded.
+- **Distributed keys carry no provider binding.** One key; the prefix picks the provider — `tavily-<key>` for any Tavily capability (Search via `/search`, Extract via `/extract`), `exa-<key>` for Exa Search, `searxng-tavily-<key>` for Tavily Search via the SearXNG protocol, `reader-tavily-<key>` for Tavily Extract via the reader (URL→text) protocol. Operators choose at call time.
 - **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (call counts), shown live in the dashboard.
 - **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, dashboard, and a built-in usage help page with copy-able curl snippets. No SPA, no build.
 - **Stateless deploy.** `pnpm install && pnpm dev` to run. Deploy is a single `pnpm run deploy:cf`.
@@ -38,15 +39,15 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 ## How it works
 
 ```
-                    ┌──────────────────────────────────────────────┐
-Caller ──────────►  │   /search  (Cloudflare Worker · Hono)         │
-                    │                                              │
+                    ┌───────────────────────────────────────────────┐
+Caller ──────────►  │  /search  (Cloudflare Worker · Hono)          │
+                    │                                               │
   Bearer tavily-…   │  1. parseDistKey → protocol (native|searxng)  │
   Bearer exa-…      │     + provider (tavily|exa)                   │
   Bearer searxng-…  │  2. lookup dist key in KV → 401 if missing    │
-                    │  3. +1 today's call  (in-mem buffered)        │
-                    │  4. searxng? translate  → Tavily request      │
-                    │  5. pick upstream key (weighted, excludes      │
+  Bearer reader-…   │  3. +1 today's call  (in-mem buffered)        │
+                    │  4. searxng/reader? translate → Tavily request│
+                    │  5. pick upstream key (weighted, excludes     │
                     │     cooldown/disabled/tried keys)             │
                     │  6. proxy request (up to 3 attempts):         │
                     │     • 2xx      →  success + 10s post-use cool │
@@ -54,7 +55,9 @@ Caller ──────────►  │   /search  (Cloudflare Worker · H
                     │     • 400/404/422 → return now, no key burn   │
                     │     • 401/403   →  park key 12h, switch, retry│
                     │     • other 4xx/5xx/network → exp. cool, retry│
-                    │  7. native: passthrough / searxng: → JSON     │
+                    │  7. native: passthrough / searxng: → JSON /   │
+                    │     reader: → text                            │
+                    │                                               │
                                   │  Bearer <real upstream key>
                                   ▼
                         ┌─────────────────────┐
@@ -109,6 +112,10 @@ curl -X POST http://localhost:8787/extract \
 # Tavily Search（searxng 协议，GET，SearXNG 标准 JSON 响应）
 curl -L -X GET "http://localhost:8787/search?q=Cloudflare+Workers&format=json" \
   -H "Authorization: Bearer searxng-tavily-<your-distributed-key>"
+
+# Page text（reader 协议，GET /reader/<url>，返回 text/plain）
+curl "http://localhost:8787/reader/https://example.com" \
+  -H "Authorization: Bearer reader-tavily-<your-distributed-key>"
 ```
 
 ## Deploy to production
@@ -154,7 +161,7 @@ src/
 ├── auth.ts              # login / session / CSRF / logout
 ├── config.ts            # PUBLIC_BASE_URL single source of truth
 ├── proxy.ts             # auth → pick protocol path → retry core (up to 3x) → respond
-├── adapters/            # consumer-side protocol ACL (searxng ↔ Tavily translation)
+├── adapters/            # consumer-side protocol ACL (searxng ↔ Tavily; reader ↔ Tavily Extract)
 ├── providers/           # one descriptor per upstream (tavily / exa / index)
 ├── admin/               # /admin/* routes (per-provider files + shared)
 └── views/               # HTMX templates

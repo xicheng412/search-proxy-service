@@ -6,7 +6,7 @@ export const TAVILY: ProviderConfig<"tavily"> = {
   base: "https://api.tavily.com",
   capabilities: {
     search: { path: "/search", protocols: ["native", "searxng"] },
-    extract: { path: "/extract", protocols: ["native"] },
+    extract: { path: "/extract", protocols: ["native", "reader"] },
   },
   upstream: { keysKey: "tavily_keys", idPrefix: "tv_", provider: "tavily" },
   admin: { basePath: "/admin/tavily", label: "Tavily Keys" },

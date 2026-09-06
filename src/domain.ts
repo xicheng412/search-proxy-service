@@ -7,8 +7,8 @@ export type Provider = "tavily" | "exa";
 /** 本服务代理的语义能力；原子、扁平，抽象层独立、执行层必须落地到某 provider 的 surface 才可调用。 */
 export type Capability = "search" | "extract";
 
-/** 调用侧线协议：native = 原样透传上游协议；searxng = SearXNG 兼容协议（需协议转换）。 */
-export type WireProtocol = "native" | "searxng";
+/** 调用侧线协议：native = 原样透传上游协议；searxng = SearXNG 兼容协议（需协议转换）；reader = URL→文本协议（需协议转换）。 */
+export type WireProtocol = "native" | "searxng" | "reader";
 
 export type KeyStatus = "enabled" | "disabled";
 
@@ -61,9 +61,11 @@ export interface DistAuth {
  *   tavily-<key>         → protocol=native,  provider=tavily   （原样透传 Tavily）
  *   exa-<key>            → protocol=native,  provider=exa      （原样透传 Exa）
  *   searxng-tavily-<key> → protocol=searxng, provider=tavily   （SearXNG 协议，走 Tavily 后端）
+ *   reader-tavily-<key>  → protocol=reader,  provider=tavily   （URL→文本协议，走 Tavily Extract 后端）
  * 生成的分发 key 是纯字符串（hex，不含 `-`），按最后一个 `-` 切分无歧义；
  * 前缀非法或缺失时返回 null。
- * searxng 前缀永远只路由到 Search 能力；是否覆盖 exa（searxng-exa-）是实现扩展，未启用。
+ * searxng 前缀永远只路由到 Search 能力、reader 前缀永远只路由到 Extract 能力；
+ * 两者是否覆盖 exa（searxng-exa- / reader-exa-）是实现扩展，未启用。
  */
 export function parseDistKey(token: string): DistAuth | null {
   const lastDash = token.lastIndexOf("-");
@@ -78,6 +80,8 @@ export function parseDistKey(token: string): DistAuth | null {
       return { protocol: "native", provider: "exa", apiKey };
     case "searxng-tavily":
       return { protocol: "searxng", provider: "tavily", apiKey };
+    case "reader-tavily":
+      return { protocol: "reader", provider: "tavily", apiKey };
     default:
       return null;
   }

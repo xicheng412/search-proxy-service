@@ -12,7 +12,7 @@
 - **代理链路**：外部用分发 key 调用 → 本服务校验 → 按前缀路由选上游 → 进 provider 队列 DO 串行放行 → 选自带冷却的上游 key → 透明转发 → 原样返回。
 - **管理链路**：管理员密码登录后台 → 管理上游 key（多个，可加可删可熔断）/ 分发 key（生成、禁用、删除）/ 查看当日统计与小时明细 / 运行时调三组参数（冷却、队列、鉴权缓存）。
 
-唯一对外数据面是 `GET|POST /search`（主端点：native 透传 + searxng 兼容）与 `POST /extract`（Tavily Extract 透传，仅 native，见 §3.3）；`GET /` 返回服务信息 JSON；其余 `/admin/*` 是管理后台。
+唯一对外数据面是 `GET|POST /search`（主端点：native 透传 + searxng 兼容）、`POST /extract`（Tavily Extract 透传，仅 native，见 §3.3）与 `GET /reader/<url>`（Extract 的 reader 协议形态：URL→页面正文文本，见 §3.4）；`GET /` 返回服务信息 JSON；其余 `/admin/*` 是管理后台。
 
 ---
 
@@ -32,16 +32,18 @@ Authorization: Bearer <proto?-><provider>-<key>
   tavily-<key>、exa-<key>                → proto=native (透传)
   searxng-tavily-<key>（searxng 覆盖仅 Tavily，未启用）
                                         → proto=searxng (SearXNG 兼容协议)
+  reader-tavily-<key>（reader 覆盖仅 Tavily，未启用）
+                                        → proto=reader (URL→文本，走 Tavily Extract)
 ```
 
 - `parseDistKey()`（[`src/domain.ts`](../src/domain.ts)）按最后一个 `-` 切分；分发 key 是 hex 不含 `-`，切分无歧义。
-- 合法分发 key 用 `Bearer tavily-abc...` 走 Tavily（透传），`Bearer exa-abc...` 走 Exa（透传），`Bearer searxng-tavily-abc...` 走 SearXNG 协议（后端 Tavily）。
+- 合法分发 key 用 `Bearer tavily-abc...` 走 Tavily（透传），`Bearer exa-abc...` 走 Exa（透传），`Bearer searxng-tavily-abc...` 走 SearXNG 协议（后端 Tavily），`Bearer reader-tavily-abc...` 走 reader 协议（`GET /reader/<url>`，后端 Tavily Extract）。
 - **裸 key / `tvly-` 前缀 / `sk-` 前缀 / 未注册的复合前缀** 全部 401。
-- native 透传的错误响应用对应 provider 官方格式（Tavily `{detail:{error}}`，Exa `{error}`）；searxng 路径的错误统一为 `{ "error": "..." }`（见 §6.5）。
+- native 透传的错误响应用对应 provider 官方格式（Tavily `{detail:{error}}`，Exa `{error}`）；searxng / reader 路径的错误统一为 `{ "error": "..." }`（见 §6.5）。
 
 ### 2.2 后台"复制"按钮语义
 
-后台 分发 Keys 列表每行的操作列有**一个 "复制" 按钮**，点击展开下拉菜单，菜单里是三个复制项——"复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key"。它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的三种拼装结果（下拉便于以后扩展新的复制项/操作按钮）。
+后台 分发 Keys 列表每行的操作列有**一个 "复制" 按钮**，点击展开下拉菜单，菜单里是四个复制项——"复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key / 复制 reader-tavily 调用 key"。它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>` / `reader-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的四种拼装结果（下拉便于以后扩展新的复制项/操作按钮）。
 
 ### 2.3 能力 × 端点 × 协议（能力与 provider 正交；协议受能力约束）
 
@@ -51,8 +53,8 @@ Authorization: Bearer <proto?-><provider>-<key>
 |---|---|---|
 | **provider（公司）** | Tavily / Exa | 路由 / 凭据前缀 / 上游 key 池 / 统计维度 |
 | **能力（capability）** | Search / Extract | 调什么功能 |
-| **端点（endpoint）** | `/search` / `/extract` | 本服务接入点，决定能力 |
-| **线协议（protocol）** | native / searxng | 包装方式（searxng 仅用于 Search） |
+| **端点（endpoint）** | `/search` / `/extract` / `/reader/<url>` | 本服务接入点，决定能力 |
+| **线协议（protocol）** | native / searxng / reader | 包装方式（searxng 仅 Search、reader 仅 Extract） |
 
 能力 × 端点 × provider × 协议的既有组合：
 
@@ -61,10 +63,11 @@ Authorization: Bearer <proto?-><provider>-<key>
 | `POST /search` | Search | Tavily 或 Exa | native |
 | `GET\|POST /search` | Search | 仅 Tavily | searxng |
 | `POST /extract` | Extract | 仅 Tavily | native |
+| `GET /reader/<url>` | Extract | 仅 Tavily | reader |
 
-- **searxng 仅 Search 是概念约束**（SearXNG 标准没有 Extract 语义）；**searxng 仅 Tavily 是实现覆盖**（当前只写了 `buildTavilyBody`）。
+- **searxng 仅 Search 是概念约束**（SearXNG 标准没有 Extract 语义）；**reader 仅 Extract 是概念约束**（URL→文本正是 Extract 能力的语义，与 /extract 同一能力、两个协议入口）；**searxng/reader 仅 Tavily 是实现覆盖**（当前只写了 `buildTavilyBody` / `buildExtractBody`）。
 - **端点名 ≠ 能力名**：`/search` 是端点、Search 是能力，同名属透传设计，不混用。
-- **`tavily-` 前缀可打两个能力**（Search 经 `/search`、Extract 经 `/extract`）；`exa-` 前缀只打 Search（`/extract` 对 exa 返回 404）；searxng 前缀只打 Search（`/extract` 对 searxng 返回 405）。
+- **`tavily-` 前缀可打两个能力**（Search 经 `/search`、Extract 经 `/extract`）；`exa-` 前缀只打 Search（`/extract` 对 exa 返回 404）；searxng 前缀只打 Search（`/extract` 对 searxng 返回 405）；reader 前缀只打 Extract（`/search`、`/extract` 对 reader 返回 405，reader 只能经专属入口 `/reader`）。
 - **术语规范**：指"调什么 / 请求体 / 响应"必须用能力名（Tavily Search / Exa Search / Tavily Extract）；provider 名只在路由 / 凭据 / 管理 / 统计语境单独出现。
 
 ### 2.4 如何加一个新能力
@@ -152,6 +155,17 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 - `432`（key/plan limit exceeded）→ 按限流处理：换 key 试一把、仅 post-use 冷却，**不记败不熔断**。key 粒度限额外换 key 可能成功；plan 粒度也只多一次无害尝试。
 - `433`（PayGo limit exceeded）→ 客户端确定性错误（同 400/404/422）：**立即返回、不重试、不记败不冷却**。PayGo 余额耗尽重试必再失败；且上游 key 与 search 共用，若按 server-error 记败+熔断会把健康 key 误伤冷却、连带 /search 一起 503。
 
+### 3.4 reader 透传（`GET /reader/<url>`）
+
+Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次 Tavily Extract 请求，再把响应转成纯文本。与 §3.3 同构，差异在协议层：
+- `handleReader`（`src/proxy.ts`）鉴权后**只放行 reader 协议**（`reader-tavily-<key>`）；native / searxng / exa 打 `/reader` → 405。
+- 目标 URL 从路径抠出（`adapters/reader.ts:parseReaderTarget`）；**目标自身带 query 时必须整体 percent-encode**（否则 `?` 后会被当作外层请求参数）。
+- 打装 `ReaderTask{kind:"reader", url}` → 进 tavily 队列 DO → `runReaderTask`：经 `searchWithRetry` 打 `capabilities.extract.path`（请求体 `{urls:[url], extract_depth:"basic"}`），onSuccess 把 `results[].raw_content` 转成 `text/plain`。
+- **确定性失败（目标写进 Tavily `failed_results`）→ 直接 502，不换 key 重试**（避免对死链空烧 extract 配额）；只有响应畸形（解析失败）才按"不可用"换 key。
+- 统计与 /search、/extract 同一套账（上游成败 / 冷却 / dist 计数），无需额外埋点。
+
+门禁（不触达重试核 → 不记统计、不耗上游配额）：非 reader 协议 → 405；缺目标 URL → 400；分发 key 缺失/禁用 → 401。
+
 ---
 
 ## 4. 模块分层（读代码请按此顺序）
@@ -218,6 +232,7 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 | `domain.ts` | 词汇 + 规则 + 纯函数 | 不 import 任何仓库模块；不读 KV/DB |
 | `providers/` | 一个 provider 的全部事实（base、capabilities、上游键名、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV/DB |
+| `adapters/reader.ts` | 消费方 ACL：/reader/<url> 抠目标 / 目标→Tavily Extract 请求体 / Tavily 响应→纯文本 / reader 错误体 | 不 import 仓库模块；不读 KV/DB |
 | `storage/upstream-keys.ts` | 上游 key + 熔断状态（`breaker_state`）D1 读写 + keyset 分页 | 不做节流/不吞错/不写策略 |
 | `storage/dist-keys.ts` | 分发 key D1 读写 + Cache API 鉴权读缓存（读穿 + 写失效） | 不写业务逻辑 |
 | `storage/usage.ts` | 用量小时桶 D1 读写（UPSERT 求和 / 按窗口查询） | 不带内存缓冲（那是 usage-store 的活） |
@@ -247,7 +262,7 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 
 > **已知例外（Dashboard 上游趋势图序列）**：`usage-store.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/index.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
 
-> **协议与 provider 正交**：线协议（native / searxng）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径（经 `searchWithRetry` callbacks 注入）。例见 `searxng`。
+> **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径 / 一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `queue.ts` 分派。例见 `searxng`、`reader`。
 
 ---
 

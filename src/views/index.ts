@@ -491,6 +491,7 @@ export function distListFragment(
                     <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）">复制 tavily 调用key</button>
                     <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）">复制 exa 调用key</button>
                     <button class="ghost" type="button" data-copy="searxng-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer searxng-tavily-&lt;key&gt;（SearXNG 协议，请求走 Tavily）">复制 searxng-tavily 调用key</button>
+                    <button class="ghost" type="button" data-copy="reader-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer reader-tavily-&lt;key&gt;（reader 协议，URL→文本，走 Tavily Extract）">复制 reader-tavily 调用key</button>
                   </div>
                 </div>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
@@ -537,7 +538,7 @@ export function distGenerateResult(
   publicBaseUrl: string = ""
 ): string {
   const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
-<div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）、<code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa），或 <code>Bearer searxng-tavily-${esc(plainApiKey)}</code>（SearXNG 协议，走 Tavily）。</div>`;
+<div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）、<code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）、<code>Bearer searxng-tavily-${esc(plainApiKey)}</code>（SearXNG 协议，走 Tavily），或 <code>Bearer reader-tavily-${esc(plainApiKey)}</code>（reader 协议：GET /reader/&lt;url&gt; 拿页面文本，走 Tavily Extract）。</div>`;
   return box + distListFragment(keys, callsMap, csrf, undefined, publicBaseUrl);
 }
 
@@ -557,13 +558,13 @@ export function helpPage(publicBaseUrl: string = ""): string {
 <div class="card">
   <h2>使用说明</h2>
   <p class="muted">本服务把上游真实 Key（Tavily / Exa 官方 key）收口在中间层，只向下游分发<strong>纯字符串的分发 key</strong>。<br>
-  调用方用 <code>Authorization: Bearer &lt;前缀&gt;-&lt;key&gt;</code> 请求代理端点。<strong>前缀选 provider、端点选能力、协议选包装</strong>：<code>tavily-</code> / <code>exa-</code> 是原生透传（可打各自 <strong>Search</strong> 端点 <code>/search</code>；<code>tavily-</code> 还可打 <strong>Extract</strong> 端点 <code>/extract</code>）；<code>searxng-tavily-</code> 是 SearXNG 兼容协议（GET/POST 调 <strong>Tavily Search</strong>，后端仅 Tavily）。</p>
-  <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code>、<code>exa-&lt;key&gt;</code> 或 <code>searxng-tavily-&lt;key&gt;</code>。</p>
+  调用方用 <code>Authorization: Bearer &lt;前缀&gt;-&lt;key&gt;</code> 请求代理端点。<strong>前缀选 provider、端点选能力、协议选包装</strong>：<code>tavily-</code> / <code>exa-</code> 是原生透传（可打各自 <strong>Search</strong> 端点 <code>/search</code>；<code>tavily-</code> 还可打 <strong>Extract</strong> 端点 <code>/extract</code>）；<code>searxng-tavily-</code> 是 SearXNG 兼容协议（GET/POST 调 <strong>Tavily Search</strong>，后端仅 Tavily）；<code>reader-tavily-</code> 是 reader 协议（GET <code>/reader/&lt;url&gt;</code> 拿页面文本，后端 Tavily Extract）。</p>
+  <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code>、<code>exa-&lt;key&gt;</code>、<code>searxng-tavily-&lt;key&gt;</code> 或 <code>reader-tavily-&lt;key&gt;</code>。</p>
 </div>
 
 <div class="card">
   <h2>调用示例</h2>
-  <p class="muted">本服务按<strong>能力（capability）</strong>代理——<strong>Search</strong>（Tavily / Exa 两家均有，端点 <code>POST /search</code>，请求体用各 provider Search 官方格式）与 <strong>Extract</strong>（仅 Tavily，端点 <code>POST /extract</code>，请求体用 Tavily Extract 官方格式，统计与 /search 同链路）。searxng 是 Search 能力的一种包装协议（<code>GET|POST /search</code>）。</p>
+  <p class="muted">本服务按<strong>能力（capability）</strong>代理——<strong>Search</strong>（Tavily / Exa 两家均有，端点 <code>POST /search</code>，请求体用各 provider Search 官方格式）与 <strong>Extract</strong>（仅 Tavily，端点 <code>POST /extract</code>，请求体用 Tavily Extract 官方格式，统计与 /search 同链路）。searxng 是 Search 能力的一种包装协议（<code>GET|POST /search</code>）；reader 是 Extract 能力的一种包装协议（<code>GET /reader/&lt;url&gt;</code>，返回纯文本）。</p>
 
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：Tavily Search（native 透传）</h3>
 <pre class="code">curl -X POST ${base}/search \\
@@ -587,7 +588,12 @@ export function helpPage(publicBaseUrl: string = ""): string {
   -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
   -H "Content-Type: application/json" \\
   -d '{"urls":["https://en.wikipedia.org/wiki/Artificial_intelligence"],"extract_depth":"basic"}'</pre>
-  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 前缀；前缀只选公司，<code>tavily-</code> 前缀可打 <strong>Search</strong> 也可打 <strong>Extract</strong>。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
+
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式五：页面文本（reader 协议）</h3>
+<pre class="code">curl "${base}/reader/https://en.wikipedia.org/wiki/Artificial_intelligence" \\
+  -H "Authorization: Bearer reader-tavily-&lt;分发key&gt;" \\
+  # → 200 text/plain：目标页面正文文本（Tavily Extract 提取，非 Jina 精加工 Markdown）</pre>
+  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code>、<code>reader-tavily-</code> 前缀；前缀只选公司，<code>tavily-</code> 前缀可打 <strong>Search</strong> 也可打 <strong>Extract</strong>（<code>reader-tavily-</code> 只打 <strong>Extract</strong> 的 <code>/reader</code>）。reader 目标 URL 若自身带 query，需整体 percent-encode（否则 <code>?</code> 后会被当作外层请求参数）。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily/reader-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
 </div>
 
 <div class="card">
@@ -595,12 +601,14 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <table>
     <thead><tr><th>状态</th><th>含义</th></tr></thead>
     <tbody>
-      <tr><td>2xx</td><td><code>native</code>：上游原始响应原样透传（结构由上游决定）；<code>searxng</code>：转成 SearXNG 标准 JSON</td></tr>
+      <tr><td>2xx</td><td><code>native</code>：上游原始响应原样透传（结构由上游决定）；<code>searxng</code>：转成 SearXNG 标准 JSON；<code>reader</code>：返回目标页正文纯文本（text/plain）</td></tr>
       <tr><td>429</td><td>自动换另一个可用上游 key 重试一次；仍 429 返回上游错误</td></tr>
       <tr><td>432</td><td>（Tavily）key / plan 限额耗尽：自动换 key 重试一次；仍 432 透传上游错误</td></tr>
       <tr><td>433</td><td>（Tavily）PayGo 余额耗尽：立即透传上游错误，不重试</td></tr>
-      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code>、<code>exa-</code> 或 <code>searxng-tavily-</code>）</td></tr>
-      <tr><td>400</td><td>（searxng）缺 <code>q</code> 或 <code>format</code> 非 json；<code>native</code> 路径透传上游 400</td></tr>
+      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 或 <code>reader-tavily-</code>）</td></tr>
+      <tr><td>400</td><td>（searxng）缺 <code>q</code> 或 <code>format</code> 非 json；<code>native</code> 路径透传上游 400；（reader）缺目标 URL</td></tr>
+      <tr><td>405</td><td>（/reader、/extract）协议与该端点不匹配——如用 native/searxng 打 <code>/reader</code></td></tr>
+      <tr><td>502</td><td>（reader）目标页抓取失败（Tavily failed_results）或上游不可达</td></tr>
       <tr><td>503</td><td>该 provider 无可用的上游 key（全部禁用或冷却中）</td></tr>
     </tbody>
   </table>

@@ -13,9 +13,10 @@ import { DurableObject } from "cloudflare:workers";
 import { Env } from "./types";
 import { Provider } from "./domain";
 import { PROVIDERS } from "./providers";
-import { runNativeTask, runSearxngTask } from "./proxy";
+import { runNativeTask, runSearxngTask, runReaderTask } from "./proxy";
 import { QueueTask } from "./queue-task";
 import { searxngError } from "./adapters/searxng";
+import { readerError } from "./adapters/reader";
 import { cachedQueueConfig } from "./queue-config";
 
 interface QueuedRequest {
@@ -65,7 +66,9 @@ export class QueueDO extends DurableObject<Env> {
         const res =
           payload.task.kind === "searxng"
             ? searxngError(429, msg)
-            : def.errorBody(429, msg);
+            : payload.task.kind === "reader"
+              ? readerError(429, msg)
+              : def.errorBody(429, msg);
         const headers = new Headers(res.headers);
         headers.set("retry-after", String(Math.ceil(cfg.intervalMs / 1000)));
         resolve(new Response(res.body, { status: 429, statusText: res.statusText, headers }));
@@ -115,7 +118,9 @@ export class QueueDO extends DurableObject<Env> {
         const res =
           task.kind === "native"
             ? await runNativeTask(deps, def, item.apiKey, task)
-            : await runSearxngTask(deps, def, item.apiKey, task);
+            : task.kind === "reader"
+              ? await runReaderTask(deps, def, item.apiKey, task)
+              : await runSearxngTask(deps, def, item.apiKey, task);
         item.resolve(res);
       } catch (err) {
         item.reject(err);

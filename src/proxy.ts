@@ -25,7 +25,7 @@ import {
 import { getDistributedKey } from "./storage/dist-keys";
 import { getUsageStore } from "./usage-store";
 import { searchWithRetry, type CoreDeps } from "./retry";
-import type { NativeTask, SearxngTask, QueueTask } from "./queue-task";
+import type { NativeTask, SearxngTask, ReaderTask, QueueTask } from "./queue-task";
 import {
   parseSearxngParams,
   buildTavilyBody,
@@ -33,6 +33,12 @@ import {
   toSearxngResponse,
   searxngError,
 } from "./adapters/searxng";
+import {
+  parseReaderTarget,
+  buildExtractBody,
+  toTextResponse,
+  readerError,
+} from "./adapters/reader";
 
 /** 把上游的响应原样透传给请求端（重写响应头，去掉会泄漏信息/冲突的头）。 */
 function passthrough(res: Response): Response {
@@ -78,20 +84,22 @@ async function authenticate(
   if (!parsed) {
     c.res = PROVIDERS.tavily.errorBody(
       401,
-      'Unauthorized: expect "Authorization: Bearer <tavily|exa|searxng-tavily>-<key>".'
+      'Unauthorized: expect "Authorization: Bearer <tavily|exa|searxng-tavily|reader-tavily>-<key>".'
     );
     return null;
   }
   const distKey = await getDistributedKey(c.env, parsed.apiKey);
   if (!distKey || distKey.status !== "enabled") {
-    // 错误体按线协议选择：native 用该 provider 官方格式；searxng 用官方 `{error}` 格式
+    // 错误体按线协议选择：native 用该 provider 官方格式；searxng/reader 用统一 `{error}` 格式
     c.res =
       parsed.protocol === "searxng"
         ? searxngError(401, "Unauthorized: missing or invalid API key.")
-        : PROVIDERS[parsed.provider].errorBody(
-            401,
-            "Unauthorized: missing or invalid API key."
-          );
+        : parsed.protocol === "reader"
+          ? readerError(401, "Unauthorized: missing or invalid API key.")
+          : PROVIDERS[parsed.provider].errorBody(
+              401,
+              "Unauthorized: missing or invalid API key."
+            );
     return null;
   }
   return {
@@ -105,7 +113,7 @@ async function authenticate(
 // ---------------------------------------------------------------
 // 队列任务执行器：主 Worker 鉴权后把"一次相对上游的请求"打成可序列化任务，转发给
 // 所属 provider 的队列 DO；DO 串行放行（intervalMs 间隔），调用下方执行器跑完整
-// 重试/冷却/统计。native 与 searxng 各一个执行器，供 DO 引用（不依赖 Hono Context）。
+// 重试/冷却/统计。native / searxng / reader 各一个执行器，供 DO 引用（不依赖 Hono Context）。
 // 任务 DTO 类型见 src/queue-task.ts；重试核见 src/retry.ts。
 // ---------------------------------------------------------------
 
@@ -193,6 +201,54 @@ export async function runSearxngTask(
   );
 }
 
+/** reader 执行器（转换）：GET /reader/<url> → Tavily Extract 请求 → 转纯文本，交给通用重试核。 */
+export async function runReaderTask(
+  deps: CoreDeps,
+  def: ProviderConfig,
+  apiKey: string,
+  task: ReaderTask
+): Promise<Response> {
+  // reader 仅服务 Extract 能力；extract 由 reader 前缀路由的 provider（tavily）必已落地
+  const extractPath = def.capabilities.extract!.path;
+  return searchWithRetry(
+    deps,
+    def,
+    apiKey,
+    {
+      path: extractPath,
+      body: JSON.stringify(buildExtractBody(task.url)),
+      contentType: "application/json",
+    },
+    {
+      onSuccess: async (res) => {
+        try {
+          const raw = await res.json();
+          return toTextResponse(raw, task.url);
+        } catch {
+          return null; // 2xx 但 JSON 解析失败：响应不可用，换 key 重试
+        }
+      },
+      onFailure: async (outcome) => {
+        // 目标在 failed_results（确定性失败）已由 toTextResponse 直接返回 502，不走到这里
+        if (outcome.lastRes && !outcome.lastRes.ok) {
+          return readerError(
+            outcome.lastRes.status,
+            `extract failed (${outcome.lastRes.status})`
+          );
+        }
+        const msg =
+          outcome.kind === "no-keys"
+            ? "extract backend has no upstream keys configured"
+            : outcome.kind === "exhausted"
+              ? "extract upstream unreachable"
+              : "extract backend temporarily unavailable";
+        const status = outcome.kind === "exhausted" ? 502 : 503;
+        return readerError(status, msg);
+      },
+    }
+  );
+}
+
 /** 把任务转发给所属 provider 的队列 DO，返回 DO 最终响应（持连接等待其时间片）。 */
 async function forwardToQueue(
   c: Context<{ Bindings: Env; Variables: AppVariables }>,
@@ -210,7 +266,9 @@ async function forwardToQueue(
   });
 }
 
-/** native 透传公共路径：门禁读描述符结构（未声明能力→404；能力未开放该协议→405），
+/** native 透传公共路径（native 执行器专属）：门禁读描述符结构（未声明能力→404；
+ * 该能力未开放 native 或调用方协议不是 native → 405——其它协议走各自执行器
+ * （/search 的 searxng 分支、/reader 的 reader 分支），不经此处）。
  * 命中则打 NativeTask{path=surface.path} 进队列 DO。供 /search(native) 与 /extract 复用。 */
 async function runNative(
   c: Context<{ Bindings: Env; Variables: AppVariables }>,
@@ -222,10 +280,10 @@ async function runNative(
   if (!surface) {
     return def.errorBody(404, `${def.name} does not expose a /${capability} endpoint.`);
   }
-  if (!surface.protocols.includes(auth.protocol)) {
+  if (!surface.protocols.includes("native") || auth.protocol !== "native") {
     return def.errorBody(
       405,
-      `"${capability}" is only supported with ${surface.protocols.join(" or ")} credentials (Bearer ${auth.provider}-<key>).`
+      `"${capability}" is only supported with native credentials (Bearer ${auth.provider}-<key>).`
     );
   }
   const task: NativeTask = {
@@ -351,5 +409,43 @@ export async function handleExtract(
       { detail: { error: "Internal proxy error: " + msg } },
       { status: 502 }
     );
+  }
+}
+
+/**
+ * /reader 入口：URL→文本 的 reader 协议专属入口（后端 Tavily Extract，见 §适配）。
+ * - reader 协议只服务 Extract 能力；非 reader 协议（native / searxng）打 /reader → 405。
+ * - 目标 URL 从路径 `/reader/<url>` 抠出；目标自身含 query 时必须 percent-encode
+ *   （否则 `?` 后的部分被当作外层请求的 query 吃掉）。
+ * - 命中则打成 ReaderTask{kind=reader, url} 进 tavily 队列 DO，走与 /search、/extract 相同的
+ *   重试/熔断/用量统计链路；响应由 runReaderTask 转成 text/plain。
+ * 前置门禁（405/400/401）不触达重试核 → 不计调用、不耗上游配额。
+ */
+export async function handleReader(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>
+): Promise<Response> {
+  try {
+    const authRes = await authenticate(c);
+    if (!authRes) return c.res; // 错误响应已在 authenticate 写入
+
+    // /reader 只服务 reader 协议；native / searxng 打此端点 → 405
+    if (authRes.protocol !== "reader") {
+      return readerError(
+        405,
+        `"/reader" is only available with reader credentials (Bearer reader-tavily-<key>).`
+      );
+    }
+
+    const target = parseReaderTarget(c.req.path);
+    if (!target) {
+      return readerError(400, "missing or malformed target URL: GET /reader/<url>");
+    }
+
+    const def = PROVIDERS[authRes.provider]; // reader 前缀固定路由到 tavily
+    const task: ReaderTask = { kind: "reader", url: target };
+    return await forwardToQueue(c, def, authRes.distKey.api_key, task);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return readerError(502, "internal reader error: " + msg);
   }
 }

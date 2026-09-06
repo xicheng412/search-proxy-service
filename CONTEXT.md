@@ -27,11 +27,11 @@ _Avoid_: 服务、功能、endpoint
 _Avoid_: 接口、API、route
 
 **线协议（wire protocol）**:
-调用方与本服务之间的通信协议——`native`（原样透传上游协议）或 `searxng`（SearXNG 兼容 JSON，需转换）。与 **provider** 正交（工程覆盖可扩展），但**受能力约束**（searxng 仅服务 Search）——协议是能力的延伸/属性，不是与能力平行的维度。
+调用方与本服务之间的通信协议——`native`（原样透传上游协议）、`searxng`（SearXNG 兼容 JSON，需转换）或 `reader`（URL→页面正文文本，需转换）。与 **provider** 正交（工程覆盖可扩展），但**受能力约束**（searxng 仅服务 Search、reader 仅服务 Extract）——协议是能力的延伸/属性，不是与能力平行的维度。
 _Avoid_: 协议、transport、protocol
 
 **复合前缀（compound prefix）**:
-调用凭据里同时决定线协议与路由 provider 的前缀段 `<proto?-><provider>`（如 `tavily-`、`searxng-tavily-`；复合前缀大小写不敏感）。（能力由端点决定，不从前缀来。）
+调用凭据里同时决定线协议与路由 provider 的前缀段 `<proto?-><provider>`（如 `tavily-`、`searxng-tavily-`、`reader-tavily-`；复合前缀大小写不敏感）。（能力由端点决定，不从前缀来。）
 _Avoid_: 前缀、key 前缀
 
 ### 可靠性概念
