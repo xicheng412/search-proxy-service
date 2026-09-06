@@ -67,11 +67,11 @@ _Avoid_: 日桶、time bucket
 _Avoid_: 上游调用统计、接口统计
 
 **dist 统计（dist stats, `kind='dist'`）**:
-按「分发 key 请求」记账：每单进入重试核的请求记成功（无论上游最终成败；耗尽/无可用 key 亦算），searxng 参数错误记失败，`scope` = 分发 api_key。回答「每个分发 key 发出多少单」——消费方配额与用量。供 Dashboard「最近24小时/昨日/折线」（跨全部分发 key 汇总）、分发 Keys 页「最近24h调用」（逐 key）消费。**与 upstream 统计是不同维度，不要求一致。**
+按「分发 key 请求计数」记账：success/fail 二元，每单一条——进入重试核即记成功（503 亦算），searxng 参数错误记 fail，队列拒入（429）不计；不区分后端/协议（provider 列写哨兵 `'*'`），`scope` = 分发 api_key。回答「每个分发 key 发出多少请求」——消费方用量。用途：分发 Keys 页「最近24h调用」（逐 key）、Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）。**与 upstream 统计是不同维度，不要求一致。**
 _Avoid_: 调用统计、请求统计
 
 **统计选数（stat source）**:
-用哪条统计线先定问题：问官方 key 的消耗/健康 → `upstream`；问分发 key 的用量/账单 → `dist`。两线记账粒度和分类不同——一次请求可放大成多条 upstream 记录（重试）、只一条 dist 记录；503 也记 dist 成功；鉴权失败的请求两线都不记。**不要拿它们对账。**
+用哪条统计线先定问题：问官方 key 的消耗/健康 → `upstream`；问分发 key 的用量/账单 → `dist`。两线记账粒度和分类不同——一次请求可放大成多条 upstream 记录（重试）、只一条 dist 记录；503 也记 dist 成功；鉴权失败的请求两线都不记。**不要拿它们对账。** dist 只到次数粒度，不含后端维度；后端真实调用见 upstream 统计。
 _Avoid_: 直接对比 upstream/dist 数字
 
 **写回式近似统计（write-back approximate stats）**:

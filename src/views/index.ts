@@ -248,7 +248,8 @@ export interface DashboardData {
   exaEnabled: number;
   distTotal: number;
   distEnabled: number;
-  callsSeries: string;
+  distSeries: string;
+  upstreamSeries: string;
   queueIntervalMs: number;
   queueMaxDepth: number;
   postUseCooldownSec: number;
@@ -290,7 +291,7 @@ export function adminPage(data: DashboardData): string {
     <div class="muted">分发 key 请求量 · 按终端本地时区计算</div>
   </div>
   <div class="card chart">
-    <h2 title="每个 UTC 小时桶内全部分发 key 的请求量，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（分发 key 请求量）</span></h2>
+    <h2 title="每个 UTC 小时桶内上游官方 key 的真实调用尝试次数，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（上游真实调用 Tavily/Exa）</span></h2>
     <div class="chart-box"><canvas id="calls-chart"></canvas></div>
   </div>
 </section>
@@ -332,67 +333,81 @@ export function adminPage(data: DashboardData): string {
 </section>`;
   return layout("总览 · Tavily Proxy", body, {
     active: "dashboard",
-    scripts: dashboardScript(data.callsSeries),
+    scripts: dashboardScript(data.distSeries, data.upstreamSeries),
   });
 }
 
 /**
- * Dashboard 图表脚本：内嵌序列 JSON + Chart.js CDN + 内联渲染。
+ * Dashboard 图表脚本：内嵌 dist / upstream 两段序列 JSON + Chart.js CDN + 内联渲染。
  * JSON 注入用 `\u003c` 而非 HTML esc：`<script>` 内容是 raw text，实体不反解码，
  * esc 把 `"` 变 `&quot;` 会破坏 JSON；`\u003c` 是合法 JSON 转义且防 `</script`/`<!--`。
- * 下方 Chart.datasets 按 provider 名硬编码 tavily/exa（标签与配色），与 usage-store 的
- * CallSeriesPoint 同属 §4.2 已知例外：新增 provider 时须在此加一条 dataset。
+ * 24h/昨日卡消费 dist 序列（calls = 跨 provider 请求合计）；近5天趋势图消费 upstream 序列
+ * （Tavily/Exa 两条真实调用尝试线）。下方 Chart.datasets 仅在 upstream 语义下按 provider 名
+ * 硬编码 tavily/exa（dist 序列无须参与）——新增 provider 时须扩展 UpstreamSeriesPoint、
+ * readUpstreamSeries 的折叠与本函数 dataset（见 docs/architecture.md §4.2 已知例外）。
  */
-function dashboardScript(seriesJson: string): string {
-  return `<script type="application/json" id="calls-series">${seriesJson.replace(/</g, "\\u003c")}</script>
+function dashboardScript(distSeriesJson: string, upstreamSeriesJson: string): string {
+  return `<script type="application/json" id="dist-series">${distSeriesJson.replace(/</g, "\\u003c")}</script>
+<script type="application/json" id="upstream-series">${upstreamSeriesJson.replace(/</g, "\\u003c")}</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 (function () {
-  var seriesEl = document.getElementById('calls-series');
-  if (!seriesEl) return;
-  var series;
-  try { series = JSON.parse(seriesEl.textContent); } catch (e) { series = null; }
+  var distEl = document.getElementById('dist-series');
+  var upstreamEl = document.getElementById('upstream-series');
+  if (!distEl || !upstreamEl) return;
+  var dist;
+  var upstream;
+  try { dist = JSON.parse(distEl.textContent); } catch (e) { dist = null; }
+  try { upstream = JSON.parse(upstreamEl.textContent); } catch (e) { upstream = null; }
   var setNum = function (id, n) {
     var el = document.getElementById(id);
     if (el) el.textContent = String(typeof n === 'number' && isFinite(n) ? n : 0);
   };
-  if (!Array.isArray(series)) {
-    setNum('calls-24h', 0);
-    setNum('calls-yesterday', 0);
-    return;
-  }
   var tv = function (p, k) {
     var v = p[k];
     return typeof v === 'number' && isFinite(v) ? v : 0;
   };
-  // hour 为 UTC 小时桶，裸解析会被当成本地时间错 8 小时 → 必须补 'Z'。
-  var pts = series.map(function (p) {
-    return { t: Date.parse(p.hour + 'Z'), tavily: tv(p, 'tavily'), exa: tv(p, 'exa') };
-  });
+  var toUtc = function (hour) {
+    var t = Date.parse(hour + 'Z'); // hour 为 UTC 小时桶，裸解析会被当成本地时间错 8 小时 → 补 'Z'。
+    return isFinite(t) ? t : NaN;
+  };
 
-  // 最近 24 小时（含当前不完整小时）总计：tavily+exa。
-  var cutoff = Date.now() - 24 * 3600 * 1000;
-  var sum24 = 0;
-  for (var i = 0; i < pts.length; i++) {
-    if (pts[i].t >= cutoff) sum24 += pts[i].tavily + pts[i].exa;
+  // 最近 24 小时（含当前不完整小时）总计：dist 序列跨 provider 的 calls 合计。
+  if (Array.isArray(dist)) {
+    var cutoff = Date.now() - 24 * 3600 * 1000;
+    var sum24 = 0;
+    for (var i = 0; i < dist.length; i++) {
+      var t = toUtc(dist[i].hour);
+      if (t >= cutoff) sum24 += tv(dist[i], 'calls');
+    }
+    setNum('calls-24h', sum24);
+  } else {
+    setNum('calls-24h', 0);
   }
-  setNum('calls-24h', sum24);
 
-  // 昨日总计：按浏览器本地时区把 UTC 小时桶归到日期后求和。
+  // 昨日总计：按浏览器本地时区把 UTC 小时桶归到日期后对 dist 序列求和。
   var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
   var y = new Date();
   y.setDate(y.getDate() - 1);
   var ymd = y.getFullYear() + '-' + p2(y.getMonth() + 1) + '-' + p2(y.getDate());
   var sumY = 0;
-  for (var j = 0; j < pts.length; j++) {
-    var d = new Date(pts[j].t);
-    var k = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
-    if (k === ymd) sumY += pts[j].tavily + pts[j].exa;
+  if (Array.isArray(dist)) {
+    for (var j = 0; j < dist.length; j++) {
+      var t2 = toUtc(dist[j].hour);
+      if (isNaN(t2)) continue;
+      var d = new Date(t2);
+      var k = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+      if (k === ymd) sumY += tv(dist[j], 'calls');
+    }
   }
   setNum('calls-yesterday', sumY);
 
   var canvas = document.getElementById('calls-chart');
   if (!canvas || typeof Chart === 'undefined') return;
+  if (!Array.isArray(upstream) || upstream.length === 0) return; // 图仅上游数据；空 → 不渲染
+  var pts = upstream.map(function (p) {
+    return { t: toUtc(p.hour), tavily: tv(p, 'tavily'), exa: tv(p, 'exa') };
+  });
   new Chart(canvas, {
     type: 'line',
     data: {
@@ -461,14 +476,13 @@ export function distListFragment(
             k.status === "enabled"
               ? `<span class="badge ok">enabled</span>`
               : `<span class="badge off">disabled</span>`;
-          const s = callsMap[k.api_key] ?? { tavily: 0, exa: 0 };
+          const s = callsMap[k.api_key] ?? { success: 0, fail: 0 };
           return `<tr>
             <td>${esc(maskKey(k.api_key))}</td>
             <td>${esc(k.note)}</td>
             <td>${st}</td>
             <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
-            <td title="该分发 key 最近24小时（含当前小时）的 Tavily 请求数">${s.tavily}</td>
-            <td title="该分发 key 最近24小时（含当前小时）的 Exa 请求数">${s.exa}</td>
+            <td title="该分发 key 最近24小时（含当前小时）的请求数">${s.success + s.fail}</td>
             <td>
               <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
                 <div class="menu-wrap">
@@ -494,7 +508,7 @@ export function distListFragment(
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="7" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
+    : `<tr><td colspan="6" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
 
   return `${flashHtml}
   <form class="row" hx-post="/admin/keys/generate" hx-target="#keys-list" hx-swap="innerHTML">
@@ -509,7 +523,7 @@ export function distListFragment(
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th title="该分发 key 最近24小时（含当前小时）的 Tavily 请求数">Tavily(24H)</th><th title="该分发 key 最近24小时（含当前小时）的 Exa 请求数">EXA(24H)</th><th>操作</th></tr>
+      <th title="该分发 key 最近24小时（含当前小时）的请求数">最近24h调用</th><th>操作</th></tr>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -588,9 +602,9 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <h2>后台功能与文档</h2>
   <ul class="muted">
     <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
-    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，操作列「复制」下拉一键复制调用凭据；最近24h调用拆为 Tavily(24H) / EXA(24H) 两列。</li>
+    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，操作列「复制」下拉一键复制调用凭据；最近24h调用单列显示（请求次数，不区分后端/协议）。</li>
     <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
-    <li><strong>统计</strong>：两条线均按 UTC 小时桶结算，先定看什么再选数——<strong>上游 Keys 页</strong>的「当日成功/失败」统计上游官方 key 的<strong>真实调用尝试次数</strong>（每次尝试一条，重试会放大；429 与 400/404/422 不记）；<strong>Dashboard / 分发 Keys 页</strong>统计分发 key 的<strong>请求次数</strong>（每单一条，503 也计入；24h 为最近24小时滚动，Dashboard 图表与「昨日」按浏览器本地时区显示）。两条线维度不同，勿互相核对；统计为近似值、允许少量误差。</li>
+    <li><strong>统计</strong>：按 UTC 小时桶结算，先定看什么再选数——<strong>Dashboard 近 5 天趋势图</strong>与<strong>上游 Keys 页</strong>的「当日成功/失败」统计上游官方 key 的<strong>真实调用尝试次数</strong>（每次尝试一条，重试会放大；429 与 400/404/422 不记；趋势图按 Tavily / Exa 两条线）；<strong>Dashboard 24h / 昨日卡与分发 Keys 页</strong>统计分发 key 的<strong>请求次数</strong>（每单一条，503 也计入，不区分后端/协议；24h 为最近24小时滚动，昨日按浏览器本地时区计算）。两条线维度不同，勿互相核对；统计为近似值、允许少量误差。</li>
     <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
   </ul>
 </div>`;

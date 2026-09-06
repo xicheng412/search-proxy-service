@@ -58,7 +58,10 @@ admin.get("/", async (c) => {
 
   const store = getUsageStore(env);
   const seriesMinHour = hourKey(Date.now() - 5 * 86_400_000);
-  const callsSeries = JSON.stringify(await store.readCallSeries(seriesMinHour));
+  const [distSeries, upstreamSeries] = await Promise.all([
+    store.readDistSeries(seriesMinHour),
+    store.readUpstreamSeries(seriesMinHour),
+  ]);
 
   return c.html(
     adminPage({
@@ -68,7 +71,8 @@ admin.get("/", async (c) => {
       exaEnabled: ekeys.filter((k) => k.status === "enabled").length,
       distTotal: dkeys.length,
       distEnabled: dkeys.filter((k) => k.status === "enabled").length,
-      callsSeries,
+      distSeries: JSON.stringify(distSeries),
+      upstreamSeries: JSON.stringify(upstreamSeries),
       queueIntervalMs: (await readQueueConfig(kv)).intervalMs,
       queueMaxDepth: (await readQueueConfig(kv)).maxDepth,
       postUseCooldownSec: (await readBreakerConfig(kv)).postUseCooldownSec,

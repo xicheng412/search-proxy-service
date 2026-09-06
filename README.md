@@ -30,7 +30,7 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped.
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily upstream request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
 - **Distributed keys carry no provider binding.** One generated key, three ways to call — `tavily-<key>` for Tavily, `exa-<key>` for Exa, `searxng-tavily-<key>` for the SearXNG protocol. Operators choose at call time.
-- **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (calls per provider), shown live in the dashboard.
+- **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (call counts), shown live in the dashboard.
 - **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, dashboard, and a built-in usage help page with copy-able curl snippets. No SPA, no build.
 - **Stateless deploy.** `pnpm install && pnpm dev` to run. Deploy is a single `pnpm run deploy:cf`.
 

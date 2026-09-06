@@ -422,9 +422,9 @@ export async function searchWithRetry(
   const store = getUsageStore(deps.env);
   const env = deps.env;
 
-  // prologue：增加分发 key 调用计数（按 provider + 结果拆分，进内存缓冲，尽力而为）
+  // prologue：增加分发 key 请求计数（success/fail 二元，进内存缓冲，尽力而为）
   const hour = hourKey();
-  store.recordDistCall(apiKey, def.name, hour, "success");
+  store.recordDistCall(apiKey, hour, "success");
   // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
   store.flushSoon(deps.executionCtx);
 

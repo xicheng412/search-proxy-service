@@ -250,7 +250,7 @@ export async function handleSearch(
       if (error) {
         // 参数错误也记一次调用（结果记 fail）
         const store = getUsageStore(c.env);
-        store.recordDistCall(apiKey, def.name, hour, "fail");
+        store.recordDistCall(apiKey, hour, "fail");
         store.flushSoon(c.executionCtx);
         return searxngError(error.status, error.message);
       }
@@ -260,7 +260,7 @@ export async function handleSearch(
       // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
       if (parsed.pageno && parsed.pageno > 1) {
         const store = getUsageStore(c.env);
-        store.recordDistCall(apiKey, def.name, hour, "success");
+        store.recordDistCall(apiKey, hour, "success");
         store.flushSoon(c.executionCtx);
         const empty = toSearxngResponse(
           { results: [] },

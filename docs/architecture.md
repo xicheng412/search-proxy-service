@@ -200,7 +200,7 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 
 其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
 
-> **已知例外（Dashboard 调用趋势序列）**：`usage-store.ts` 的 `readCallSeries` + `CallSeriesPoint` 与 `views/index.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`CallSeriesPoint` 类型、`readCallSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
+> **已知例外（Dashboard 上游趋势图序列）**：`usage-store.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/index.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
 
 > **协议与 provider 正交**：线协议（native / searxng）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径（经 `searchWithRetry` callbacks 注入）。例见 `searxng`。
 
@@ -266,10 +266,12 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 `usage_counts` 由 `kind` 列隔离两条独立统计线。**它们是两个维度，不是同一事件的两个视图，不要求一致**：
 
-- **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」与选 key 权重信号（§6.1）消费。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
-- **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求」，`scope` = 分发 api_key。回答「每个下游分发 key 发来多少单」，反映消费方配额与用量。供 Dashboard「最近24小时/昨日/折线」（跨全部分发 key 汇总）与分发 Keys 页「最近24h调用」（逐 key、T/E 拆分）消费。请求进入重试核（`retry.ts` prologue）即记成功，即使最终全部 key 失败返回 503；searxng 参数错误记 fail；searxng `pageno>1` 空结果记 success 但不耗上游。
+- **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
+- **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求计数」，`scope` = 分发 api_key，success/fail 二元、**不区分后端/协议**——provider 列统一写哨兵 `'*'`（该列 NOT NULL 且入 PK，属 schema 约束；dist 读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。请求进入重试核（`retry.ts` prologue）即记成功，即使最终全部 key 失败返回 503；searxng 参数错误记 fail；searxng `pageno>1` 空结果记 success 但不耗上游；**队列拒入（maxDepth 429）与未轮到断开不计**。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h调用」（逐 key、单列次数）消费。
 
-**两线天然不相等，属预期**：重试把一次请求放大成多条 upstream 记录（dist 恒一单一条）；429、400/404/422 只影响上游侧或两线都不出现；503 在 dist 侧仍算成功；鉴权失败（`authenticate` 拦截）两线都不记。
+**双源展示是有意的**：Dashboard 上 **24h/昨日卡 = dist（消费量）**，**近 5 天趋势图 = upstream（上游真实调用负载、Tavily/Exa 两线）**——各自回答不同问题，不对齐。
+
+**两线天然不相等，属预期**：重试把一次请求放大成多条 upstream 记录（dist 恒一单一条）；429、400/404/422 只影响上游侧或两线都不出现；503 在 dist 侧仍算成功；鉴权失败（`authenticate` 拦截）与队列拒入两线都不记。
 
 **选数规则**：消费统计先定问题——官方 key 的消耗/健康用 `upstream`，分发 key 的用量/账单用 `dist`，不要拿两条线对账。即便同一 `dist` 维度，Dashboard 与 Keys 页也因时间窗口（Dashboard 按客户端 ms 滚动含当前不完整小时、Keys 按整点钟桶多含一个边界桶）与展示缓存 TTL（30s / 30min）不同而对不上，同样是预期行为。
 

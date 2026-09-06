@@ -21,8 +21,8 @@ type Result = "success" | "fail";
 export interface UsageStore {
   /** 记一次上游结果（成功/失败）——纯内存累加，0 IO。 */
   recordUpstreamResult(id: string, provider: Provider, hour: string, result: Result): void;
-  /** 记一次分发 key 调用（按 provider + 结果拆分）——纯内存累加，0 IO。 */
-  recordDistCall(apiKey: string, provider: Provider, hour: string, outcome: Result): void;
+  /** 记一次分发 key 请求（success/fail 二元，不区分后端/协议）——纯内存累加，0 IO。 */
+  recordDistCall(apiKey: string, hour: string, outcome: Result): void;
   /** 批量读上游 key 某 UTC 日（minHour 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
   readUpstreamTodayStats(
     ids: string[],
@@ -37,21 +37,32 @@ export interface UsageStore {
   ): Promise<Record<string, DistStats>>;
   /** 读某 scope 的小时明细（给前端组合"今日/最近N小时"边界用）。 */
   readHourly(kind: "upstream" | "dist", scope: string, minHour: string): Promise<UsageIncrement[]>;
-  /** 读全部分发 key 的 dist 小时序列（Memory TTL + pending 叠加）；给 dashboard 折线图/24h/昨日卡。 */
-  readCallSeries(minHour: string): Promise<CallSeriesPoint[]>;
+  /** 读上游真实调用尝试小时序列（Memory TTL + pending 叠加）；给 dashboard 近5天趋势图。 */
+  readUpstreamSeries(minHour: string): Promise<UpstreamSeriesPoint[]>;
+  /** 读全部分发 key 的 dist 小时序列（Memory TTL + pending 叠加）；给 dashboard 24h/昨日卡。 */
+  readDistSeries(minHour: string): Promise<DistSeriesPoint[]>;
   /** 节流调度 flush：距上次 ≥interval 且缓冲非空才排入 waitUntil，不阻塞请求。 */
   flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void;
 }
 
+/** dist 行 provider 列哨兵值：schema 中 provider 列 NOT NULL 且入 PK，dist 不区分后端统一写该值；dist 读路径无视其值。 */
+export const DIST_PROVIDER = "*";
+
 /**
- * dashboard 折线图单个数据点：某 UTC 小时桶 × provider 的调用数（success+fail）。
+ * dashboard 近5天趋势图单个数据点：某 UTC 小时桶 × provider 的上游真实调用尝试次数（success+fail）。
  * 刻意固化为 tavily/exa 两个字段（计划审批"两条线"展示，见 docs/architecture.md §4.2 已知例外）。
- * 新增 provider 时须同步扩展：本类型、readCallSeries 内两处 provider 折叠、views/index.ts dashboardScript。
+ * 新增 provider 时须同步扩展：本类型、readUpstreamSeries 内两处 provider 折叠、views/index.ts dashboardScript。
  */
-export interface CallSeriesPoint {
+export interface UpstreamSeriesPoint {
   hour: string;
   tavily: number;
   exa: number;
+}
+
+/** dashboard 24h/昨日卡用的 dist 小时序列点：calls = 该小时桶跨全部 provider 的 success+fail 合计。 */
+export interface DistSeriesPoint {
+  hour: string;
+  calls: number;
 }
 
 export interface UsageStoreOpts {
@@ -88,8 +99,10 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     at: number;
     base: Record<string, DistStats>;
   } | null = null;
-  // 跨 scope dist 小时序列 base（D1 聚合结果），读时叠加 pending；TTL seriesTtlMs。
-  let seriesCache: { minHour: string; at: number; base: CallSeriesPoint[] } | null = null;
+  // 跨 scope 小时序列 base（D1 聚合结果），读时叠加 pending；TTL seriesTtlMs。
+  // upstream 与 dist 各自独立缓存（同 TTL，读时按需填充）。
+  let upstreamSeriesCache: { minHour: string; at: number; base: UpstreamSeriesPoint[] } | null = null;
+  let distSeriesCache: { minHour: string; at: number; base: DistSeriesPoint[] } | null = null;
   // 热路径选 key 信号：今日失败数快照，由 flush 后台刷新，最长陈旧 signalBaseTtlMs。
   let signalBase: { minHour: string; at: number; fail: Record<string, number> } | null = null;
 
@@ -156,13 +169,8 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     pending.set(key, cur);
   }
 
-  function recordDistCall(
-    apiKey: string,
-    provider: Provider,
-    hour: string,
-    outcome: Result
-  ): void {
-    const key = bufKey({ kind: "dist", scope: apiKey, provider, hour });
+  function recordDistCall(apiKey: string, hour: string, outcome: Result): void {
+    const key = bufKey({ kind: "dist", scope: apiKey, provider: DIST_PROVIDER, hour });
     const cur = pending.get(key) ?? { success: 0, fail: 0 };
     if (outcome === "success") cur.success += 1;
     else cur.fail += 1;
@@ -226,9 +234,6 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     return out;
   }
 
-  const callsOf = (w: { success: number; fail: number } | undefined): number =>
-    w ? w.success + w.fail : 0;
-
   async function readDistCallsByScopes(
     apiKeys: string[],
     minHour: string
@@ -245,35 +250,31 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
       const base: Record<string, DistStats> = {};
       const byScope = await sumUsageByScopes(env, "dist", apiKeys, minHour);
       for (const key of apiKeys) {
-        const byProvider = byScope[key] ?? {};
-        base[key] = {
-          tavily: callsOf(byProvider["tavily"]),
-          exa: callsOf(byProvider["exa"]),
-        };
+        // 汇总该 scope 全部 provider 的 success/fail；缺失 provider 不产生计数。
+        let success = 0;
+        let fail = 0;
+        for (const w of Object.values(byScope[key] ?? {})) {
+          success += w.success;
+          fail += w.fail;
+        }
+        base[key] = { success, fail };
       }
       distCache = { ids: idsKey, minHour, at: now, base };
     }
-    const nowHour = new Date().toISOString().slice(0, 13) + ":00";
+    // 近似口径：pending 中该 scope 的全部小时增量并入（无视 provider 值）。
     const result: Record<string, DistStats> = {};
     for (const key of apiKeys) {
-      const b = distCache.base[key] ?? { tavily: 0, exa: 0 };
-      const pt = withPending("dist", key, "tavily", nowHour);
-      const pe = withPending("dist", key, "exa", nowHour);
-      result[key] = {
-        tavily: b.tavily + pt.success + pt.fail,
-        exa: b.exa + pe.success + pe.fail,
-      };
+      const b = distCache.base[key] ?? { success: 0, fail: 0 };
+      const approx = { success: 0, fail: 0 };
+      for (const [k, v] of pending) {
+        if (k.startsWith("dist\u0000" + key + "\u0000")) {
+          approx.success += v.success;
+          approx.fail += v.fail;
+        }
+      }
+      result[key] = { success: b.success + approx.success, fail: b.fail + approx.fail };
     }
     return result;
-  }
-
-  function withPending(
-    kind: "upstream" | "dist",
-    scope: string,
-    provider: string,
-    hour: string
-  ): { success: number; fail: number } {
-    return pending.get(bufKey({ kind, scope, provider, hour })) ?? { success: 0, fail: 0 };
   }
 
   async function readHourly(
@@ -285,19 +286,19 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
   }
 
   /**
-   * 全部分发 key 的 dist 小时序列（D1 base + pending 叠加；TTL seriesTtlMs）。
+   * 全部分发 key 的上游真实调用尝试序列（D1 base + pending 叠加；TTL seriesTtlMs）。
    * 下方两处 `if (provider === ...)` 折叠（D1 base 与 pending）按 provider 名硬编码 tavily/exa，
-   * 属 docs/architecture.md §4.2 的已知例外：新增 provider 时须扩展 CallSeriesPoint、
-   * 本函数两处折叠与 views/index.ts dashboardScript 三处（见接口注释）。
+   * 属 docs/architecture.md §4.2 的已知例外：新增 provider 时须扩展 UpstreamSeriesPoint、
+   * 本函数两处折叠与 views/index.ts dashboardScript（dist 序列无须参与）。
    */
-  async function readCallSeries(minHour: string): Promise<CallSeriesPoint[]> {
+  async function readUpstreamSeries(minHour: string): Promise<UpstreamSeriesPoint[]> {
     const now = Date.now();
     if (
-      !seriesCache ||
-      seriesCache.minHour !== minHour ||
-      now - seriesCache.at >= seriesTtlMs
+      !upstreamSeriesCache ||
+      upstreamSeriesCache.minHour !== minHour ||
+      now - upstreamSeriesCache.at >= seriesTtlMs
     ) {
-      const rows = await storeReadSeriesByProvider(env, "dist", minHour);
+      const rows = await storeReadSeriesByProvider(env, "upstream", minHour);
       const byHour = new Map<string, { tavily: number; exa: number }>();
       for (const r of rows) {
         const cur = byHour.get(r.hour) ?? { tavily: 0, exa: 0 };
@@ -306,7 +307,7 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
         else if (r.provider === "exa") cur.exa += calls;
         byHour.set(r.hour, cur);
       }
-      seriesCache = {
+      upstreamSeriesCache = {
         minHour,
         at: now,
         base: [...byHour.entries()]
@@ -314,12 +315,12 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
           .sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0)),
       };
     }
-    const result: CallSeriesPoint[] = seriesCache.base.map((p) => ({ ...p }));
+    const result: UpstreamSeriesPoint[] = upstreamSeriesCache.base.map((p) => ({ ...p }));
     const idx = new Map(result.map((p, i) => [p.hour, i]));
-    // pending 叠加：仅 dist 且 hour >= minHour（pending 小时桶可能不在 D1 base 里，兜底 0）。
+    // pending 叠加：仅 upstream 且 hour >= minHour（pending 小时桶可能不在 D1 base 里，兜底 0）。
     for (const [k, v] of pending) {
       const [kind, , provider, hour] = k.split("\u0000");
-      if (kind !== "dist" || hour < minHour) continue;
+      if (kind !== "upstream" || hour < minHour) continue;
       let entry = result[idx.get(hour) ?? -1];
       if (!entry) {
         entry = { hour, tavily: 0, exa: 0 };
@@ -334,6 +335,48 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     return result;
   }
 
+  /**
+   * 全部分发 key 的 dist 小时序列（D1 base + pending 叠加；TTL seriesTtlMs）。
+   * calls = 该小时桶跨全部 provider 的 success+fail 合计（不落入 provider 维度）。
+   */
+  async function readDistSeries(minHour: string): Promise<DistSeriesPoint[]> {
+    const now = Date.now();
+    if (
+      !distSeriesCache ||
+      distSeriesCache.minHour !== minHour ||
+      now - distSeriesCache.at >= seriesTtlMs
+    ) {
+      const rows = await storeReadSeriesByProvider(env, "dist", minHour);
+      const byHour = new Map<string, number>();
+      for (const r of rows) {
+        byHour.set(r.hour, (byHour.get(r.hour) ?? 0) + r.success + r.fail);
+      }
+      distSeriesCache = {
+        minHour,
+        at: now,
+        base: [...byHour.entries()]
+          .map(([hour, calls]) => ({ hour, calls }))
+          .sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0)),
+      };
+    }
+    const result: DistSeriesPoint[] = distSeriesCache.base.map((p) => ({ ...p }));
+    const idx = new Map(result.map((p, i) => [p.hour, i]));
+    // pending 叠加：仅 dist 且 hour >= minHour，无视 provider 值（pending 小时桶可能不在 D1 base 里，兜底 0）。
+    for (const [k, v] of pending) {
+      const [kind, , , hour] = k.split("\u0000");
+      if (kind !== "dist" || hour < minHour) continue;
+      let entry = result[idx.get(hour) ?? -1];
+      if (!entry) {
+        entry = { hour, calls: 0 };
+        idx.set(hour, result.length);
+        result.push(entry);
+      }
+      entry.calls += v.success + v.fail;
+    }
+    result.sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0));
+    return result;
+  }
+
   return {
     recordUpstreamResult,
     recordDistCall,
@@ -341,7 +384,8 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     readUpstreamWeightSignal,
     readDistCallsByScopes,
     readHourly,
-    readCallSeries,
+    readUpstreamSeries,
+    readDistSeries,
     flushSoon,
   };
 }

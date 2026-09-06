@@ -40,10 +40,10 @@ export interface TavilyStats {
   fail: number;
 }
 
-/** 分发 key 当日调用数：按 provider 拆分（calls = tavily + exa） */
+/** 分发 key 请求计数（calls = success + fail 派生），不区分后端/协议。 */
 export interface DistStats {
-  tavily: number;
-  exa: number;
+  success: number;
+  fail: number;
 }
 
 export interface DistAuth {
