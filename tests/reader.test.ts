@@ -56,7 +56,7 @@ const enabledRow = (apiKey: string, status: string = "enabled") => ({
 });
 
 describe("GET /reader/*", () => {
-  it("reader-tavily 分发 key：任务转发 {kind=reader,url} 到 tavily 队列 DO", async () => {
+  it("reader-tavily 分发 key：任务转发 {kind=reader,url,depth} 到 tavily 队列 DO", async () => {
     const apiKey = "abcd" + "1234";
     const { app, env, queue } = buildApp([enabledRow(apiKey)]);
 
@@ -69,8 +69,37 @@ describe("GET /reader/*", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       provider: "tavily",
       apiKey,
-      task: { kind: "reader", url: "https://www.example.com" },
+      task: { kind: "reader", url: "https://www.example.com", depth: "basic" },
     });
+  });
+
+  it("?depth=advanced 透传给任务", async () => {
+    const apiKey = "abcd" + "1234";
+    const { app, env, queue } = buildApp([enabledRow(apiKey)]);
+
+    const res = await callReader(
+      app, env, `reader-tavily-${apiKey}`, "/reader/https://www.example.com?depth=advanced"
+    );
+
+    expect(res.status).toBe(200);
+    const init = queue.stub.fetch.mock.calls[0][1] as unknown as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      provider: "tavily",
+      apiKey,
+      task: { kind: "reader", url: "https://www.example.com", depth: "advanced" },
+    });
+  });
+
+  it("?depth=非法值：400，不转发队列", async () => {
+    const apiKey = "abcd" + "1234";
+    const { app, env, queue } = buildApp([enabledRow(apiKey)]);
+
+    const res = await callReader(
+      app, env, `reader-tavily-${apiKey}`, "/reader/https://www.example.com?depth=deep"
+    );
+
+    expect(res.status).toBe(400);
+    expect(queue.stub.fetch).not.toHaveBeenCalled();
   });
 
   it("缺目标 URL：400，不转发队列、不计调用", async () => {

@@ -30,7 +30,7 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 - **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` park the key with a 12h suspected-invalid cooldown then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped — across both capability endpoints (`/search`, `/extract`).
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily Search request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
-- **Reader-style protocol adapter.** `reader-tavily-<key>` + `GET /reader/<url>` returns the target page's text (`text/plain`) via Tavily Extract — a URL→text gateway like Jina Reader, reusing the same retry/circuit-breaker/usage pipeline. Returns Tavily-extracted raw text (not Jina's polished Markdown); target URLs that carry their own query string must be percent-encoded.
+- **Reader-style protocol adapter.** `reader-tavily-<key>` + `GET /reader/<url>` returns the target page's text (`text/plain`) via Tavily Extract — a URL→text gateway like Jina Reader, reusing the same retry/circuit-breaker/usage pipeline. Returns Tavily-extracted raw text (not Jina's polished Markdown); target URLs that carry their own query string must be percent-encoded; an optional `?depth=basic|advanced` (default `basic`) passes through Tavily's `extract_depth` (whitelisted — `advanced` is the paid tier).
 - **Distributed keys carry no provider binding.** One key; the prefix picks the provider — `tavily-<key>` for any Tavily capability (Search via `/search`, Extract via `/extract`), `exa-<key>` for Exa Search, `searxng-tavily-<key>` for Tavily Search via the SearXNG protocol, `reader-tavily-<key>` for Tavily Extract via the reader (URL→text) protocol. Operators choose at call time.
 - **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (call counts), shown live in the dashboard.
 - **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, dashboard, and a built-in usage help page with copy-able curl snippets. No SPA, no build.
@@ -113,7 +113,7 @@ curl -X POST http://localhost:8787/extract \
 curl -L -X GET "http://localhost:8787/search?q=Cloudflare+Workers&format=json" \
   -H "Authorization: Bearer searxng-tavily-<your-distributed-key>"
 
-# Page text（reader 协议，GET /reader/<url>，返回 text/plain）
+# Page text（reader 协议，GET /reader/<url>，返回 text/plain；?depth=advanced 可选透传提取深度）
 curl "http://localhost:8787/reader/https://example.com" \
   -H "Authorization: Bearer reader-tavily-<your-distributed-key>"
 ```

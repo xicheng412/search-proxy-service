@@ -160,7 +160,8 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次 Tavily Extract 请求，再把响应转成纯文本。与 §3.3 同构，差异在协议层：
 - `handleReader`（`src/proxy.ts`）鉴权后**只放行 reader 协议**（`reader-tavily-<key>`）；native / searxng / exa 打 `/reader` → 405。
 - 目标 URL 从路径抠出（`adapters/reader.ts:parseReaderTarget`）；**目标自身带 query 时必须整体 percent-encode**（否则 `?` 后会被当作外层请求参数）。
-- 打装 `ReaderTask{kind:"reader", url}` → 进 tavily 队列 DO → `runReaderTask`：经 `searchWithRetry` 打 `capabilities.extract.path`（请求体 `{urls:[url], extract_depth:"basic"}`），onSuccess 把 `results[].raw_content` 转成 `text/plain`。
+- 打装 `ReaderTask{kind:"reader", url, depth}` → 进 tavily 队列 DO → `runReaderTask`：经 `searchWithRetry` 打 `capabilities.extract.path`（请求体 `{urls:[url], extract_depth: depth}`），onSuccess 把 `results[].raw_content` 转成 `text/plain`。
+- 外层 query `?depth=basic|advanced` 透传 `extract_depth`：白名单（advanced 是付费高档，非法值 400 拒收，不静默换代烧配额），缺省 basic。
 - **确定性失败（目标写进 Tavily `failed_results`）→ 直接 502，不换 key 重试**（避免对死链空烧 extract 配额）；只有响应畸形（解析失败）才按"不可用"换 key。
 - 统计与 /search、/extract 同一套账（上游成败 / 冷却 / dist 计数），无需额外埋点。
 

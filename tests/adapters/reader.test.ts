@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseReaderTarget,
+  parseDepth,
   buildExtractBody,
   toTextResponse,
   readerError,
@@ -30,11 +31,37 @@ describe("parseReaderTarget", () => {
   });
 });
 
+describe("parseDepth", () => {
+  it("缺省/空 → basic", () => {
+    expect(parseDepth(undefined)).toBe("basic");
+    expect(parseDepth(null)).toBe("basic");
+    expect(parseDepth("")).toBe("basic");
+  });
+
+  it("白名单值 → 原样返回", () => {
+    expect(parseDepth("basic")).toBe("basic");
+    expect(parseDepth("advanced")).toBe("advanced");
+  });
+
+  it("白名单外 → null（调用方回 400）", () => {
+    expect(parseDepth("deep")).toBeNull();
+    expect(parseDepth("Advanced")).toBeNull();
+    expect(parseDepth("1")).toBeNull();
+  });
+});
+
 describe("buildExtractBody", () => {
-  it("单 URL + 固定 basic 深度", () => {
+  it("缺省深度 = basic", () => {
     expect(buildExtractBody("https://example.com")).toEqual({
       urls: ["https://example.com"],
       extract_depth: "basic",
+    });
+  });
+
+  it("可指定 advanced 深度", () => {
+    expect(buildExtractBody("https://example.com", "advanced")).toEqual({
+      urls: ["https://example.com"],
+      extract_depth: "advanced",
     });
   });
 });

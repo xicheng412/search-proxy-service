@@ -35,6 +35,7 @@ import {
 } from "./adapters/searxng";
 import {
   parseReaderTarget,
+  parseDepth,
   buildExtractBody,
   toTextResponse,
   readerError,
@@ -216,7 +217,7 @@ export async function runReaderTask(
     apiKey,
     {
       path: extractPath,
-      body: JSON.stringify(buildExtractBody(task.url)),
+      body: JSON.stringify(buildExtractBody(task.url, task.depth)),
       contentType: "application/json",
     },
     {
@@ -417,7 +418,8 @@ export async function handleExtract(
  * - reader 协议只服务 Extract 能力；非 reader 协议（native / searxng）打 /reader → 405。
  * - 目标 URL 从路径 `/reader/<url>` 抠出；目标自身含 query 时必须 percent-encode
  *   （否则 `?` 后的部分被当作外层请求的 query 吃掉）。
- * - 命中则打成 ReaderTask{kind=reader, url} 进 tavily 队列 DO，走与 /search、/extract 相同的
+ * - 外层 query `?depth=basic|advanced` 透传 Tavily extract_depth（白名单，缺省 basic，非法 400）。
+ * - 命中则打成 ReaderTask{kind=reader, url, depth} 进 tavily 队列 DO，走与 /search、/extract 相同的
  *   重试/熔断/用量统计链路；响应由 runReaderTask 转成 text/plain。
  * 前置门禁（405/400/401）不触达重试核 → 不计调用、不耗上游配额。
  */
@@ -441,8 +443,14 @@ export async function handleReader(
       return readerError(400, "missing or malformed target URL: GET /reader/<url>");
     }
 
+    // extract_depth 透传：只认 basic|advanced（advanced 是付费高档，非法值 400 拒收，不静默换代）
+    const depth = parseDepth(c.req.query("depth"));
+    if (!depth) {
+      return readerError(400, `invalid "depth": expected "basic" or "advanced"`);
+    }
+
     const def = PROVIDERS[authRes.provider]; // reader 前缀固定路由到 tavily
-    const task: ReaderTask = { kind: "reader", url: target };
+    const task: ReaderTask = { kind: "reader", url: target, depth };
     return await forwardToQueue(c, def, authRes.distKey.api_key, task);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

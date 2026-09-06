@@ -9,8 +9,17 @@
 
 const READER_PREFIX = "/reader/";
 
-/** 目标 URL 的默认提取深度（v1 固定 basic：只抓主文，快、省配额；advanced 为未来扩展）。 */
-const READER_EXTRACT_DEPTH = "basic" as const;
+/** Tavily Extract 的提取深度档位（advanced 是付费高档），白名单只认这两个值。 */
+export type ExtractDepth = "basic" | "advanced";
+
+const READER_DEPTHS: string[] = ["basic", "advanced"];
+const DEFAULT_READER_DEPTH: ExtractDepth = "basic";
+
+/** 解析外层 query 的 depth 参数：缺省/空 → basic；非白名单值 → null（调用方回 400，不静默换代烧配额）。 */
+export function parseDepth(raw: string | null | undefined): ExtractDepth | null {
+  if (raw == null || raw === "") return DEFAULT_READER_DEPTH;
+  return READER_DEPTHS.includes(raw) ? (raw as ExtractDepth) : null;
+}
 
 /** 从 /reader/<url> 路径抠出目标 URL；缺目标或非法 percent-encode 返回 null。 */
 export function parseReaderTarget(path: string): string | null {
@@ -24,9 +33,12 @@ export function parseReaderTarget(path: string): string | null {
   }
 }
 
-/** 把 reader 目标 URL 构造成 Tavily Extract 上游请求体（返回对象，由调用方 JSON.stringify）。 */
-export function buildExtractBody(url: string): Record<string, unknown> {
-  return { urls: [url], extract_depth: READER_EXTRACT_DEPTH };
+/** 把 reader 目标 URL + 提取深度构造成 Tavily Extract 上游请求体（返回对象，由调用方 JSON.stringify）。 */
+export function buildExtractBody(
+  url: string,
+  depth: ExtractDepth = DEFAULT_READER_DEPTH
+): Record<string, unknown> {
+  return { urls: [url], extract_depth: depth };
 }
 
 /**

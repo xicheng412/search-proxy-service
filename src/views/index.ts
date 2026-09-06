@@ -592,7 +592,8 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式五：页面文本（reader 协议）</h3>
 <pre class="code">curl "${base}/reader/https://en.wikipedia.org/wiki/Artificial_intelligence" \\
   -H "Authorization: Bearer reader-tavily-&lt;分发key&gt;" \\
-  # → 200 text/plain：目标页面正文文本（Tavily Extract 提取，非 Jina 精加工 Markdown）</pre>
+  # → 200 text/plain：目标页面正文文本（Tavily Extract 提取，非 Jina 精加工 Markdown）
+  # ?depth=basic|advanced 可透传提取深度（缺省 basic；advanced 为付费高档）</pre>
   <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code>、<code>reader-tavily-</code> 前缀；前缀只选公司，<code>tavily-</code> 前缀可打 <strong>Search</strong> 也可打 <strong>Extract</strong>（<code>reader-tavily-</code> 只打 <strong>Extract</strong> 的 <code>/reader</code>）。reader 目标 URL 若自身带 query，需整体 percent-encode（否则 <code>?</code> 后会被当作外层请求参数）。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily/reader-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
 </div>
 

@@ -19,6 +19,7 @@ export interface SearxngTask {
 export interface ReaderTask {
   kind: "reader";
   url: string;
+  depth: "basic" | "advanced"; // Tavily extract_depth；白名单值，见 adapters/reader
   // reader 协议仅服务 Extract 能力（无 path/body 字段：协议层绑定 Extract，上游 path/请求体由 provider 描述符 + adapters/reader 决定）。
 }
 export type QueueTask = NativeTask | SearxngTask | ReaderTask;
