@@ -40,7 +40,7 @@ Authorization: Bearer <proto?-><provider>-<key>
 
 ### 2.2 后台"复制"按钮语义
 
-后台 分发 Keys 列表里每行有 **"复制 tavily 调用 key"**、**"复制 exa 调用 key"**、**"复制 searxng-tavily 调用 key"** 三个按钮——它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的三种拼装结果。
+后台 分发 Keys 列表每行的操作列有**一个 "复制" 按钮**，点击展开下拉菜单，菜单里是三个复制项——"复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key"。它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的三种拼装结果（下拉便于以后扩展新的复制项/操作按钮）。
 
 ---
 

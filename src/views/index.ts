@@ -119,6 +119,18 @@ export function layout(
       });
     });
 
+    // 操作列「复制」下拉菜单：点按钮开/关，点外部任意处（含菜单项）关闭。
+    // 菜单项带 data-copy，由上面的复制监听处理；本监听只负责展开/收起。
+    document.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('[data-menu-toggle]') : null;
+      var wrap = t ? t.parentNode : null;
+      var menu = wrap ? wrap.querySelector('.menu') : null;
+      var opening = !!t && !!menu && menu.hasAttribute('hidden');
+      var menus = document.querySelectorAll('.menu');
+      for (var i = 0; i < menus.length; i++) menus[i].setAttribute('hidden', '');
+      if (opening) menu.removeAttribute('hidden');
+    });
+
     // 本地时区渲染：把 data-epoch 毫秒时间按浏览器本地时区显示（无 JS 时服务端已输出 UTC 兜底）
     function formatLocalTimes() {
       var list = document.querySelectorAll('[data-local-time]');
@@ -177,6 +189,12 @@ export function layout(
       padding:8px 14px; font-weight:600; cursor:pointer; }
     button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
     button.danger { background:#7f1d1d; color:#fecaca; }
+    .menu-wrap { position:relative; display:inline-block; }
+    .menu { position:absolute; right:0; top:calc(100% + 4px); z-index:20; min-width:200px;
+            background:var(--card); border:1px solid var(--line); border-radius:8px;
+            padding:4px; box-shadow:0 6px 18px rgba(0,0,0,.35); }
+    .menu button { display:block; width:100%; text-align:left; padding:6px 10px;
+                   font-weight:500; white-space:nowrap; }
     form.row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     form.row input { flex:1; }
     .hint{ font-size:11px; color:var(--muted); margin-top:6px; }
@@ -444,18 +462,23 @@ export function distListFragment(
               ? `<span class="badge ok">enabled</span>`
               : `<span class="badge off">disabled</span>`;
           const s = callsMap[k.api_key] ?? { tavily: 0, exa: 0 };
-          const total = s.tavily + s.exa;
           return `<tr>
             <td>${esc(maskKey(k.api_key))}</td>
             <td>${esc(k.note)}</td>
             <td>${st}</td>
             <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
-            <td title="Tavily ${s.tavily} · Exa ${s.exa}">${total} <span class="muted" style="font-size:11px;">(T ${s.tavily}/E ${s.exa})</span></td>
+            <td title="最近24小时 Tavily 调用（含当前小时）">${s.tavily}</td>
+            <td title="最近24小时 Exa 调用（含当前小时）">${s.exa}</td>
             <td>
               <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
-                <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）" style="padding:3px 8px;">复制 tavily 调用key</button>
-                <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）" style="padding:3px 8px;">复制 exa 调用key</button>
-                <button class="ghost" type="button" data-copy="searxng-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer searxng-tavily-&lt;key&gt;（SearXNG 协议，请求走 Tavily）" style="padding:3px 8px;">复制 searxng-tavily 调用key</button>
+                <div class="menu-wrap">
+                  <button class="ghost" type="button" data-menu-toggle title="复制调用凭据" style="padding:3px 8px;">复制 ▾</button>
+                  <div class="menu" hidden>
+                    <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）">复制 tavily 调用key</button>
+                    <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）">复制 exa 调用key</button>
+                    <button class="ghost" type="button" data-copy="searxng-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer searxng-tavily-&lt;key&gt;（SearXNG 协议，请求走 Tavily）">复制 searxng-tavily 调用key</button>
+                  </div>
+                </div>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
                       hx-swap="innerHTML" style="display:inline-block;">
                   ${csrfField(csrf)}
@@ -471,7 +494,7 @@ export function distListFragment(
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="6" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
+    : `<tr><td colspan="7" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
 
   return `${flashHtml}
   <form class="row" hx-post="/admin/keys/generate" hx-target="#keys-list" hx-swap="innerHTML">
@@ -486,7 +509,7 @@ export function distListFragment(
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th title="最近24小时（含当前小时）">最近24h调用</th><th>操作</th></tr></thead>
+      <th title="最近24小时（含当前小时）">Tavily(24H)</th><th title="最近24小时（含当前小时）">EXA(24H)</th><th>操作</th></tr>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -544,7 +567,7 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式三：走 SearXNG 兼容接口（GET）</h3>
 <pre class="code">curl -L -X GET "${base}/search?q=what+is+new+in+AI&format=json" \\
   -H "Authorization: Bearer searxng-tavily-&lt;分发key&gt;"</pre>
-  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 前缀。列表里的「复制 tavily/exa/searxng-tavily 调用key」可直接复制完整凭据；「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
+  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 前缀。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
 </div>
 
 <div class="card">
@@ -565,7 +588,7 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <h2>后台功能与文档</h2>
   <ul class="muted">
     <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
-    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，一键复制调用凭据；最近24h调用按 provider 拆分（T/E）。</li>
+    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，操作列「复制」下拉一键复制调用凭据；最近24h调用拆为 Tavily(24H) / EXA(24H) 两列。</li>
     <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
     <li><strong>统计</strong>：调用按 UTC 小时桶结算（分发 Keys 页为最近24小时滚动），Dashboard 图表与「昨日」按浏览器本地时区显示；统计为近似值、允许少量误差。</li>
     <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>

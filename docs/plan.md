@@ -16,7 +16,7 @@
 | 单 provider：仅代理 Tavily | 多 provider：Tavily + Exa，对称结构 | `src/providers/` |
 | 后台"区块 A / 区块 B"两页 | Dashboard + Tavily / Exa / 分发 Keys 三页 + Help 页 | `src/admin/`, `src/views/` |
 | 分发 Key 形如 `sk-<随机串>` | 纯 hex 字符串，**无 `sk-` 前缀**；调用时拼 `tavily-` / `exa-` | `src/domain.ts` |
-| "明文 key 只显示一次 / 二次密码重新查看明文" | **未实现**。明文按需注入列表行内供一键复制（"复制 tavily / exa 调用 key" 按钮） | `src/admin/keys.ts`, `src/views/` |
+| "明文 key 只显示一次 / 二次密码重新查看明文" | **未实现**。明文按需注入列表行内供一键复制（操作列「复制」下拉菜单：tavily / exa / searxng-tavily 调用 key） | `src/admin/keys.ts`, `src/views/` |
 | `DistributedKey` 含 `plain_viewed` 字段 | **未实现**。当前字段：`api_key / note / status / created_at` | `src/domain.ts` |
 | KV 统计"单次 PUT 合并 success/fail" | 用 `usage-store.ts` 写回式：内存累积 + 节流 flush + 读叠加 | `src/usage-store.ts` |
 |||| 熔断"连续失败 ≥ 5 次冷却 60 秒" | **已升级**：三层冷却（post-use / 指数退避 / 401-403 疑似失效），默认 `base=10min`,`post-use=10s`,`invalid=12h`，存 KV `breaker_config` 可在 admin dashboard"冷却参数"卡片调整 | `src/breaker-config.ts`, `src/circuit-breaker.ts` |
@@ -92,7 +92,7 @@
 - 操作：生成新 Key、单独删除、启用/禁用。
 - 计划要求："明文 key 只显示一次；提供二次密码确认重新查看明文"。
 
-> **实施状态**：⚠️ 部分变更。**未实现** 二次密码查看；明文按需注入列表行内供"复制 tavily 调用 key / 复制 exa 调用 key" 按钮使用。
+> **实施状态**：⚠️ 部分变更。**未实现** 二次密码查看；明文按需注入列表行内，操作列「复制」下拉菜单提供 tavily / exa / searxng-tavily 三种调用凭据复制。
 > **形态变更**：原计划 `sk-xxx` 改为纯 hex 不带前缀；调用方拼 `Bearer tavily-<key>` / `Bearer exa-<key>` 决定路由（见 [`exa-key-support.md`](./exa-key-support.md)）。
 
 ### 4.4 对外 API（代理层）
