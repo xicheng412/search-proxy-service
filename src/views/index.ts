@@ -557,37 +557,37 @@ export function helpPage(publicBaseUrl: string = ""): string {
 <div class="card">
   <h2>使用说明</h2>
   <p class="muted">本服务把上游真实 Key（Tavily / Exa 官方 key）收口在中间层，只向下游分发<strong>纯字符串的分发 key</strong>。<br>
-  调用方用 <code>Authorization: Bearer &lt;前缀&gt;-&lt;key&gt;</code> 请求代理端点。前缀同时决定<strong>协议</strong>与<strong>路由</strong>：<code>tavily-</code> / <code>exa-</code> 为原生透传（POST，原样转发上游协议）；<code>searxng-tavily-</code> 为 SearXNG 兼容协议（GET/POST，入参返回值按 SearXNG 标准，后端走 Tavily）。</p>
+  调用方用 <code>Authorization: Bearer &lt;前缀&gt;-&lt;key&gt;</code> 请求代理端点。<strong>前缀选 provider、端点选能力、协议选包装</strong>：<code>tavily-</code> / <code>exa-</code> 是原生透传（可打各自 <strong>Search</strong> 端点 <code>/search</code>；<code>tavily-</code> 还可打 <strong>Extract</strong> 端点 <code>/extract</code>）；<code>searxng-tavily-</code> 是 SearXNG 兼容协议（GET/POST 调 <strong>Tavily Search</strong>，后端仅 Tavily）。</p>
   <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code>、<code>exa-&lt;key&gt;</code> 或 <code>searxng-tavily-&lt;key&gt;</code>。</p>
 </div>
 
 <div class="card">
   <h2>调用示例</h2>
-  <p class="muted">原生透传端点：<code>POST ${base}/search</code>（请求体请用对应上游官方的格式）；SearXNG 兼容端点：<code>GET|POST ${base}/search</code>；Tavily Extract 透传端点：<code>POST ${base}/extract</code>（仅 Bearer <code>tavily-&lt;key&gt;</code>，请求体用 Tavily Extract 官方格式，统计与 /search 同链路）。</p>
+  <p class="muted">本服务按<strong>能力（capability）</strong>代理——<strong>Search</strong>（Tavily / Exa 两家均有，端点 <code>POST /search</code>，请求体用各 provider Search 官方格式）与 <strong>Extract</strong>（仅 Tavily，端点 <code>POST /extract</code>，请求体用 Tavily Extract 官方格式，统计与 /search 同链路）。searxng 是 Search 能力的一种包装协议（<code>GET|POST /search</code>）。</p>
 
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式四：走 Tavily Extract</h3>
-<pre class="code">curl -X POST ${base}/extract \\
-  -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
-  -H "Content-Type: application/json" \\
-  -d '{"urls":["https://en.wikipedia.org/wiki/Artificial_intelligence"],"extract_depth":"basic"}'</pre>
-
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：走 Tavily</h3>
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：Tavily Search（native 透传）</h3>
 <pre class="code">curl -X POST ${base}/search \\
   -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
   -H "Content-Type: application/json" \\
   -d '{"query":"what is the latest news about AI","max_results":3}'</pre>
 
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式二：走 Exa</h3>
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式二：Exa Search（native 透传）</h3>
 <pre class="code">curl -X POST ${base}/search \\
   -H "Authorization: Bearer exa-&lt;分发key&gt;" \\
   -H "Content-Type: application/json" \\
   -d '{"query":"what is the latest news about AI","numResults":3}'
 </pre>
 
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式三：走 SearXNG 兼容接口（GET）</h3>
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式三：Tavily Search（searxng 协议）</h3>
 <pre class="code">curl -L -X GET "${base}/search?q=what+is+new+in+AI&format=json" \\
   -H "Authorization: Bearer searxng-tavily-&lt;分发key&gt;"</pre>
-  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 前缀。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
+
+  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式四：Tavily Extract（native 透传）</h3>
+<pre class="code">curl -X POST ${base}/extract \\
+  -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
+  -H "Content-Type: application/json" \\
+  -d '{"urls":["https://en.wikipedia.org/wiki/Artificial_intelligence"],"extract_depth":"basic"}'</pre>
+  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 前缀；前缀只选公司，<code>tavily-</code> 前缀可打 <strong>Search</strong> 也可打 <strong>Extract</strong>。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
 </div>
 
 <div class="card">
@@ -612,7 +612,7 @@ export function helpPage(publicBaseUrl: string = ""): string {
     <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
     <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，操作列「复制」下拉一键复制调用凭据；最近24h调用单列显示（请求次数，不区分后端/协议）。</li>
     <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
-    <li><strong>统计</strong>：按 UTC 小时桶结算，先定看什么再选数——<strong>Dashboard 近 5 天趋势图</strong>与<strong>上游 Keys 页</strong>的「当日成功/失败」统计上游官方 key 的<strong>真实调用尝试次数</strong>（每次尝试一条，重试会放大；429 与 400/404/422 不记；趋势图按 Tavily / Exa 两条线）；<strong>Dashboard 24h / 昨日卡与分发 Keys 页</strong>统计分发 key 的<strong>请求次数</strong>（每单一条，503 也计入，不区分后端/协议；24h 为最近24小时滚动，昨日按浏览器本地时区计算）。两条线维度不同，勿互相核对；统计为近似值、允许少量误差。</li>
+    <li><strong>统计</strong>：按 UTC 小时桶结算，先定看什么再选数——<strong>Dashboard 近 5 天趋势图</strong>与<strong>上游 Keys 页</strong>的「当日成功/失败」统计上游官方 key 的<strong>真实调用尝试次数</strong>（每次尝试一条，重试会放大；429 与 400/404/422 不记；趋势图按 Tavily / Exa 两条线，即公司维度，Tavily 线含 Search+Extract 并账）；<strong>Dashboard 24h / 昨日卡与分发 Keys 页</strong>统计分发 key 的<strong>请求次数</strong>（每单一条，503 也计入，不区分后端/协议；24h 为最近24小时滚动，昨日按浏览器本地时区计算）。两条线维度不同，勿互相核对；统计为近似值、允许少量误差。</li>
     <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
   </ul>
 </div>`;

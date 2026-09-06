@@ -21,17 +21,17 @@ app.get("/", (c) => {
     providers: ["tavily", "exa"],
     protocols: ["native", "searxng"],
     endpoints: {
-      search: "GET|POST /search", // native: POST Bearer <tavily|exa>-<key>；searxng: GET|POST Bearer searxng-tavily-<key>
-      extract: "POST /extract",   // native only: POST Bearer tavily-<key>（Tavily Extract 透传）
+      search: "GET|POST /search", // Search 能力：native POST（Bearer tavily-|exa-<key>，透传）；searxng GET|POST（Bearer searxng-tavily-<key>）
+      extract: "POST /extract",   // Extract 能力：native only（Bearer tavily-<key>，Tavily Extract 透传）
       admin: "/admin",
     },
   });
 });
 
 // ---------- 代理链路 ----------
-// 透明代理 + searxng 兼容：请求端对 /search 的请求按 token 前缀分派。
-// - native 透传（POST）：Bearer <tavily|exa>-<key>，原样透传上游协议。
-// - searxng 兼容（GET|POST）：Bearer searxng-tavily-<key>，入参/返回值按 SearXNG 标准。
+// 端点按能力、token 前缀按 provider 分派：
+// - /search 承载 Search 能力（POST native 透传 Bearer <tavily|exa>-<key>；GET|POST searxng Bearer searxng-tavily-<key>）。
+// - /extract 承载 Extract 能力（POST native 透传 Bearer tavily-<key>）；无 searxng 语义、exa 无此能力。
 app.all("/search", handleSearch);
 
 // /extract：Tavily Extract 透明转发（native only，Bearer tavily-<key>），

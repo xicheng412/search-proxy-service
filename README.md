@@ -1,7 +1,7 @@
 # tavily-cf-proxy
 
 > **A self-hosted API key proxy & management plane for Tavily and Exa, running on Cloudflare Workers.**
-> 一款部署在 Cloudflare Workers 上的 Tavily / Exa 搜索 API 密钥代理与可视化管理平台：上游真实 key 收口在中间层，向下分发可独立管控的访问 key。
+> 一款部署在 Cloudflare Workers 上的 Tavily / Exa 密钥代理与可视化管理平台（代理其 Search、Extract 等能力）：上游真实 key 收口在中间层，向下分发可独立管控的访问 key。
 
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
 [![Hono](https://img.shields.io/badge/Hono-4.x-E36002?logo=hono&logoColor=white)](#)
@@ -24,13 +24,13 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 
 ## Features
 
-- **Multi-protocol, multi-provider, single endpoint.** `GET|POST /search` accepts `Bearer tavily-…`, `Bearer exa-…`, or the SearXNG-compatible `Bearer searxng-tavily-…`; the prefix decides both the wire protocol and the routing provider. Add a new provider with a single descriptor file.
+- **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider or capability with a descriptor file.
 - **Tavily Extract passthrough.** `POST /extract` with `Bearer tavily-…` transparently forwards to Tavily Extract, sharing the exact same retry/breaker/usage-accounting pipeline as `/search` (native-only by design).
 - **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed.
 - **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` park the key with a 12h suspected-invalid cooldown then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
-- **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped.
-- **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily upstream request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
-- **Distributed keys carry no provider binding.** One generated key, three ways to call — `tavily-<key>` for Tavily, `exa-<key>` for Exa, `searxng-tavily-<key>` for the SearXNG protocol. Operators choose at call time.
+- **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped — across both capability endpoints (`/search`, `/extract`).
+- **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily Search request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
+- **Distributed keys carry no provider binding.** One key; the prefix picks the provider — `tavily-<key>` for any Tavily capability (Search via `/search`, Extract via `/extract`), `exa-<key>` for Exa Search, `searxng-tavily-<key>` for Tavily Search via the SearXNG protocol. Operators choose at call time.
 - **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (call counts), shown live in the dashboard.
 - **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, dashboard, and a built-in usage help page with copy-able curl snippets. No SPA, no build.
 - **Stateless deploy.** `pnpm install && pnpm dev` to run. Deploy is a single `pnpm run deploy:cf`.
@@ -88,19 +88,25 @@ pnpm dev
 Log into the admin panel, add at least one upstream key under **Tavily Keys** or **Exa Keys**, then generate a distributed key under **Distributed Keys** and call:
 
 ```bash
-# Tavily path
+# Tavily Search（native 透传 /search）
 curl -X POST http://localhost:8787/search \
   -H "Authorization: Bearer tavily-<your-distributed-key>" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is Cloudflare Workers?"}'
 
-# Exa path (same key, different prefix)
+# Exa Search（native 透传 /search，同一个 key 换前缀）
 curl -X POST http://localhost:8787/search \
   -H "Authorization: Bearer exa-<your-distributed-key>" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is Cloudflare Workers?"}'
 
-# SearXNG-compatible path (GET, standard SearXNG JSON response)
+# Tavily Extract（native 透传 /extract，仅 Tavily）
+curl -X POST http://localhost:8787/extract \
+  -H "Authorization: Bearer tavily-<your-distributed-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://example.com"],"extract_depth":"basic"}'
+
+# Tavily Search（searxng 协议，GET，SearXNG 标准 JSON 响应）
 curl -L -X GET "http://localhost:8787/search?q=Cloudflare+Workers&format=json" \
   -H "Authorization: Bearer searxng-tavily-<your-distributed-key>"
 ```

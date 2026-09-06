@@ -7,7 +7,7 @@
 
 ## 1. 它到底是什么
 
-`tavily-cf-proxy` 是一个部署在 **Cloudflare Workers** 上的 API 密钥代理与管理平台，向上游 **Tavily** 和 **Exa** 两个搜索 API 提供统一的代理入口。它的核心模式是 **"我自己持有上游 key，向外分发可独立管控的访问 key"**——这与 OpenAI / Anthropic 的对外 API key 分发语义同构。
+`tavily-cf-proxy` 是一个部署在 **Cloudflare Workers** 上的 API 密钥代理与管理平台，向上游两家公司（provider）——**Tavily** 与 **Exa**——提供统一代理入口，代理其多个**能力（capability）**：**Search**（两家均有）与 **Extract**（仅 Tavily）。provider 是路由与统计的维度，能力是本服务代理的功能（端点/能力/协议映射见 §2.3）。它的核心模式是 **"我自己持有上游 key，向外分发可独立管控的访问 key"**——这与 OpenAI / Anthropic 的对外 API key 分发语义同构。
 
 - **代理链路**：外部用分发 key 调用 → 本服务校验 → 按前缀路由选上游 → 进 provider 队列 DO 串行放行 → 选自带冷却的上游 key → 透明转发 → 原样返回。
 - **管理链路**：管理员密码登录后台 → 管理上游 key（多个，可加可删可熔断）/ 分发 key（生成、禁用、删除）/ 查看当日统计与小时明细 / 运行时调三组参数（冷却、队列、鉴权缓存）。
@@ -41,6 +41,29 @@ Authorization: Bearer <proto?-><provider>-<key>
 ### 2.2 后台"复制"按钮语义
 
 后台 分发 Keys 列表每行的操作列有**一个 "复制" 按钮**，点击展开下拉菜单，菜单里是三个复制项——"复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key"。它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的三种拼装结果（下拉便于以后扩展新的复制项/操作按钮）。
+
+### 2.3 能力 × 端点 × 协议（四轴正交）
+
+对外面由四个独立维度决定，**provider 选公司、端点选能力、前缀选 provider、协议选包装**，互不绑定：
+
+| 维度 | 取值 | 作用 |
+|---|---|---|
+| **provider（公司）** | Tavily / Exa | 路由 / 凭据前缀 / 上游 key 池 / 统计维度 |
+| **能力（capability）** | Search / Extract | 调什么功能 |
+| **端点（endpoint）** | `/search` / `/extract` | 本服务接入点，决定能力 |
+| **线协议（protocol）** | native / searxng | 包装方式（searxng 仅用于 Search） |
+
+能力 × 端点 × provider × 协议的既有组合：
+
+| 端点 | 能力 | 可用 provider | 线协议 |
+|---|---|---|---|
+| `POST /search` | Search | Tavily 或 Exa | native |
+| `GET\|POST /search` | Search | 仅 Tavily | searxng |
+| `POST /extract` | Extract | 仅 Tavily | native |
+
+- **端点名 ≠ 能力名**：`/search` 是端点、Search 是能力，同名属透传设计，不混用。
+- **`tavily-` 前缀可打两个能力**（Search 经 `/search`、Extract 经 `/extract`）；`exa-` 前缀只打 Search（`/extract` 对 exa 返回 404）；searxng 前缀只打 Search（`/extract` 对 searxng 返回 405）。
+- **术语规范**：指"调什么 / 请求体 / 响应"必须用能力名（Tavily Search / Exa Search / Tavily Extract）；provider 名只在路由 / 凭据 / 管理 / 统计语境单独出现。
 
 ---
 
@@ -279,7 +302,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 `usage_counts` 由 `kind` 列隔离两条独立统计线。**它们是两个维度，不是同一事件的两个视图，不要求一致**：
 
-- **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
+- **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。**provider 线 = 该公司全部能力的上游尝试合计（Search + Extract 并账，不按能力拆分）**。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
 - **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求计数」，`scope` = 分发 api_key，success/fail 二元、**不区分后端/协议**——provider 列统一写哨兵 `'*'`（该列 NOT NULL 且入 PK，属 schema 约束；dist 读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。请求进入重试核（`retry.ts` prologue）即记成功，即使最终全部 key 失败返回 503；searxng 参数错误记 fail；searxng `pageno>1` 空结果记 success 但不耗上游；**队列拒入（maxDepth 429）与未轮到断开不计**。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h调用」（逐 key、单列次数）消费。
 
 **双源展示是有意的**：Dashboard 上 **24h/昨日卡 = dist（消费量）**，**近 5 天趋势图 = upstream（上游真实调用负载、Tavily/Exa 两线）**——各自回答不同问题，不对齐。

@@ -15,8 +15,16 @@ _Avoid_: 真实 key、provider key、外部 key
 _Avoid_: API key、访问 key、客户端 key
 
 **provider**:
-一个上游搜索服务（当前为 Tavily / Exa），是路由与统计的维度。新增一个 provider 只加一份描述符。
+一家上游搜索/数据 API 服务商（公司），本服务代理其若干**能力（capability）**，并以其为路由与统计的维度。当前：Tavily（提供 Search、Extract）、Exa（提供 Search）。新增一个 provider 只加一份描述符。
 _Avoid_: 上游、后端、search engine
+
+**能力（capability）**:
+provider 提供的可调用服务，本服务按端点接入。当前代理两项：**Search**（Tavily / Exa 均提供，经本服务 `/search` 端点）与 **Extract**（仅 Tavily 提供，经 `/extract` 端点）。指"调什么功能 / 请求体 / 响应"时必须用能力名（Tavily Search / Exa Search / Tavily Extract），**不**让 provider 名代指能力（端点与能力映射见 architecture §2.3）。
+_Avoid_: 服务、功能、endpoint
+
+**端点（endpoint）**:
+本服务的 URL 路径（`/search`、`/extract`），是能力的接入点。provider 由前缀决定、能力由端点决定、包装由线协议决定，三者正交；代码里 `ProviderConfig.endpoints` 记录的是**上游**端点路径，与本服务端点同名属透传设计——**端点名 ≠ 能力名**。
+_Avoid_: 接口、API、route
 
 **线协议（wire protocol）**:
 调用方与本服务之间的通信协议——`native`（原样透传上游协议）或 `searxng`（SearXNG 兼容 JSON，需转换）。与 provider **正交**。
