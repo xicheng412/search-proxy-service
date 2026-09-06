@@ -85,7 +85,7 @@ exaAdmin.post("/add", async (c) => {
 
   if (doTest) {
     try {
-      const r = await fetch(EXA.base + EXA.endpoints.search, {
+      const r = await fetch(EXA.base + EXA.capabilities.search!.path, {
         method: "POST",
         headers: {
           "content-type": "application/json",

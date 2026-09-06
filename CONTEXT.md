@@ -19,19 +19,19 @@ _Avoid_: API key、访问 key、客户端 key
 _Avoid_: 上游、后端、search engine
 
 **能力（capability）**:
-provider 提供的可调用服务，本服务按端点接入。当前代理两项：**Search**（Tavily / Exa 均提供，经本服务 `/search` 端点）与 **Extract**（仅 Tavily 提供，经 `/extract` 端点）。指"调什么功能 / 请求体 / 响应"时必须用能力名（Tavily Search / Exa Search / Tavily Extract），**不**让 provider 名代指能力（端点与能力映射见 architecture §2.3）。
+provider 提供的可调用服务，本服务按端点接入。当前代理两项：**Search**（Tavily / Exa 均提供，经本服务 `/search` 端点）与 **Extract**（仅 Tavily 提供，经 `/extract` 端点）。指"调什么功能 / 请求体 / 响应"时必须用能力名（Tavily Search / Exa Search / Tavily Extract），**不**让 provider 名代指能力（端点与能力映射见 architecture §2.3）。能力**原子、扁平**；抽象层独立存在，**执行层必须落地到某 provider 的 `Surface`（path + 开放协议）才可调用**，未落地 = 对使用者不存在；不引入能力依赖能力。
 _Avoid_: 服务、功能、endpoint
 
 **端点（endpoint）**:
-本服务的 URL 路径（`/search`、`/extract`），是能力的接入点。provider 由前缀决定、能力由端点决定、包装由线协议决定，三者正交；代码里 `ProviderConfig.endpoints` 记录的是**上游**端点路径，与本服务端点同名属透传设计——**端点名 ≠ 能力名**。
+本服务的 URL 路径（`/search`、`/extract`），是能力的接入点。provider 由前缀决定、能力由端点决定、包装由线协议决定，三者正交；代码里 `ProviderConfig.capabilities` 记录的是每个能力的**上游落地**（Surface = 上游 path + 开放的线协议），与本服务端点同名属透传设计——**端点名 ≠ 能力名**。
 _Avoid_: 接口、API、route
 
 **线协议（wire protocol）**:
-调用方与本服务之间的通信协议——`native`（原样透传上游协议）或 `searxng`（SearXNG 兼容 JSON，需转换）。与 provider **正交**。
+调用方与本服务之间的通信协议——`native`（原样透传上游协议）或 `searxng`（SearXNG 兼容 JSON，需转换）。与 **provider** 正交（工程覆盖可扩展），但**受能力约束**（searxng 仅服务 Search）——协议是能力的延伸/属性，不是与能力平行的维度。
 _Avoid_: 协议、transport、protocol
 
 **复合前缀（compound prefix）**:
-调用凭据里同时决定线协议与路由 provider 的前缀段 `<proto?-><provider>`（如 `tavily-`、`searxng-tavily-`；复合前缀大小写不敏感）。
+调用凭据里同时决定线协议与路由 provider 的前缀段 `<proto?-><provider>`（如 `tavily-`、`searxng-tavily-`；复合前缀大小写不敏感）。（能力由端点决定，不从前缀来。）
 _Avoid_: 前缀、key 前缀
 
 ### 可靠性概念

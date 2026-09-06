@@ -177,7 +177,7 @@ In-app: the admin panel has a built-in **Help** page at `/admin/help` with copya
 
 Two files, no logic changes:
 
-1. `src/providers/<name>.ts` — write a `ProviderConfig` (base url, endpoints, KV key, id prefix, admin path, test body, error-body formatter).
+1. `src/providers/<name>.ts` — write a `ProviderConfig` (base url, capabilities, KV key, id prefix, admin path, test body, error-body formatter).
 2. `src/providers/index.ts` — register it in `PROVIDERS`.
 
 Storage, proxy, admin, and views all consume `PROVIDERS[name]`; there are no per-provider `if` branches in the shared code. See `docs/architecture.md §4.2` for the full walkthrough.

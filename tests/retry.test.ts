@@ -62,7 +62,7 @@ function bearerSet(mock: Mock): Set<string> {
   return out;
 }
 
-const req = { path: TAVILY.endpoints.search, body: "{}", contentType: "application/json" };
+const req = { path: TAVILY.capabilities.search.path, body: "{}", contentType: "application/json" };
 
 afterEach(() => {
   vi.unstubAllGlobals();

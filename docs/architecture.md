@@ -30,7 +30,8 @@ Authorization: Bearer <proto?-><provider>-<key>
                         │              查库的 api_key（精确匹配）
                         └──────────────────┘
   tavily-<key>、exa-<key>                → proto=native (透传)
-  searxng-tavily-<key>、searxng-exa-<key>→ proto=searxng (SearXNG 兼容协议)
+  searxng-tavily-<key>（searxng 覆盖仅 Tavily，未启用）
+                                        → proto=searxng (SearXNG 兼容协议)
 ```
 
 - `parseDistKey()`（[`src/domain.ts`](../src/domain.ts)）按最后一个 `-` 切分；分发 key 是 hex 不含 `-`，切分无歧义。
@@ -42,9 +43,9 @@ Authorization: Bearer <proto?-><provider>-<key>
 
 后台 分发 Keys 列表每行的操作列有**一个 "复制" 按钮**，点击展开下拉菜单，菜单里是三个复制项——"复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key"。它们复制的是**组装好的调用凭据** `tavily-<key>` / `exa-<key>` / `searxng-tavily-<key>`，**不是** 外部服务 key。这是给"想让客户端用哪个协议+provider 调"准备的三种拼装结果（下拉便于以后扩展新的复制项/操作按钮）。
 
-### 2.3 能力 × 端点 × 协议（四轴正交）
+### 2.3 能力 × 端点 × 协议（能力与 provider 正交；协议受能力约束）
 
-对外面由四个独立维度决定，**provider 选公司、端点选能力、前缀选 provider、协议选包装**，互不绑定：
+对外由 **能力（capability）与 provider 两个正交维度** + **线协议**（修饰能力、受能力约束）决定：provider 选公司、端点选能力、协议选包装。
 
 | 维度 | 取值 | 作用 |
 |---|---|---|
@@ -61,9 +62,17 @@ Authorization: Bearer <proto?-><provider>-<key>
 | `GET\|POST /search` | Search | 仅 Tavily | searxng |
 | `POST /extract` | Extract | 仅 Tavily | native |
 
+- **searxng 仅 Search 是概念约束**（SearXNG 标准没有 Extract 语义）；**searxng 仅 Tavily 是实现覆盖**（当前只写了 `buildTavilyBody`）。
 - **端点名 ≠ 能力名**：`/search` 是端点、Search 是能力，同名属透传设计，不混用。
 - **`tavily-` 前缀可打两个能力**（Search 经 `/search`、Extract 经 `/extract`）；`exa-` 前缀只打 Search（`/extract` 对 exa 返回 404）；searxng 前缀只打 Search（`/extract` 对 searxng 返回 405）。
 - **术语规范**：指"调什么 / 请求体 / 响应"必须用能力名（Tavily Search / Exa Search / Tavily Extract）；provider 名只在路由 / 凭据 / 管理 / 统计语境单独出现。
+
+### 2.4 如何加一个新能力
+
+1. `src/domain.ts` 的 `Capability` 联合类型加成员；
+2. 在提供该能力的 provider 描述符 `capabilities` 里加 `Surface`（`path` + `protocols`）；
+3. 在 `src/index.ts` 加路由（native 透传复用 `runNative`）；
+4. `tests/providers.test.ts` 的矩阵断言自动校验 searxng 不变量。
 
 ---
 
@@ -132,11 +141,11 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 
 ### 3.3 Extract 透传（`POST /extract`）
 
-与 /search 完全同构，只是把 `NativeTask.path` 换成 `endpoints.extract`（见 §4.1 providers 表）：
+与 /search 完全同构，只是把 `NativeTask.path` 换成 `capabilities.extract.path`（见 §4.1 providers 表）：
 鉴权 → 门禁 → 打装 `NativeTask{ kind:"native", path:"/extract" }` → 进 tavily 队列 DO → `runNativeTask` → 同一颗重试核（选 key / 冷却 / 熔断 / 用量统计）。因此 **/extract 的所有统计维度与 /search 共用同一套账**：上游 key 成败、熔断冷却、分发 key 调用计数、dashboard 的 tavily 上游趋势线，全部自动落账，无需端点维度的额外埋点。
 
 门禁（**不触达重试核 → 不记统计、不耗上游配额**）：
-- 仅 `Bearer tavily-<key>`（native 透传）；`searxng-tavily-<key>` → 405；`exa-<key>` → 404（exa 未声明 extract 端点）。
+- 由描述符 `capabilities.extract` 结构判定：仅 `Bearer tavily-<key>`（native 透传）命中；`searxng-tavily-<key>` → 405；`exa-<key>` → 404（exa 未声明能力）。
 - 分发 key 缺失/禁用 → 401（与 /search 同一 authenticate）。
 
 与 /search 的差异只有一处：**上游响应码分类新增两条 Tavily Extract 专属规则**（`src/retry.ts` classifyStatus，对 /search 同样生效）：
@@ -207,7 +216,7 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 | 模块 | 职责 | 不做什么 |
 |---|---|---|
 | `domain.ts` | 词汇 + 规则 + 纯函数 | 不 import 任何仓库模块；不读 KV/DB |
-| `providers/` | 一个 provider 的全部事实（base、endpoints、上游键名、id 前缀、test body、错误体格式） | 不写业务逻辑 |
+| `providers/` | 一个 provider 的全部事实（base、capabilities、上游键名、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV/DB |
 | `storage/upstream-keys.ts` | 上游 key + 熔断状态（`breaker_state`）D1 读写 + keyset 分页 | 不做节流/不吞错/不写策略 |
 | `storage/dist-keys.ts` | 分发 key D1 读写 + Cache API 鉴权读缓存（读穿 + 写失效） | 不写业务逻辑 |
@@ -231,7 +240,7 @@ GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 
 按当前设计，**只需要两个文件**：
 
-1. `src/providers/<name>.ts`：写一份 `ProviderConfig` 描述符（base / endpoints / upstream / admin / testBody / errorBody）。
+1. `src/providers/<name>.ts`：写一份 `ProviderConfig` 描述符（base / capabilities / upstream / admin / testBody / errorBody）。
 2. `src/providers/index.ts`：把它注册到 `PROVIDERS`。
 
 其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。

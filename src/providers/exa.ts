@@ -4,7 +4,7 @@ import type { ProviderConfig } from "./index";
 export const EXA: ProviderConfig<"exa"> = {
   name: "exa",
   base: "https://api.exa.ai",
-  endpoints: { search: "/search" },
+  capabilities: { search: { path: "/search", protocols: ["native"] } },
   upstream: { keysKey: "exa_keys", idPrefix: "ek_", provider: "exa" },
   admin: { basePath: "/admin/exa", label: "Exa Keys" },
   testBody: () => ({ query: "test" }),

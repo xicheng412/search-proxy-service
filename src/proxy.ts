@@ -15,6 +15,7 @@ import { Env, AppVariables } from "./types";
 import { ProviderConfig } from "./providers";
 import { PROVIDERS } from "./providers";
 import {
+  Capability,
   DistributedKey,
   Provider,
   WireProtocol,
@@ -150,11 +151,13 @@ export async function runSearxngTask(
   apiKey: string,
   task: SearxngTask
 ): Promise<Response> {
+  // searxng 仅服务 Search 能力；search 是基础能力，必已落地
+  const searchPath = def.capabilities.search!.path;
   return searchWithRetry(
     deps,
     def,
     apiKey,
-    { path: def.endpoints.search, body: task.body, contentType: task.contentType },
+    { path: searchPath, body: task.body, contentType: task.contentType },
     {
       onSuccess: async (res) => {
         try {
@@ -205,6 +208,33 @@ async function forwardToQueue(
     body: JSON.stringify({ provider: def.name, apiKey, task }),
     signal: c.req.raw.signal,
   });
+}
+
+/** native 透传公共路径：门禁读描述符结构（未声明能力→404；能力未开放该协议→405），
+ * 命中则打 NativeTask{path=surface.path} 进队列 DO。供 /search(native) 与 /extract 复用。 */
+async function runNative(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>,
+  def: ProviderConfig,
+  auth: { protocol: WireProtocol; provider: Provider; distKey: DistributedKey },
+  capability: Capability
+): Promise<Response> {
+  const surface = def.capabilities[capability];
+  if (!surface) {
+    return def.errorBody(404, `${def.name} does not expose a /${capability} endpoint.`);
+  }
+  if (!surface.protocols.includes(auth.protocol)) {
+    return def.errorBody(
+      405,
+      `"${capability}" is only supported with ${surface.protocols.join(" or ")} credentials (Bearer ${auth.provider}-<key>).`
+    );
+  }
+  const task: NativeTask = {
+    kind: "native",
+    path: surface.path,
+    body: await c.req.text(),
+    contentType: c.req.header("content-type") ?? "application/json",
+  };
+  return await forwardToQueue(c, def, auth.distKey.api_key, task);
 }
 
 /** 把搜索请求参数归一化成 kv（GET → query string；POST → 表单/JSON 字段）。 */
@@ -282,14 +312,8 @@ export async function handleSearch(
       return await forwardToQueue(c, def, apiKey, task);
     }
 
-    // native 路径：读一次 body 固定，转发给队列 DO
-    const task: NativeTask = {
-      kind: "native",
-      path: def.endpoints.search,
-      body: await c.req.text(),
-      contentType: c.req.header("content-type") ?? "application/json",
-    };
-    return await forwardToQueue(c, def, apiKey, task);
+    // native 路径：复用 runNative（读 body → 门禁 → 转发队列 DO）
+    return await runNative(c, def, authRes, "search");
   } catch (err) {
     // 代理不应裸抛 500；转为带错误信息的响应便于定位（也避免泄露堆栈给客户端）
     const msg = err instanceof Error ? err.message : String(err);
@@ -306,7 +330,7 @@ export async function handleSearch(
 /**
  * /extract 入口：Tavily Extract 的透明转发，仅支持 native 线协议（Bearer tavily-<key>）。
  * - extract 无 searxng 语义（searxng 是搜索协议转换），searxng 前缀在此确定性 405，不记统计。
- * - 只有声明了 `endpoints.extract` 的 provider 才开放；exa 等未声明 → 404，不记统计。
+ * - 门禁由描述符 `capabilities.extract` 结构判定：provider 未声明 → 404；声明但未开放该协议（searxng）→ 405，不记统计。
  * - 命中则复用 native 透传：任务打成 NativeTask{path=extract} 进队列 DO，走与 /search 完全相同的
  *   重试/熔断/用量统计链路（上游 key 成败 + 冷却 + 分发 key 调用计数自动落账）。
  * 前置门禁（405/404/401）不触达重试核 → 不计调用、不耗上游配额。
@@ -319,29 +343,8 @@ export async function handleExtract(
     if (!authRes) return c.res; // 错误响应已在 authenticate 写入
 
     const def = PROVIDERS[authRes.provider];
-    if (authRes.protocol !== "native") {
-      // extract 只属于 native 透传；searxng 协议按 provider 官方错误体给 405
-      return def.errorBody(
-        405,
-        `"extract" is only supported with native credentials (Bearer ${authRes.provider}-<key>).`
-      );
-    }
-    const path = def.endpoints.extract;
-    if (!path) {
-      return def.errorBody(
-        404,
-        `${def.name} does not expose an /extract endpoint.`
-      );
-    }
-
-    // native 透传：读一次 body 固定，转发给队列 DO（与 /search 的 native 分支同构）
-    const task: NativeTask = {
-      kind: "native",
-      path,
-      body: await c.req.text(),
-      contentType: c.req.header("content-type") ?? "application/json",
-    };
-    return await forwardToQueue(c, def, authRes.distKey.api_key, task);
+    // 门禁与 native 透传统一走 runNative：能力未声明→404、未开放该协议→405、命中→转发队列 DO
+    return await runNative(c, def, authRes, "extract");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return Response.json(

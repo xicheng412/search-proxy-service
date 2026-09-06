@@ -3,6 +3,7 @@
 // 与新 provider 的关系：本文件只负责"协议转换"；路由/上游坐标见 providers/ 与 proxy.ts。
 // searxng 标准依据官方源码：webutils.get_json_response + result_types/_base.MainResult.as_dict
 // （searxng JSON 顶层无 number_of_results 字段，勿补）。
+// 协议是能力的属性/延伸，不是能力本身：searxng 只包装 Search。当前实现覆盖 Search×tavily（buildTavilyBody）；新增 Exa 方向是实现扩展，不是新能力。
 
 export interface SearxngParams {
   query: string;

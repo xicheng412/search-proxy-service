@@ -20,6 +20,7 @@ app.get("/", (c) => {
     status: "ok",
     providers: ["tavily", "exa"],
     protocols: ["native", "searxng"],
+    capabilities: ["search", "extract"],
     endpoints: {
       search: "GET|POST /search", // Search 能力：native POST（Bearer tavily-|exa-<key>，透传）；searxng GET|POST（Bearer searxng-tavily-<key>）
       extract: "POST /extract",   // Extract 能力：native only（Bearer tavily-<key>，Tavily Extract 透传）

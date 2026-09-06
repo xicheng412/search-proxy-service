@@ -85,7 +85,7 @@ tavilyAdmin.post("/add", async (c) => {
 
   if (doTest) {
     try {
-      const r = await fetch(TAVILY.base + TAVILY.endpoints.search, {
+      const r = await fetch(TAVILY.base + TAVILY.capabilities.search!.path, {
         method: "POST",
         headers: {
           "content-type": "application/json",

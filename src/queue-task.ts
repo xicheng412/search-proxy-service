@@ -14,5 +14,6 @@ export interface SearxngTask {
   topic?: "news" | "general";
   body: string;
   contentType: string;
+  // searxng 协议仅服务 Search 能力（无 path 字段：协议层绑定 Search，上游 path 由 provider 描述符决定）。
 }
 export type QueueTask = NativeTask | SearxngTask;
