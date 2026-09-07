@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env, AppVariables } from "./types";
+import { handleSearch, handleExtract, handleReader } from "./proxy";
+import { resolvePublicBaseUrl } from "./config";
+import { helpPage } from "./views/help";
 import { handleLogin, handleLogout } from "./auth";
 import { admin } from "./admin";
 import { loginPage } from "./views";
-import { handleSearch, handleExtract, handleReader } from "./proxy";
 
 export type { Env } from "./types";
 export { QueueDO } from "./queue";
@@ -15,19 +17,28 @@ const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 app.use("*", cors());
 
 app.get("/", (c) => {
-  return c.json({
-    name: "tavily-cf-proxy",
-    status: "ok",
-    providers: ["tavily", "exa"],
-    protocols: ["native", "searxng", "reader"],
-    capabilities: ["search", "extract"],
-    endpoints: {
-      search: "GET|POST /search", // Search 能力：native POST（Bearer tavily-|exa-<key>，透传）；searxng GET|POST（Bearer searxng-tavily-<key>）
-      extract: "POST /extract",   // Extract 能力：native only（Bearer tavily-<key>，Tavily Extract 透传）
-      reader: "GET /reader/<url>", // Extract 能力：reader 协议（Bearer reader-tavily-<key>，URL→文本）
-      admin: "/admin",
-    },
-  });
+  return c.text(
+`Tavily / Exa API 密钥代理服务
+
+本服务是一个中间代理：上游真实 key（Tavily / Exa 官方 key）收口在本服务，
+向外只签发可独立管控的分发 key。调用时用
+Authorization: Bearer <前缀>-<key>   前缀选 provider、端点选能力。
+
+访问入口：
+- /help           使用说明（curl 示例、调用前缀、错误表）——公开，无需登录
+- /admin          管理后台（上游 key / 分发 key / 统计）——需管理员登录
+- /search         搜索（Search 能力）：POST native（Bearer tavily-<key>|exa-<key>）
+                    或 GET|POST searxng（Bearer searxng-tavily-<key>）
+- /extract        提取（Extract 能力，仅 Tavily）：POST native（Bearer tavily-<key>）
+- /reader/<url>   页面正文（Extract 能力，reader 协议）：GET（Bearer reader-tavily-<key>）
+
+继续操作：想知道怎么调用 → 访问 /help；想管理 key / 看统计 → 访问 /admin。`
+  );
+});
+
+// 公开使用说明页：独立于管理后台（自带样式，无 admin 依赖），无需登录；admin 顶栏「使用说明」新标签打开。
+app.get("/help", (c) => {
+  return c.html(helpPage(resolvePublicBaseUrl(c.env)));
 });
 
 // ---------- 代理链路 ----------

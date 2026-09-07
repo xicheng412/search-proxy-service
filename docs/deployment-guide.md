@@ -133,9 +133,11 @@ Current Version ID: <hex>
 ## 7. 验证线上
 
 ```bash
-# 健康检查
+# 健康检查（/ 返回纯文本导航文本）
 curl https://tavily-cf-proxy.<子域>.workers.dev/
-# -> {"name":"tavily-cf-proxy","status":"ok","providers":["tavily","exa"],...}
+# -> Tavily / Exa API 密钥代理服务 ...（text/plain 导航，列出 /help /admin /search /extract /reader）
+# 使用说明页（公开，无需登录）
+curl https://tavily-cf-proxy.<子域>.workers.dev/help
 
 # 后台鉴权门(未登录应 302 到登录页)
 curl -i https://tavily-cf-proxy.<子域>.workers.dev/admin | head

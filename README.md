@@ -33,7 +33,7 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 - **Reader-style protocol adapter.** `reader-tavily-<key>` + `GET /reader/<url>` returns the target page's text (`text/plain`) via Tavily Extract — a URL→text gateway like Jina Reader, reusing the same retry/circuit-breaker/usage pipeline. Returns Tavily-extracted raw text (not Jina's polished Markdown); target URLs that carry their own query string must be percent-encoded; an optional `?depth=basic|advanced` (default `basic`) passes through Tavily's `extract_depth` (whitelisted — `advanced` is the paid tier).
 - **Distributed keys carry no provider binding.** One key; the prefix picks the provider — `tavily-<key>` for any Tavily capability (Search via `/search`, Extract via `/extract`), `exa-<key>` for Exa Search, `searxng-tavily-<key>` for Tavily Search via the SearXNG protocol, `reader-tavily-<key>` for Tavily Extract via the reader (URL→text) protocol. Operators choose at call time.
 - **Best-effort per-day stats** for both upstream keys (success / fail) and distributed keys (call counts), shown live in the dashboard.
-- **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, dashboard, and a built-in usage help page with copy-able curl snippets. No SPA, no build.
+- **HTMX admin panel.** Session-based login (24h, HttpOnly, SameSite=Lax, CSRF-protected write paths), Tavily / Exa / Distributed Keys pages, and a dashboard. A **public usage help page** (`/help`, no login, standalone styling, linked from the admin header in a new tab) carries curl snippets and the error table. No SPA, no build.
 - **Stateless deploy.** `pnpm install && pnpm dev` to run. Deploy is a single `pnpm run deploy:cf`.
 
 ## How it works
@@ -84,7 +84,7 @@ cp .dev.vars.example .dev.vars
 
 # 3. run
 pnpm dev
-# → http://localhost:8787  (health: GET /)
+# → http://localhost:8787  (portal: GET / returns text/plain navigation; GET /help is the public usage page)
 # → http://localhost:8787/admin  (login with ADMIN_PASSWORD)
 ```
 
@@ -178,7 +178,7 @@ Full directory + per-file responsibilities are in [`docs/architecture.md`](./doc
 | [`docs/plan.md`](./docs/plan.md) | Original requirements + delivery plan (historical reference) |
 | [`docs/exa-key-support.md`](./docs/exa-key-support.md) | Exa integration design notes (historical reference) |
 
-In-app: the admin panel has a built-in **Help** page at `/admin/help` with copyable curl examples and the error-response table.
+In-app: a public **Help** page at `/help` (no login needed — the admin header links to it in a new tab) has curl examples and the error-response table.
 
 ## Adding a new upstream provider
 

@@ -62,14 +62,13 @@ export function upstreamPaginationHtml(
   return `<div class="pagination" style="margin-top:10px;display:flex;gap:8px;align-items:center;">${parts.join("")}</div>`;
 }
 
-type NavKey = "dashboard" | "tavily" | "exa" | "keys" | "help";
+type NavKey = "dashboard" | "tavily" | "exa" | "keys";
 
 const NAV_ITEMS: { key: NavKey; href: string; label: string }[] = [
   { key: "dashboard", href: "/admin", label: "总览" },
   { key: "tavily", href: "/admin/tavily", label: "Tavily Keys" },
   { key: "exa", href: "/admin/exa", label: "Exa Keys" },
   { key: "keys", href: "/admin/keys", label: "分发 Keys" },
-  { key: "help", href: "/admin/help", label: "使用说明" },
 ];
 
 function nav(active: NavKey): string {
@@ -90,9 +89,12 @@ export function layout(
     ? `<header>
   <h1>Tavily Proxy · 管理后台</h1>
   ${nav(active)}
-  <form method="post" action="/admin/logout" style="display:inline;">
-    <button class="ghost" type="submit">登出</button>
-  </form>
+  <div class="header-actions">
+    <a class="header-help" href="/help" target="_blank" rel="noopener">使用说明</a>
+    <form method="post" action="/admin/logout" style="display:inline;">
+      <button class="ghost" type="submit">登出</button>
+    </form>
+  </div>
 </header>`
     : "";
   return `<!doctype html>
@@ -188,6 +190,9 @@ export function layout(
     button { background:var(--accent); color:#04121f; border:0; border-radius:8px;
       padding:8px 14px; font-weight:600; cursor:pointer; }
     button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+    .header-actions { display:flex; align-items:center; gap:14px; }
+    .header-help { color:var(--accent); text-decoration:none; font-size:14px; }
+    .header-help:hover { text-decoration:underline; }
     button.danger { background:#7f1d1d; color:#fecaca; }
     .menu-wrap { position:relative; display:inline-block; }
     .menu { position:absolute; right:0; top:calc(100% + 4px); z-index:20; min-width:200px;
@@ -546,84 +551,4 @@ export function distGenerateResult(
 
 export function errorFragment(msg: string): string {
   return `<div class="err">${esc(msg)}</div>`;
-}
-
-// ---------------------------------------------------------------
-// 使用说明页（原理 + 调用方式 + 文档，管理员参考/转发给下游）
-// ---------------------------------------------------------------
-
-export function helpPage(publicBaseUrl: string = ""): string {
-  const base = esc(publicBaseUrl);
-  const body = `
-<div class="card">
-  <h2>使用说明</h2>
-  <p class="muted">本服务把上游真实 Key（Tavily / Exa 官方 key）收口在中间层，只向下游分发<strong>纯字符串的分发 key</strong>。<br>
-  调用方用 <code>Authorization: Bearer &lt;前缀&gt;-&lt;key&gt;</code> 请求代理端点。<strong>前缀选 provider、端点选能力、协议选包装</strong>：<code>tavily-</code> / <code>exa-</code> 是原生透传（可打各自 <strong>Search</strong> 端点 <code>/search</code>；<code>tavily-</code> 还可打 <strong>Extract</strong> 端点 <code>/extract</code>）；<code>searxng-tavily-</code> 是 SearXNG 兼容协议（GET/POST 调 <strong>Tavily Search</strong>，后端仅 Tavily）；<code>reader-tavily-</code> 是 reader 协议（GET <code>/reader/&lt;url&gt;</code> 拿页面文本，后端 Tavily Extract）。</p>
-  <p class="muted"><strong>概念区分：</strong>「Tavily Keys / Exa Keys」页里的 key 是<strong>外部服务官方 key</strong>（仅本服务持有、转发用）；「分发 Keys」页生成的纯字符串是<strong>调用凭据</strong>，请求时写成 <code>tavily-&lt;key&gt;</code>、<code>exa-&lt;key&gt;</code>、<code>searxng-tavily-&lt;key&gt;</code> 或 <code>reader-tavily-&lt;key&gt;</code>。</p>
-</div>
-
-<div class="card">
-  <h2>调用示例</h2>
-  <p class="muted">本服务按<strong>能力（capability）</strong>代理——<strong>Search</strong>（Tavily / Exa 两家均有，端点 <code>POST /search</code>，请求体用各 provider Search 官方格式）与 <strong>Extract</strong>（仅 Tavily，端点 <code>POST /extract</code>，请求体用 Tavily Extract 官方格式，统计与 /search 同链路）。searxng 是 Search 能力的一种包装协议（<code>GET|POST /search</code>）；reader 是 Extract 能力的一种包装协议（<code>GET /reader/&lt;url&gt;</code>，返回纯文本）。</p>
-
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式一：Tavily Search（native 透传）</h3>
-<pre class="code">curl -X POST ${base}/search \\
-  -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
-  -H "Content-Type: application/json" \\
-  -d '{"query":"what is the latest news about AI","max_results":3}'</pre>
-
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式二：Exa Search（native 透传）</h3>
-<pre class="code">curl -X POST ${base}/search \\
-  -H "Authorization: Bearer exa-&lt;分发key&gt;" \\
-  -H "Content-Type: application/json" \\
-  -d '{"query":"what is the latest news about AI","numResults":3}'
-</pre>
-
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式三：Tavily Search（searxng 协议）</h3>
-<pre class="code">curl -L -X GET "${base}/search?q=what+is+new+in+AI&format=json" \\
-  -H "Authorization: Bearer searxng-tavily-&lt;分发key&gt;"</pre>
-
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式四：Tavily Extract（native 透传）</h3>
-<pre class="code">curl -X POST ${base}/extract \\
-  -H "Authorization: Bearer tavily-&lt;分发key&gt;" \\
-  -H "Content-Type: application/json" \\
-  -d '{"urls":["https://en.wikipedia.org/wiki/Artificial_intelligence"],"extract_depth":"basic"}'</pre>
-
-  <h3 style="font-size:14px;color:var(--accent);margin:12px 0 6px;">方式五：页面文本（reader 协议）</h3>
-<pre class="code">curl "${base}/reader/https://en.wikipedia.org/wiki/Artificial_intelligence" \\
-  -H "Authorization: Bearer reader-tavily-&lt;分发key&gt;" \\
-  # → 200 text/plain：目标页面正文文本（Tavily Extract 提取，非 Jina 精加工 Markdown）
-  # ?depth=basic|advanced 可透传提取深度（缺省 basic；advanced 为付费高档）</pre>
-  <p class="hint">同一个分发 key 可以同时用 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code>、<code>reader-tavily-</code> 前缀；前缀只选公司，<code>tavily-</code> 前缀可打 <strong>Search</strong> 也可打 <strong>Extract</strong>（<code>reader-tavily-</code> 只打 <strong>Extract</strong> 的 <code>/reader</code>）。reader 目标 URL 若自身带 query，需整体 percent-encode（否则 <code>?</code> 后会被当作外层请求参数）。列表操作列点「复制」下拉，可选「复制 tavily/exa/searxng-tavily/reader-tavily 调用key」直接复制完整凭据；页面上方「复制 base url / 复制 /search」复制本服务对外地址。SearXNG 返回为 searxng 标准 JSON（query/results/answers/infoboxes 等字段）。</p>
-</div>
-
-<div class="card">
-  <h2>响应与错误</h2>
-  <table>
-    <thead><tr><th>状态</th><th>含义</th></tr></thead>
-    <tbody>
-      <tr><td>2xx</td><td><code>native</code>：上游原始响应原样透传（结构由上游决定）；<code>searxng</code>：转成 SearXNG 标准 JSON；<code>reader</code>：返回目标页正文纯文本（text/plain）</td></tr>
-      <tr><td>429</td><td>自动换另一个可用上游 key 重试一次；仍 429 返回上游错误</td></tr>
-      <tr><td>432</td><td>（Tavily）key / plan 限额耗尽：自动换 key 重试一次；仍 432 透传上游错误</td></tr>
-      <tr><td>433</td><td>（Tavily）PayGo 余额耗尽：立即透传上游错误，不重试</td></tr>
-      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法（需 <code>tavily-</code>、<code>exa-</code>、<code>searxng-tavily-</code> 或 <code>reader-tavily-</code>）</td></tr>
-      <tr><td>400</td><td>（searxng）缺 <code>q</code> 或 <code>format</code> 非 json；<code>native</code> 路径透传上游 400；（reader）缺目标 URL</td></tr>
-      <tr><td>405</td><td>（/reader、/extract）协议与该端点不匹配——如用 native/searxng 打 <code>/reader</code></td></tr>
-      <tr><td>502</td><td>（reader）目标页抓取失败（Tavily failed_results）或上游不可达</td></tr>
-      <tr><td>503</td><td>该 provider 无可用的上游 key（全部禁用或冷却中）</td></tr>
-    </tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h2>后台功能与文档</h2>
-  <ul class="muted">
-    <li><strong>Tavily Keys / Exa Keys</strong>：管理上游官方 key（可 test call、改备注、启停、删除），列表含当日成功/失败、冷却状态。</li>
-    <li><strong>分发 Keys</strong>：生成 / 启停 / 删除分发 key，操作列「复制」下拉一键复制调用凭据；最近24h调用单列显示（请求次数，不区分后端/协议）。</li>
-    <li><strong>冷却</strong>：每次使用后自动冷却 5 秒；非429失败触发指数退避冷却（60s × 2^连续失败次数），成功则连续失败归零。</li>
-    <li><strong>统计</strong>：按 UTC 小时桶结算，先定看什么再选数——<strong>Dashboard 近 5 天趋势图</strong>与<strong>上游 Keys 页</strong>的「当日成功/失败」统计上游官方 key 的<strong>真实调用尝试次数</strong>（每次尝试一条，重试会放大；429 与 400/404/422 不记；趋势图按 Tavily / Exa 两条线，即公司维度，Tavily 线含 Search+Extract 并账）；<strong>Dashboard 24h / 昨日卡与分发 Keys 页</strong>统计分发 key 的<strong>请求次数</strong>（每单一条，503 也计入，不区分后端/协议；24h 为最近24小时滚动，昨日按浏览器本地时区计算）。两条线维度不同，勿互相核对；统计为近似值、允许少量误差。</li>
-    <li><strong>文档</strong>：<code>README.md</code>、<code>docs/plan.md</code>（原始需求）、<code>docs/exa-key-support.md</code>（当前实现与术语）。</li>
-  </ul>
-</div>`;
-  return layout("使用说明 · Tavily Proxy", body, { active: "help" });
 }

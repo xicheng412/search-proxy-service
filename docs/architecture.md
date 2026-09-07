@@ -12,7 +12,7 @@
 - **代理链路**：外部用分发 key 调用 → 本服务校验 → 按前缀路由选上游 → 进 provider 队列 DO 串行放行 → 选自带冷却的上游 key → 透明转发 → 原样返回。
 - **管理链路**：管理员密码登录后台 → 管理上游 key（多个，可加可删可熔断）/ 分发 key（生成、禁用、删除）/ 查看当日统计与小时明细 / 运行时调三组参数（冷却、队列、鉴权缓存）。
 
-唯一对外数据面是 `GET|POST /search`（主端点：native 透传 + searxng 兼容）、`POST /extract`（Tavily Extract 透传，仅 native，见 §3.3）与 `GET /reader/<url>`（Extract 的 reader 协议形态：URL→页面正文文本，见 §3.4）；`GET /` 返回服务信息 JSON；其余 `/admin/*` 是管理后台。
+唯一对外数据面是 `GET|POST /search`（主端点：native 透传 + searxng 兼容）、`POST /extract`（Tavily Extract 透传，仅 native，见 §3.3）与 `GET /reader/<url>`（Extract 的 reader 协议形态：URL→页面正文文本，见 §3.4）；公开门户是 `GET /`（纯文本导航）与 `GET /help`（使用说明，独立样式、无需登录）；其余 `/admin/*` 是管理后台。
 
 ---
 
@@ -138,9 +138,9 @@ GET  /admin/keys/list        → 列表片段
 POST /admin/keys/generate    → 生成新分发 key, 明文只在响应里出现一次
 POST /admin/keys/:apiKey/toggle|delete → 启停/删除（撤销经鉴权缓存 ≤cacheTtlSec 生效）
 POST /admin/breaker-config / queue-config / dist-cache-config → 写 KV 运行时参数（≤3s 生效）
-GET  /admin/help             → 使用说明 (含 curl 示例、错误表)
 ```
 所有写操作（POST）一律校验 CSRF；未经登录的页面 GET → 302 跳登录。
+公开门户：`GET /` 纯文本导航、`GET /help` 使用说明（独立于 admin 的样式，无需登录；admin 顶栏「使用说明」链接新标签打开）。
 
 ### 3.3 Extract 透传（`POST /extract`）
 
@@ -476,7 +476,7 @@ exhausted → onFailure（透传最后响应或 503/502）。
 - **唯一取值点**：`src/config.ts` `resolvePublicBaseUrl()`，未配置 / 非法值回退 `http://localhost:8787`。
 - 本地：`.dev.vars`（gitignore）。
 - 线上：`config/prod.env`（gitignore），`scripts/deploy.sh` 以 `--var PUBLIC_BASE_URL:https://…` 注入（**冒号**，不是等号）。
-- 仅用于后台"复制 base url / 复制 /search"按钮和 `/admin/help` 的 curl 示例，**`/search` 热路径不读**。
+- 仅用于后台"复制 base url / 复制 /search"按钮和 `/help` 的 curl 示例，**`/search` 热路径不读**。
 
 ---
 

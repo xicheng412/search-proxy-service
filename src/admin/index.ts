@@ -7,12 +7,11 @@ import { hourKey } from "../domain";
 import { listDistributedKeys } from "../storage/dist-keys";
 import { listUpstreamKeys } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
-import { resolvePublicBaseUrl } from "../config";
 import { readQueueConfig, writeQueueConfig } from "../queue-config";
 import { readBreakerConfig, writeBreakerConfig } from "../breaker-config";
 import { readDistCacheConfig, writeDistCacheConfig } from "../dist-cache-config";
 import { EXA, TAVILY } from "../providers";
-import { adminPage, errorFragment, helpPage } from "../views";
+import { adminPage, errorFragment } from "../views";
 import { exaAdmin } from "./exa";
 import { keysAdmin } from "./keys";
 import { tavilyAdmin } from "./tavily";
@@ -34,8 +33,6 @@ admin.use("*", async (c, next) => {
         "/admin/exa/",
         "/admin/keys",
         "/admin/keys/",
-        "/admin/help",
-        "/admin/help/",
       ].includes(c.req.path);
     if (isPage) {
       return c.redirect("/admin/login?next=" + encodeURIComponent(c.req.path));
@@ -142,8 +139,3 @@ admin.post("/dist-cache-config", async (c) => {
 admin.route("/tavily", tavilyAdmin);
 admin.route("/exa", exaAdmin);
 admin.route("/keys", keysAdmin);
-
-// ---------- 使用说明页 ----------
-admin.get("/help", async (c) => {
-  return c.html(helpPage(resolvePublicBaseUrl(c.env)));
-});
