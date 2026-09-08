@@ -103,7 +103,7 @@ export function helpPage(publicBaseUrl: string = ""): string {
   <h2>概念区分</h2>
   <p><strong>上游官方 key</strong>（后台 Tavily Keys / Exa Keys 页）：外部服务真实 key，仅本服务持有、转发用，列表始终脱敏。</p>
   <p><strong>分发 key</strong>（后台分发 Keys 页生成）：调用凭据纯字符串，请求时写成 <code>tavily-&lt;key&gt;</code>、<code>exa-&lt;key&gt;</code>、<code>searxng-tavily-&lt;key&gt;</code> 或 <code>reader-tavily-&lt;key&gt;</code>。</p>
-  <p class="hint">统计口径：后台「当日成功/失败」与趋势图统计上游官方 key 的真实调用尝试；Dashboard 24h/昨日卡与分发 Keys 页统计分发 key 的请求次数。两条线维度不同、勿互相核对，且均为近似值。</p>
+  <p class="hint">统计口径：后台「当日成功/失败」与趋势图统计上游官方 key 的真实调用尝试；Dashboard 24h/昨日/今日卡与分发 Keys 页统计分发 key 的请求次数。两条线维度不同、勿互相核对，且均为近似值。</p>
 
   <h2>后台功能与文档</h2>
   <ul>

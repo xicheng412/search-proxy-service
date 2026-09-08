@@ -296,6 +296,11 @@ export function adminPage(data: DashboardData): string {
     <div class="stat-num" id="calls-yesterday">–</div>
     <div class="muted">分发 key 请求量 · 按终端本地时区计算</div>
   </div>
+  <div class="card stat">
+    <h2>今日调用总计</h2>
+    <div class="stat-num" id="calls-today">–</div>
+    <div class="muted">分发 key 请求量 · 按终端本地时区计算 · 含当前不完整小时</div>
+  </div>
   <div class="card chart">
     <h2 title="每个 UTC 小时桶内上游官方 key 的真实调用尝试次数，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（上游真实调用 Tavily/Exa）</span></h2>
     <div class="chart-box"><canvas id="calls-chart"></canvas></div>
@@ -349,7 +354,7 @@ export function adminPage(data: DashboardData): string {
  * Dashboard 图表脚本：内嵌 dist / upstream 两段序列 JSON + Chart.js CDN + 内联渲染。
  * JSON 注入用 `\u003c` 而非 HTML esc：`<script>` 内容是 raw text，实体不反解码，
  * esc 把 `"` 变 `&quot;` 会破坏 JSON；`\u003c` 是合法 JSON 转义且防 `</script`/`<!--`。
- * 24h/昨日卡消费 dist 序列（calls = 跨 provider 请求合计）；近5天趋势图消费 upstream 序列
+ * 24h/昨日/今日卡消费 dist 序列（calls = 跨 provider 请求合计）；近5天趋势图消费 upstream 序列
  * （Tavily/Exa 两条真实调用尝试线）。下方 Chart.datasets 仅在 upstream 语义下按 provider 名
  * 硬编码 tavily/exa（dist 序列无须参与）——新增 provider 时须扩展 UpstreamSeriesPoint、
  * readUpstreamSeries 的折叠与本函数 dataset（见 docs/architecture.md §4.2 已知例外）。
@@ -393,22 +398,27 @@ function dashboardScript(distSeriesJson: string, upstreamSeriesJson: string): st
     setNum('calls-24h', 0);
   }
 
-  // 昨日总计：按浏览器本地时区把 UTC 小时桶归到日期后对 dist 序列求和。
+  // 本地日总计：按浏览器本地时区把 UTC 小时桶归到本地日期后对 dist 序列求和。
+  // offsetDays: 0=今日（含当前不完整小时），-1=昨日。日历日分组对 DST 天然正确。
   var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
-  var y = new Date();
-  y.setDate(y.getDate() - 1);
-  var ymd = y.getFullYear() + '-' + p2(y.getMonth() + 1) + '-' + p2(y.getDate());
-  var sumY = 0;
-  if (Array.isArray(dist)) {
-    for (var j = 0; j < dist.length; j++) {
-      var t2 = toUtc(dist[j].hour);
-      if (isNaN(t2)) continue;
-      var d = new Date(t2);
-      var k = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
-      if (k === ymd) sumY += tv(dist[j], 'calls');
+  var localDayTotal = function (offsetDays) {
+    var d0 = new Date();
+    d0.setDate(d0.getDate() + offsetDays);
+    var ymd = d0.getFullYear() + '-' + p2(d0.getMonth() + 1) + '-' + p2(d0.getDate());
+    var sum = 0;
+    if (Array.isArray(dist)) {
+      for (var j = 0; j < dist.length; j++) {
+        var t2 = toUtc(dist[j].hour);
+        if (isNaN(t2)) continue;
+        var d = new Date(t2);
+        var k = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+        if (k === ymd) sum += tv(dist[j], 'calls');
+      }
     }
-  }
-  setNum('calls-yesterday', sumY);
+    return sum;
+  };
+  setNum('calls-yesterday', localDayTotal(-1));
+  setNum('calls-today', localDayTotal(0));
 
   var canvas = document.getElementById('calls-chart');
   if (!canvas || typeof Chart === 'undefined') return;
