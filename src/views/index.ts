@@ -325,7 +325,7 @@ export function adminPage(data: DashboardData): string {
     <label class="muted">熔断基数 (秒)</label>
     <input type="number" name="breakerBaseSec" min="1" step="1" value="${data.breakerBaseSec}" required style="max-width:140px;">
     <label class="muted">疑似失效 (秒)</label>
-    <input type="number" name="invalidCooldownSec" min="1" step="60" value="${data.invalidCooldownSec}" required style="max-width:140px;">
+    <input type="number" name="invalidCooldownSec" min="1" step="1" value="${data.invalidCooldownSec}" required style="max-width:140px;">
     <button type="submit">保存</button>
   </form>
 </section>
