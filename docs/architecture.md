@@ -344,10 +344,11 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 ```ts
 候选 = status == "enabled"  AND  (cooldown_until == null OR cooldown_until <= now)
-权重 = 1 / (当日失败数 + 1)
+权重 = 1 / (最近 30min 滑动窗口失败数 + 1)
 按权重随机抽样
 ```
 
+窗口 = `usage-store.ts` 的 `weightWindowMs`（默认 30min），仅影响热路径权重信号；管理页「当日成功/失败」仍按 UTC 日展示，两者刻意分叉。
 无可用 → `503`，错误体用该 provider 自己的格式。
 
 ### 6.2 冷却（三层，共用一个字段）
@@ -449,10 +450,11 @@ exhausted → onFailure（透传最后响应或 503/502）。
 
 - **串行放行**：一次只在途 1 个任务，任务（含其内部重试）跑完后隔 `intervalMs`（默认 3s）再放下一个——削峰填谷，把上游请求频率压到可调区间。
 - **maxDepth 拒入**：等待中任务数达到 `maxDepth`（默认 10）→ 新请求直接 `429`（拒入，不排队）。
+- **排队等待预算**：入队后等待超过 `waitBudgetMs`（默认 30s）→ 直接 `429` + `Retry-After`（与拒入同语义、不计统计）；与 `maxDepth` 构成「深度 + 时间」两种背压。
 - **容量门禁与入队原子**：check + push 在 Promise executor 同步段内完成，中间无 `await`，突发请求不会击穿 maxDepth。
 - **连接断开**：任务仍未轮到（signal aborted）→ 直接丢弃，不烧上游配额。
 - **任务内部重试不重新入队**：一个任务 = 一次"对上游的完整处理"（`searchWithRetry` 最多换 `MAX_ATTEMPTS` 把 key），重试试的是 key，不是重新排队。
-- **参数运行时调整**：`intervalMs` / `maxDepth` 存 KV `queue_config`（见 `src/queue-config.ts`），改 KV 即生效（≤3s）。
+- **参数运行时调整**：`intervalMs` / `maxDepth` / `waitBudgetMs` 存 KV `queue_config`（见 `src/queue-config.ts`），改 KV 即生效（≤3s）。
 
 ### 6.5 错误体格式
 

@@ -6,7 +6,7 @@
 // flush 写失败静默，读失败按 0 处理，绝不阻塞主流程。
 // 用量按 UTC 小时桶落库（usage_counts）；success/fail 二选一，calls = 二者之和（派生）。
 
-import { DistStats, Provider, utcTodayStart } from "./domain";
+import { DistStats, Provider, hourKey } from "./domain";
 import { Env } from "./types";
 import {
   UsageIncrement,
@@ -70,6 +70,8 @@ export interface UsageStoreOpts {
   readCacheMs?: number;
   /** 后台统计信号快照最大陈旧时长；默认 120s，测试可缩短窗口。 */
   signalBaseTtlMs?: number;
+  /** 权重信号滑动窗口（ms）；只影响热路径选 key 的信号，不影响展示口径。默认 30min。 */
+  weightWindowMs?: number;
   /** 跨 scope 小时序列缓存 TTL；默认 30min（每 isolate 每小时 ≤2 次历史读）。 */
   seriesTtlMs?: number;
 }
@@ -81,6 +83,7 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
   const flushIntervalMs = opts.flushIntervalMs ?? 5_000;
   const readCacheMs = opts.readCacheMs ?? 30_000;
   const signalBaseTtlMs = opts.signalBaseTtlMs ?? 120_000;
+  const weightWindowMs = opts.weightWindowMs ?? 30 * 60 * 1000;
   const seriesTtlMs = opts.seriesTtlMs ?? 1_800_000;
 
   // ---- 模块状态（每个 store 实例独立；一个 isolate 一份）----
@@ -106,9 +109,9 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
   // 热路径选 key 信号：今日失败数快照，由 flush 后台刷新，最长陈旧 signalBaseTtlMs。
   let signalBase: { minHour: string; at: number; fail: Record<string, number> } | null = null;
 
-  /** 惰性刷新信号快照：空 base / 跨天 / 超 TTL 才查询；失败由调用方吞掉，保留旧 base。 */
+  /** 惰性刷新信号快照：空 base / 窗口下界变化 / 超 TTL 才查询；失败由调用方吞掉，保留旧 base。 */
   async function maybeRefreshSignalBase(): Promise<void> {
-    const minHour = utcTodayStart();
+    const minHour = hourKey(Date.now() - weightWindowMs);
     const now = Date.now();
     if (signalBase && signalBase.minHour === minHour && now - signalBase.at < signalBaseTtlMs) return;
     const { results } = await env.DB.prepare(
@@ -219,10 +222,10 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     return result;
   }
 
-  /** 热路径选 key 信号：今日失败数快照（后台刷新）+ 本实例 pending；0 次 D1 往返。 */
+  /** 热路径选 key 信号：滑动窗口失败数快照（后台刷新）+ 本实例 pending；0 次 D1 往返。 */
   async function readUpstreamWeightSignal(ids: string[]): Promise<Record<string, number>> {
     if (ids.length === 0) return {};
-    const minHour = utcTodayStart();
+    const minHour = hourKey(Date.now() - weightWindowMs);
     const out: Record<string, number> = {};
     for (const id of ids) {
       let f = signalBase && signalBase.minHour === minHour ? (signalBase.fail[id] ?? 0) : 0;

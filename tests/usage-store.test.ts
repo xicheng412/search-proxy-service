@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { createUsageStore } from "../src/usage-store";
 import { hourKey } from "../src/domain";
 import type { Env } from "../src/types";
-import { makeConstantD1 } from "./helpers/fake-d1";
+import { makeConstantD1, makeScriptedD1 } from "./helpers/fake-d1";
 
 const seedRows = [
   { scope: "key-a", provider: "tavily", success: 3, fail: 2 },
@@ -101,6 +101,33 @@ describe("readUpstreamWeightSignal", () => {
     expect(allCalls()).toBe(1); // 只有 flush 内刷新一次
     await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 2 });
     expect(allCalls()).toBe(1); // 第二次信号读不加 D1
+  });
+
+  it("flush 刷新信号 base 时按 weightWindowMs 滑动窗口取数（非当日）", async () => {
+    const { db, log } = makeScriptedD1([{ results: [] }, { results: [] }]);
+    const store = createUsageStore({ DB: db } as unknown as Env, { weightWindowMs: 5 * 60_000 });
+    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail"); // 让 flush 有内容
+    let captured: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
+    expect(captured).toBeDefined();
+    await captured;
+    // flush：batch（mergeUsage）→ all（信号刷新）；刷新 SQL 的下界绑定为窗口起点。
+    const refresh = log().filter((c) => c.op === "all" && c.sql.includes("hour >= ?2"));
+    expect(refresh).toHaveLength(1);
+    expect(refresh[0].binds[1]).toBe(hourKey(Date.now() - 5 * 60_000));
+  });
+
+  it("默认 weightWindowMs（30min）下刷新下界随之变化", async () => {
+    const { db, log } = makeScriptedD1([{ results: [] }, { results: [] }]);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail");
+    let captured: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
+    expect(captured).toBeDefined();
+    await captured;
+    const refresh = log().filter((c) => c.op === "all" && c.sql.includes("hour >= ?2"));
+    expect(refresh).toHaveLength(1);
+    expect(refresh[0].binds[1]).toBe(hourKey(Date.now() - 30 * 60_000));
   });
 });
 

@@ -6,18 +6,21 @@
 //   - 每个任务 = 一次"对上游的完整处理"（含 searchWithRetry 最多换 MAX_ATTEMPTS 把 key），
 //     重试是同一任务的内部动作，不会重新入队/额外吃 3s 间隔。
 //   - 等待中任务数达到 maxDepth → 新请求直接 429（拒入，不排队）。
-//   - intervalMs / maxDepth 由 KV 运行时配置（cachedQueueConfig），缺省 3000/10。
+//   - 入队后等待超过 waitBudgetMs → 定时器直接回 429（drain 跳过 settled 项，不烧配额）。
+//   - intervalMs / maxDepth / waitBudgetMs 由 KV 运行时配置（cachedQueueConfig），缺省 3000/10/30000。
 //   - 连接断开：任务仍未轮到（signal aborted）→ 直接丢弃，不烧上游配额。
 
 import { DurableObject } from "cloudflare:workers";
 import { Env } from "./types";
 import { Provider } from "./domain";
 import { PROVIDERS } from "./providers";
+import type { ProviderConfig } from "./providers";
 import { runNativeTask, runSearxngTask, runReaderTask } from "./proxy";
 import { QueueTask } from "./queue-task";
 import { searxngError } from "./adapters/searxng";
 import { readerError } from "./adapters/reader";
 import { cachedQueueConfig } from "./queue-config";
+import type { QueueConfig } from "./queue-config";
 
 interface QueuedRequest {
   provider: Provider;
@@ -26,6 +29,27 @@ interface QueuedRequest {
   resolve: (res: Response) => void;
   reject: (err: unknown) => void;
   signal: AbortSignal;
+  enteredAt: number;                                  // 入队时刻，用于等待超时判定
+  timer: number | null;                               // 等待超时定时器句柄（workers-types: setTimeout → number）
+  settled: boolean;                                   // 定时器已回 429（防重复执行上游）
+}
+
+/** 构造 429 拒入响应（按线协议渲染错误体 + Retry-After）。深度拒入与排队超时共用。 */
+function rateLimitResponse(
+  def: ProviderConfig,
+  task: QueueTask,
+  cfg: QueueConfig,
+  msg: string
+): Response {
+  const res =
+    task.kind === "searxng"
+      ? searxngError(429, msg)
+      : task.kind === "reader"
+        ? readerError(429, msg)
+        : def.errorBody(429, msg);
+  const headers = new Headers(res.headers);
+  headers.set("retry-after", String(Math.ceil(cfg.intervalMs / 1000)));
+  return new Response(res.body, { status: 429, statusText: res.statusText, headers });
 }
 
 export class QueueDO extends DurableObject<Env> {
@@ -62,16 +86,8 @@ export class QueueDO extends DurableObject<Env> {
       if (this.pending.length >= cfg.maxDepth) {
         // 拒入：等待中已满。错误体按线协议渲染（searxng→{error}；native→provider 官方格式），
         // Retry-After 按当前间隔给调用方退避提示。
-        const msg = `too many queued requests (max ${cfg.maxDepth}); retry later`;
-        const res =
-          payload.task.kind === "searxng"
-            ? searxngError(429, msg)
-            : payload.task.kind === "reader"
-              ? readerError(429, msg)
-              : def.errorBody(429, msg);
-        const headers = new Headers(res.headers);
-        headers.set("retry-after", String(Math.ceil(cfg.intervalMs / 1000)));
-        resolve(new Response(res.body, { status: 429, statusText: res.statusText, headers }));
+        resolve(rateLimitResponse(def, payload.task, cfg,
+          `too many queued requests (max ${cfg.maxDepth}); retry later`));
         return;
       }
 
@@ -80,11 +96,25 @@ export class QueueDO extends DurableObject<Env> {
         apiKey: payload.apiKey,
         task: payload.task,
         signal: request.signal,
+        enteredAt: Date.now(),
+        timer: null,
+        settled: false,
         resolve: () => {},
         reject: () => {},
       };
       item.resolve = resolve;
       item.reject = reject;
+      // 排队等待预算：等待超过 waitBudgetMs 直接 429（不烧上游配额）。定时器在 DO
+      // 单线程事件循环里可随 await 正常触发；一旦 drain 开始执行就 clearTimeout，不误杀
+      // 任务自身的合法长执行。
+      item.timer = setTimeout(() => {
+        if (item.settled) return;
+        item.settled = true;
+        resolve(
+          rateLimitResponse(def, payload.task, cfg,
+            `request waited too long (max ${cfg.waitBudgetMs}ms); retry later`)
+        );
+      }, cfg.waitBudgetMs);
       this.pending.push(item);
       this.kick();
     });
@@ -103,6 +133,8 @@ export class QueueDO extends DurableObject<Env> {
     while (this.pending.length > 0) {
       const cfg = await this.config.get(this.env.KV);
       const item = this.pending.shift()!;
+      clearTimeout(item.timer); // 已轮到自己，停掉等待超时（null 时 no-op）
+      if (item.settled) continue; // 超时已回 429，不再执行上游（不烧配额）
       // 调用方已断开且尚未轮到：丢弃，不烧上游配额
       if (item.signal.aborted) {
         item.reject(new Error("client disconnected before its queue slot"));

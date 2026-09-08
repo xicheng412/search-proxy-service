@@ -59,6 +59,7 @@ admin.get("/", async (c) => {
     store.readDistSeries(seriesMinHour),
     store.readUpstreamSeries(seriesMinHour),
   ]);
+  const queueCfg = await readQueueConfig(kv);
 
   return c.html(
     adminPage({
@@ -70,8 +71,9 @@ admin.get("/", async (c) => {
       distEnabled: dkeys.filter((k) => k.status === "enabled").length,
       distSeries: JSON.stringify(distSeries),
       upstreamSeries: JSON.stringify(upstreamSeries),
-      queueIntervalMs: (await readQueueConfig(kv)).intervalMs,
-      queueMaxDepth: (await readQueueConfig(kv)).maxDepth,
+      queueIntervalMs: queueCfg.intervalMs,
+      queueMaxDepth: queueCfg.maxDepth,
+      queueWaitBudgetMs: queueCfg.waitBudgetMs,
       postUseCooldownSec: (await readBreakerConfig(kv)).postUseCooldownSec,
       breakerBaseSec: (await readBreakerConfig(kv)).breakerBaseSec,
       invalidCooldownSec: (await readBreakerConfig(kv)).invalidCooldownSec,
@@ -87,15 +89,20 @@ admin.post("/queue-config", async (c) => {
   const body = await c.req.parseBody();
   const intervalMs = Number(body["intervalMs"]);
   const maxDepth = Number(body["maxDepth"]);
+  const waitBudgetMs = Number(body["waitBudgetMs"]);
   if (!Number.isFinite(intervalMs) || intervalMs < 100) {
     return c.html(errorFragment("间隔至少 100ms"), 400);
   }
   if (!Number.isFinite(maxDepth) || maxDepth < 1) {
     return c.html(errorFragment("最大等待数至少为 1"), 400);
   }
+  if (!Number.isFinite(waitBudgetMs) || waitBudgetMs < 1000) {
+    return c.html(errorFragment("等待上限至少 1000ms"), 400);
+  }
   await writeQueueConfig(c.env.KV, {
     intervalMs: Math.round(intervalMs),
     maxDepth: Math.floor(maxDepth),
+    waitBudgetMs: Math.round(waitBudgetMs),
   });
   return c.redirect("/admin", 303);
 });
