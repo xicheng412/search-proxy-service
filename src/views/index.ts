@@ -162,7 +162,22 @@ export function layout(
     .wrap { max-width:1180px; margin:0 auto; padding:24px; }
     .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
              gap:20px; margin-bottom:20px; }
-    .card.chart { grid-column: 1 / -1; }
+    /* 用量左栏（三张矮卡竖排）+ 右侧折线图。 */
+    .dash-main { display:flex; gap:20px; margin-bottom:20px; align-items:stretch; }
+    .dash-rail { width:210px; flex-shrink:0; display:flex; flex-direction:column; gap:12px; }
+    .dash-rail .card.stat { flex:1; display:flex; flex-direction:column; justify-content:center;
+      padding:12px 16px; }
+    .dash-rail .stat-label { font-size:13px; color:var(--muted); margin-bottom:8px; }
+    .dash-rail .stat-num { font-size:28px; font-weight:700; line-height:1; color:var(--txt); }
+    .dash-rail-foot { font-size:11px; color:var(--muted); margin-top:4px; }
+    .dash-main .card.chart { flex:1; min-width:0; }
+    /* 窄屏：左栏三卡横向并排、图整宽下沉、口径注换行占整行。 */
+    @media (max-width:800px) {
+      .dash-main { flex-direction:column; }
+      .dash-rail { width:auto; flex-direction:row; flex-wrap:wrap; }
+      .dash-rail .card.stat { padding:10px 8px; }
+      .dash-rail-foot { flex-basis:100%; margin-top:2px; }
+    }
     /* 固定高度容器承接 Chart.js responsive：容器高度由本处定死、不随 canvas 内联高度
        变化，避免 Chart.js #5805/#11821 的「容器高度↔canvas 高度」反馈无限拉高。 */
     .card.chart .chart-box { position:relative; height:300px; width:100%; }
@@ -286,26 +301,28 @@ export function adminPage(data: DashboardData): string {
     <div class="muted">启用 ${data.distEnabled} · 停用 ${data.distTotal - data.distEnabled}</div>
     <a class="btn" href="/admin/keys">进入管理 →</a>
   </div>
-  <div class="card stat">
-    <h2>最近24小时调用</h2>
-    <div class="stat-num" id="calls-24h">–</div>
-    <div class="muted">分发 key 请求量 · 含当前小时 · 终端时区</div>
-  </div>
-  <div class="card stat">
-    <h2>昨日调用总计</h2>
-    <div class="stat-num" id="calls-yesterday">–</div>
-    <div class="muted">分发 key 请求量 · 按终端本地时区计算</div>
-  </div>
-  <div class="card stat">
-    <h2>今日调用总计</h2>
-    <div class="stat-num" id="calls-today">–</div>
-    <div class="muted">分发 key 请求量 · 按终端本地时区计算 · 含当前不完整小时</div>
+</section>
+<div class="dash-main">
+  <div class="dash-rail">
+    <div class="card stat">
+      <div class="stat-label">最近 24h</div>
+      <div class="stat-num" id="calls-24h">–</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label">昨日</div>
+      <div class="stat-num" id="calls-yesterday">–</div>
+    </div>
+    <div class="card stat">
+      <div class="stat-label">今日</div>
+      <div class="stat-num" id="calls-today">–</div>
+    </div>
+    <div class="dash-rail-foot">分发请求量 · 本地时区 · 今日含当前小时</div>
   </div>
   <div class="card chart">
     <h2 title="每个 UTC 小时桶内上游官方 key 的真实调用尝试次数，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（上游真实调用 Tavily/Exa）</span></h2>
     <div class="chart-box"><canvas id="calls-chart"></canvas></div>
   </div>
-</section>
+</div>
 <section class="card">
   <h2>上游请求队列 · 参数</h2>
   <p class="hint" style="margin:0 0 12px;">突发请求会被串行放行到上游（Tavily / Exa 各自独立队列）：每个任务处理完隔 <strong>intervalMs</strong> 再放下一个；等待中达到 <strong>maxDepth</strong> 时新请求返回 429；排队等待超过 <strong>waitBudgetMs</strong> 也会直接 429。改这里即生效（≤3s 内），无需重新部署。想在放开频率时调大数值即可。</p>
