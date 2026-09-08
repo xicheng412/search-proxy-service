@@ -1,6 +1,8 @@
 // 队列 Durable Object：每 provider 一把独立队列实例（idFromName(provider)）。
 // 职责：把"同一时刻突发"的请求串行放行——一次只在途 1 个任务，每个任务（含其内部
 // 重试）跑完后隔 intervalMs 再放下一个，从而削峰填谷、把真实上游请求频率压到可调区间。
+// drain 兼任两件统计层维护：每个任务前「权重 base 独立刷新（自节流 ≤120s）」与
+// 队列清空后「兜底 flush」。
 //
 // 关键事实（用户已确认）：
 //   - 每个任务 = 一次"对上游的完整处理"（含 searchWithRetry 最多换 MAX_ATTEMPTS 把 key），
@@ -16,6 +18,7 @@ import { Provider } from "./domain";
 import { PROVIDERS } from "./providers";
 import type { ProviderConfig } from "./providers";
 import { runNativeTask, runSearxngTask, runReaderTask } from "./proxy";
+import { getUsageStore } from "./usage-store";
 import { QueueTask } from "./queue-task";
 import { searxngError } from "./adapters/searxng";
 import { readerError } from "./adapters/reader";
@@ -140,6 +143,10 @@ export class QueueDO extends DurableObject<Env> {
         item.reject(new Error("client disconnected before its queue slot"));
         continue;
       }
+      // 权重信号 base 独立刷新（自节流 ≤120s；稳态为缓存 no-op，无网络代价）：
+      // 让每个任务的冷启动/周期刷新都先有新底数，emit(init) 里的 readUpstreamWeightSignal
+      // 保持 0 D1 往返（权重刷新节奏与 flush 解耦，不再依赖 flush 节流）。
+      await getUsageStore(this.env).refreshWeightBase().catch(() => {});
       try {
         const deps = {
           env: this.env,
@@ -160,6 +167,8 @@ export class QueueDO extends DurableObject<Env> {
       // 每个任务结束后（含其内部重试），隔 intervalMs 再放下一个。
       await this.sleepMs(Math.max(1, cfg.intervalMs));
     }
+    // 队列清空兜底 flush：防 pending 长期悬空被 DO evict 丢。每轮 drain 至多一次，写批很小。
+    await getUsageStore(this.env).flushNow().catch(() => {});
   }
 
   private sleepMs(ms: number): Promise<void> {

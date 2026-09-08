@@ -2,7 +2,7 @@
 // 共享泛型代码（kv/proxy/admin/views）只消费 ProviderConfig / PROVIDERS，
 // 因此新增 provider 时只需加一个描述符文件并在本文件注册，无需改任何逻辑文件。
 
-import { Capability, Provider, UpstreamDef, WireProtocol } from "../domain";
+import { Capability, Provider, RetryClass, UpstreamDef, WireProtocol } from "../domain";
 import { TAVILY } from "./tavily";
 import { EXA } from "./exa";
 
@@ -22,6 +22,9 @@ export interface ProviderConfig<P extends Provider = Provider> {
   testBody: () => Record<string, unknown>;
   /** 构造贴合该 provider 官方错误格式的响应（Tavily 与 Exa 格式不同） */
   errorBody: (status: number, message: string) => Response;
+  /** 状态码→分类族映射（驱动重试/冷却/记账）。未列出的码走 statusClassFallback，保证未知码有确定语义。 */
+  statusClassMap?: Partial<Record<number, RetryClass>>;
+  statusClassFallback: RetryClass;
 }
 
 export { TAVILY } from "./tavily";

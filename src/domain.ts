@@ -12,6 +12,9 @@ export type WireProtocol = "native" | "searxng" | "reader";
 
 export type KeyStatus = "enabled" | "disabled";
 
+/** 上游响应按故障可归因性分类的家族（驱动重试/冷却/记账的族）；编号→族映射在 provider 描述符。 */
+export type RetryClass = "rate-limit" | "client-error" | "auth-error" | "server-error";
+
 /** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 provider 维度。 */
 export interface UpstreamDef {
   keysKey: string;

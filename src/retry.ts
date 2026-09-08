@@ -5,11 +5,12 @@
 // 迁移 action、请求级 bookkeeping 进 prologue。
 //
 // 一次请求最多尝试 MAX_ATTEMPTS 个不同上游 key，每次失败按分类走冷却/统计/换 key：
-//   - 2xx        → 调用 onSuccess；返回 null 视为"成功但响应不可用"，按失败换 key 重试
-//   - 429        → 换 key 重试，仅 post-use 冷却，不计熔断
-//   - 400/404/422→ 客户端确定性错误：立即返回该响应，不重试、不记失败、不烧 key
-//   - 401/403    → key 级错误：记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调），换 key
-//   - 其余/网络  → 记录失败 + 指数退避冷却，换 key 重试
+//   分类族枚举见 domain.ts RetryClass；编号→族映射见各 provider 描述符 statusClassMap /
+//   statusClassFallback（tavily 含 432/433 专属码）；FSM 动作仍按族（事件 kind）驱动。
+//   - rate-limit  → 换 key 重试，仅 post-use 冷却，不计熔断、不记 usage
+//   - client-error→ 客户端确定性错误：立即返回该响应，不重试、不记失败、不烧 key
+//   - auth-error  → key 级错误：记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调），换 key
+//   - server-error→ 其余/网络：记录失败 + 指数退避冷却，换 key 重试
 //   候选池耗尽或达到上限 → onFailure（透传最后一个错误响应，或 503/502）
 //
 // TRANSITIONS / emit / RetryState / RetryEvent / RetryContext 仅供 tests 引用
@@ -20,7 +21,7 @@
 
 import type { Env } from "./types";
 import type { ProviderConfig } from "./providers";
-import { CoreKey, hourKey } from "./domain";
+import { CoreKey, hourKey, RetryClass } from "./domain";
 import { listUpstreamKeys } from "./storage/upstream-keys";
 import { getUsageStore, type UsageStore } from "./usage-store";
 import {
@@ -113,35 +114,11 @@ async function proxyToUpstream(
 }
 
 /**
- * 上游响应状态分类，决定重试循环的非 ok 分支动作：
- *   429         → 限流，仅 post-use 冷却，换 key 重试
- *   432         → Tavily "key or plan limit exceeded"：key 粒度限额时换 key 可能成功；
- *                 配额条件非 key 故障 —— 不记败不熔断，按限流换 key 试一把
- *   433         → Tavily "PayGo limit exceeded"：Plan 余额耗尽，重试必再失败；
- *                 视为客户端确定性错误，立即返回，不重试不记败不冷却（保护共用 key 不被误伤）
- *   400/404/422 → 客户端确定性错误，立即返回，不重试
- *   401/403     → key 级错误（疑似失效），长冷却，换 key
- *   其余（5xx）  → 服务端/未知错误，失败记录 + 指数退避冷却，换 key
+ * 分类语义：编号→族映射见各 provider 描述符 `statusClassMap`/`statusClassFallback`；
+ * FSM 动作仍按族（事件 kind）驱动，此处只做一次查找，不含任何业务分支。
  */
-function classifyStatus(
-  status: number
-): "rate-limit" | "client-error" | "auth-error" | "server-error" {
-  switch (status) {
-    case 429:
-    case 432:
-      return "rate-limit";
-    case 433:
-      return "client-error";
-    case 400:
-    case 404:
-    case 422:
-      return "client-error";
-    case 401:
-    case 403:
-      return "auth-error";
-    default:
-      return "server-error";
-  }
+function classifyStatus(def: ProviderConfig, status: number): RetryClass {
+  return def.statusClassMap?.[status] ?? def.statusClassFallback;
 }
 
 // ---- 副作用捆绑 helper：把"内存统计 + 熔断状态写入"成对打包，供迁移 action 复用 ----
@@ -360,7 +337,7 @@ export async function emit(state: RetryState, ctx: RetryContext): Promise<RetryE
       }
 
       ctx.lastRes = res;
-      switch (classifyStatus(res.status)) {
+      switch (classifyStatus(ctx.def, res.status)) {
         case "rate-limit":
           return { kind: "rate-limit", res };
         case "client-error":
@@ -432,7 +409,7 @@ export async function searchWithRetry(
   // prologue：增加分发 key 请求计数（success/fail 二元，进内存缓冲，尽力而为）
   const hour = hourKey();
   store.recordDistCall(apiKey, hour, "success");
-  // 节流触发统计 flush（退避到 waitUntil，约每 5s 最多一次；不阻塞本请求）
+  // 节流触发统计 flush（退避到 waitUntil，双阈值 ≥30min/256 条；不阻塞本请求）
   store.flushSoon(deps.executionCtx);
 
   const ctx: RetryContext = {

@@ -57,3 +57,26 @@ describe("能力×协议矩阵", () => {
     }
   });
 });
+
+describe("分类映射随描述符", () => {
+  it("tavily：专属码 432/433 落位；429/400/404/422/401/403 语义与 FSM 一致；兜底 server-error", () => {
+    expect(TAVILY.statusClassMap?.[432]).toBe("rate-limit");
+    expect(TAVILY.statusClassMap?.[429]).toBe("rate-limit");
+    expect(TAVILY.statusClassMap?.[433]).toBe("client-error");
+    expect(TAVILY.statusClassMap?.[400]).toBe("client-error");
+    expect(TAVILY.statusClassMap?.[404]).toBe("client-error");
+    expect(TAVILY.statusClassMap?.[422]).toBe("client-error");
+    expect(TAVILY.statusClassMap?.[401]).toBe("auth-error");
+    expect(TAVILY.statusClassMap?.[403]).toBe("auth-error");
+    expect(TAVILY.statusClassFallback).toBe("server-error");
+  });
+
+  it("exa：无 432/433（Tavily 专属码），未列码走兜底 server-error", () => {
+    expect(EXA.statusClassMap?.[432]).toBeUndefined();
+    expect(EXA.statusClassMap?.[433]).toBeUndefined();
+    expect(EXA.statusClassMap?.[429]).toBe("rate-limit");
+    expect(EXA.statusClassMap?.[400]).toBe("client-error");
+    expect(EXA.statusClassMap?.[401]).toBe("auth-error");
+    expect(EXA.statusClassFallback).toBe("server-error");
+  });
+});

@@ -151,7 +151,7 @@ POST /admin/breaker-config / queue-config / dist-cache-config → 写 KV 运行�
 - 由描述符 `capabilities.extract` 结构判定：仅 `Bearer tavily-<key>`（native 透传）命中；`searxng-tavily-<key>` → 405；`exa-<key>` → 404（exa 未声明能力）。
 - 分发 key 缺失/禁用 → 401（与 /search 同一 authenticate）。
 
-与 /search 的差异只有一处：**上游响应码分类新增两条 Tavily Extract 专属规则**（`src/retry.ts` classifyStatus，对 /search 同样生效）：
+与 /search 的差异只有一处：**上游响应码分类新增两条 Tavily Extract 专属规则**（落在 tavily 描述符 `statusClassMap` 的 432/433 项，经重试核消费，对 /search 同样生效）：
 - `432`（key/plan limit exceeded）→ 按限流处理：换 key 试一把、仅 post-use 冷却，**不记败不熔断**。key 粒度限额外换 key 可能成功；plan 粒度也只多一次无害尝试。
 - `433`（PayGo limit exceeded）→ 客户端确定性错误（同 400/404/422）：**立即返回、不重试、不记败不冷却**。PayGo 余额耗尽重试必再失败；且上游 key 与 search 共用，若按 server-error 记败+熔断会把健康 key 误伤冷却、连带 /search 一起 503。
 
@@ -256,7 +256,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 
 按当前设计，**只需要两个文件**：
 
-1. `src/providers/<name>.ts`：写一份 `ProviderConfig` 描述符（base / capabilities / upstream / admin / testBody / errorBody）。
+1. `src/providers/<name>.ts`：写一份 `ProviderConfig` 描述符（base / capabilities / upstream / admin / testBody / errorBody / **`statusClassMap` + `statusClassFallback`（状态码→分类族映射，兜底族保证未知码语义确定）**）。
 2. `src/providers/index.ts`：把它注册到 `PROVIDERS`。
 
 其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
@@ -303,8 +303,8 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 `usage-store.ts` 实现的是**写回式近似统计**，不是精确计数：
 
 - 同一 isolate 内 `record*` 后立即 `read*` 可见（本实例内存增量叠加）。
-- 跨 isolate 最多延迟一个 flush 间隔（默认 5 秒）。
-- isolate 被回收时未 flush 的增量丢失（≤ 一间隔量）。
+- 跨 isolate 最多延迟「≥30min 或 ≥256 条」（默认 30 分钟，或缓冲达 `flushMaxPending`=256 条即落库；队列清空时兜底 flush，见 §6.4）。
+- isolate 被回收时未 flush 的增量丢失（≤ 上述阈值区间）。
 - 写失败静默，读失败按 0 处理，**绝不阻塞主流程**。
 
 这条契约对"选 key 权重"无影响（小幅误差反而让负载更均衡），仅影响"展示"和"异常 key 定位"的精度。精确度在这里是**显式、可消费的设计变量**——读侧优化的第一原则是"能近似就近似"，具体置换优先级见 §5.2.1。
@@ -314,10 +314,10 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 **凡是统计类读取，统一不做精确计数**：先用精确度换查询次数，再用次数换往返，最后才优化扫描。
 
 1. **用陈旧度换次数（第一优先，凡高频/热路径必选）**
-   - 热路径选 key 权重只依赖 `本 isolate 内存增量 + 长效缓存 base`，接受分钟级（建议 1–5min）陈旧，**不发起 D1 往返**。误差方向是"比真实略旧的失败数"：刚出问题的 key 到下一轮刷新才被压低，对负载均衡是可接受甚至更稳的行为（§6.1 权重本就该贴近"最近大盘"而非"本瞬间"）。
+   - 热路径选 key 权重只依赖 `本 isolate 内存增量 + 长效缓存 base`，权重 base **独立 120s 刷新**（queue drain 驱动，与 flush 节奏解耦），稳态 0 D1 往返。误差方向是"比真实略旧的失败数"：刚出问题的 key 到下一轮刷新才被压低，对负载均衡是可接受甚至更稳的行为（§6.1 权重本就该贴近"最近大盘"而非"本瞬间"）。
    - 高频读一律挂缓存；缓存命中即 0 D1。**目标形态：代理热路径 0 次 D1 统计往返。**
 2. **用次数换往返**：去不掉的读（展示类）保持低频；多批/多条查询用 `DB.batch()` 合并为一次往返；只 SELECT 消费方真正要的列与维度（例：选 key 只取 `SUM(fail)` + `GROUP BY scope`，不取 provider 拆分、不取 success）。
-3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（小时桶聚合后每 key 每日 ≤ 24 行）。不为 index-only scan 给 `usage_counts` 扩覆盖索引——写侧每 5s 全量 UPSERT，扩索引的写放大代价远大于省下的 heap 读。
+3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（小时桶聚合后每 key 每日 ≤ 24 行）。不为 index-only scan 给 `usage_counts` 扩覆盖索引——写侧按 30min/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。
 
 **不进入置换范围**（精确语义，禁止近似）：
 - 熔断 / 冷却状态（`breaker_state`、`cooldown_until`）：安全相关的放行决策，不许一秒误差。
@@ -365,12 +365,19 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 - 单次请求最多尝试 3 个不同的上游 key（`MAX_ATTEMPTS`）。
 - 每次尝试换 key；网络异常/超时（30s）视为失败并换 key。
-- **分类语义**：
-  - `2xx` → 协议处理（native 透传 / searxng 转 JSON）；searxng 解析失败视为失败换 key。
-  - `429` → 仅 post-use 冷却，换 key 重试（不计熔断）。
-  - `400/404/422` → 客户端确定性错误：立即返回，**不重试、不记失败、不烧 key**。
-  - `401/403` → 记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调，不熔断），换 key。
-  - 其他 `4xx`/`5xx` → 记录失败 + 指数退避冷却，换 key。
+- **分类语义**（编号→族映射见各 provider 描述符 `statusClassMap` / `statusClassFallback`，兜底族保证未知码确定性；动作仍按族——事件 kind 驱动）：
+  - `rate-limit`（429，tavily 另有 432）→ 仅 post-use 冷却，换 key 重试（不计熔断）。
+  - `client-error`（400/404/422，tavily 另有 433）→ 客户端确定性错误：立即返回，**不重试、不记失败、不烧 key**。
+  - `auth-error`（401/403）→ 记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调，不熔断），换 key。
+  - `server-error`（其余 / 网络 / 2xx-不可用）→ 记录失败 + 指数退避冷却，换 key。
+- **记账策略矩阵**（分类族 × 换 key / 冷却 / 熔断 / 上游统计的落地总览）：
+
+  | 分类族 | 触发码（映射在描述符） | 换 key 重试 | 冷却 | 熔断连续计数 | 上游统计 |
+  |---|---|---|---|---|---|
+  | rate-limit | 429（tavily 另有 432） | ✓ | 仅 post-use | 不计 | 不记 |
+  | client-error | 400/404/422（tavily 另有 433） | ✗ 立即返回 | 无 | 不计 | 不记 |
+  | auth-error | 401/403 | ✓ | 疑似失效 12h | 不碰连续计数 | 记 fail |
+  | server-error | 其余 / 网络 / 2xx-不可用 | ✓ | 指数退避 | ✓ | 记 fail |
 - 每个失败 key 在重试过程中实时更新冷却，已冷却/禁用的 key 自动从候选池过滤。
 - 未配置任何上游 key / 全部冷却或禁用 → `503`（用 provider 错误体，searxng 用 `{error}`）。
 - 候选池耗尽或达到 3 次上限 → 透传最后一个错误响应；无响应可得 → `502`。

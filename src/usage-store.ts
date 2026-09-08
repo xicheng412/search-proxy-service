@@ -2,7 +2,8 @@
 // 职责：把"每次调用/结果的记账"先在内存累积，再按节流策略合并写回 D1；
 // 对外提供"统计"读契约（小时桶 SUM，今日边界由调用方给定 minHour）。
 // 精度契约（近似值）：同一实例内 record* 后立即 Read 可见（本实例增量叠加）；
-// 跨实例最多延迟一个 flush 间隔；isolate 被回收时未 flush 的增量丢失（≤ 一间隔量）。
+// 跨实例最多延迟「≥30min 或 ≥256 条」（双阈值，见 flushSoon）；队列清空时兜底 flush
+// （见 queue.ts drain）；isolate 回收时未 flush 增量丢失 ≤ 上述阈值区间。
 // flush 写失败静默，读失败按 0 处理，绝不阻塞主流程。
 // 用量按 UTC 小时桶落库（usage_counts）；success/fail 二选一，calls = 二者之和（派生）。
 
@@ -41,8 +42,12 @@ export interface UsageStore {
   readUpstreamSeries(minHour: string): Promise<UpstreamSeriesPoint[]>;
   /** 读全部分发 key 的 dist 小时序列（Memory TTL + pending 叠加）；给 dashboard 24h/昨日卡。 */
   readDistSeries(minHour: string): Promise<DistSeriesPoint[]>;
-  /** 节流调度 flush：距上次 ≥interval 且缓冲非空才排入 waitUntil，不阻塞请求。 */
+  /** 节流调度 flush：距上次 ≥interval 且未达条数上限才排入 waitUntil，不阻塞请求。 */
   flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void;
+  /** 立即落库缓冲中全部增量（队列清空兜底用）：复用 flush 的防重入与批量合并，不改节流时钟。 */
+  flushNow(): Promise<void>;
+  /** 立即刷新权重信号 base（空 base / 窗口下界变化 / 超 TTL 才查 D1，否则 0 IO no-op）。 */
+  refreshWeightBase(): Promise<void>;
 }
 
 /** dist 行 provider 列哨兵值：schema 中 provider 列 NOT NULL 且入 PK，dist 不区分后端统一写该值；dist 读路径无视其值。 */
@@ -66,7 +71,10 @@ export interface DistSeriesPoint {
 }
 
 export interface UsageStoreOpts {
+  /** 小时桶大致统计落库节流：距上次 flush 不足此间隔且未达条数阈值则不写。默认 30min（≥30min 落库，不追求实时）。 */
   flushIntervalMs?: number;
+  /** 单 isolate 缓冲（pending）条数上限；达到即强制 flush，防长驻 isolate 无界增长。默认 256。 */
+  flushMaxPending?: number;
   readCacheMs?: number;
   /** 后台统计信号快照最大陈旧时长；默认 120s，测试可缩短窗口。 */
   signalBaseTtlMs?: number;
@@ -80,7 +88,8 @@ const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "hour">)
   `${r.kind}\u0000${r.scope}\u0000${r.provider}\u0000${r.hour}`;
 
 export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStore {
-  const flushIntervalMs = opts.flushIntervalMs ?? 5_000;
+  const flushIntervalMs = opts.flushIntervalMs ?? 30 * 60 * 1000;
+  const flushMaxPending = opts.flushMaxPending ?? 256;
   const readCacheMs = opts.readCacheMs ?? 30_000;
   const signalBaseTtlMs = opts.signalBaseTtlMs ?? 120_000;
   const weightWindowMs = opts.weightWindowMs ?? 30 * 60 * 1000;
@@ -154,9 +163,23 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
   function flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void {
     if (pending.size === 0) return;
     const now = Date.now();
-    if (now - lastFlushAt < flushIntervalMs) return;
+    // 双阈值：距上次 ≥ interval（默认为 30min 小时桶，大致统计）或缓冲达到条数上限即落库；
+    // 条数兜底防长驻 isolate 的 pending 无界增长。
+    if (now - lastFlushAt < flushIntervalMs && pending.size < flushMaxPending) return;
     lastFlushAt = now;
     ctx.waitUntil(flush().catch(() => {}));
+  }
+
+  /** 公开壳：立即落库缓冲中全部增量（队列清空兜底用）。复用 flush 的防重入与 mergeUsage
+   *  批量；不改 lastFlushAt——调用点仅在 pending 清空后，无需节流。写失败静默。 */
+  async function flushNow(): Promise<void> {
+    await flush().catch(() => {});
+  }
+
+  /** 公开壳：立即刷新权重信号 base。沿用 maybeRefreshSignalBase 的 TTL + minHour 双条件
+   *  自节流：无刷新需要时立即返回，0 D1 往返。 */
+  async function refreshWeightBase(): Promise<void> {
+    await maybeRefreshSignalBase().catch(() => {});
   }
 
   function recordUpstreamResult(
@@ -230,7 +253,13 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     for (const id of ids) {
       let f = signalBase && signalBase.minHour === minHour ? (signalBase.fail[id] ?? 0) : 0;
       for (const [k, v] of pending) {
-        if (k.startsWith("upstream\u0000" + id + "\u0000")) f += v.fail;
+        if (k.startsWith("upstream\u0000" + id + "\u0000")) {
+          // 只累加落在滑动窗口内的小时桶；flush 拉长后 pending 可能横跨多个小时桶，
+          // 越窗失败不计入权重（口径与 signalBase 的 D1 窗口 SUM 一致）。
+          const hour = k.split("\u0000")[3];
+          if (hour < minHour) continue;
+          f += v.fail;
+        }
       }
       out[id] = f;
     }
@@ -390,6 +419,8 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     readUpstreamSeries,
     readDistSeries,
     flushSoon,
+    flushNow,
+    refreshWeightBase,
   };
 }
 

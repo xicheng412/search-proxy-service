@@ -14,4 +14,16 @@ export const TAVILY: ProviderConfig<"tavily"> = {
   // Tavily 官方错误体：{ detail: { error } }
   errorBody: (status, message) =>
     Response.json({ detail: { error: message } }, { status }),
+  // 分类映射：值与重试 FSM 对 Tavily 的语义一致（432/433 为 Tavily 专属码）。
+  statusClassMap: {
+    429: "rate-limit",
+    432: "rate-limit",
+    433: "client-error",
+    400: "client-error",
+    404: "client-error",
+    422: "client-error",
+    401: "auth-error",
+    403: "auth-error",
+  },
+  statusClassFallback: "server-error",
 };

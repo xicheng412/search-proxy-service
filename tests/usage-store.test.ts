@@ -131,6 +131,76 @@ describe("readUpstreamWeightSignal", () => {
   });
 });
 
+describe("flush 双阈值 + flushNow", () => {
+  it("flushMaxPending 条数阈值：年龄未到但条数达上限即落库", async () => {
+    const { db, batchCalls } = makeConstantD1([]);
+    const store = createUsageStore({ DB: db } as unknown as Env, {
+      flushIntervalMs: 60_000,
+      flushMaxPending: 2,
+    });
+    const h = hourKey();
+    // 首次 flushSoon 落库并推进 lastFlushAt（此后 60s 内年龄分支不再满足）
+    store.recordUpstreamResult("key-a", "tavily", h, "fail");
+    let first: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (first = p) } as never);
+    expect(first).toBeDefined();
+    await first;
+    expect(batchCalls()).toBe(1);
+    // 年龄未到（距上次 <60s），pending 条目达 2 ≥ flushMaxPending → 条数兜底触发落库
+    // （同一小时桶的多条 record 合并为一条 pending 条目，故用两个 scope 制造两条）
+    store.recordUpstreamResult("key-a", "tavily", h, "fail");
+    store.recordUpstreamResult("key-b", "tavily", h, "fail");
+    let second: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (second = p) } as never);
+    expect(second).toBeDefined();
+    await second;
+    expect(batchCalls()).toBe(2);
+  });
+
+  it("flushNow 立即落库缓冲并清空 pending；随后信号走 base", async () => {
+    const signalRows = [{ scope: "key-a", provider: "tavily", success: 0, fail: 3 }];
+    const { db, batchCalls } = makeConstantD1(signalRows);
+    const store = createUsageStore({ DB: db } as unknown as Env);
+    const h = hourKey();
+    store.recordUpstreamResult("key-a", "tavily", h, "success");
+    store.recordUpstreamResult("key-a", "tavily", h, "fail");
+    await store.flushNow();
+    expect(batchCalls()).toBe(1); // mergeUsage → DB.batch 一次
+    // pending 已清空：信号只来自 flush 内刷新的 base（D1 fail=3）
+    await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 3 });
+  });
+});
+
+describe("权重信号窗口过滤 + 独立刷新", () => {
+  it("pending 中窗口外小时桶的 fail 不计入权重", async () => {
+    const { db, allCalls } = makeConstantD1([]);
+    const store = createUsageStore({ DB: db } as unknown as Env, { weightWindowMs: 60 * 60_000 });
+    // 越窗桶：比 minHour 早至少一小时，保证落在滑动窗口外
+    const stale = hourKey(Date.now() - 121 * 60_000);
+    const now = hourKey();
+    store.recordUpstreamResult("key-a", "tavily", stale, "fail");
+    store.recordUpstreamResult("key-a", "tavily", now, "fail");
+    await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 1 });
+    expect(allCalls()).toBe(0); // 纯 pending 叠加，无 D1 往返
+  });
+
+  it("refreshWeightBase 独立刷新权重 base；120s 内重复调用不新增 D1", async () => {
+    const { db, log } = makeScriptedD1([{ results: [] }]);
+    const store = createUsageStore({ DB: db } as unknown as Env, {
+      flushIntervalMs: 30 * 60 * 1000,
+    });
+    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail"); // 缓冲非空，验证与 flush 解耦
+    await store.refreshWeightBase();
+    const refresh = () => log().filter((c) => c.op === "all" && c.sql.includes("hour >= ?2"));
+    expect(refresh()).toHaveLength(1);
+    expect(refresh()[0].binds[1]).toBe(hourKey(Date.now() - 30 * 60_000));
+    await store.refreshWeightBase();
+    expect(refresh()).toHaveLength(1); // 120s TTL 内第二次 no-op（0 D1）
+    // refreshWeightBase 不触 flush：缓冲仍在 pending，未产生 INSERT
+    expect(log().some((c) => c.op === "batch")).toBe(false);
+  });
+});
+
 describe("readUpstreamSeries", () => {
   const upstreamRows = [
     { hour: "2026-09-01T08:00", provider: "tavily", success: 3, fail: 1 },

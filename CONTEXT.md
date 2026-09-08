@@ -41,7 +41,7 @@ _Avoid_: 前缀、key 前缀
 _Avoid_: 可用 key、healthy key
 
 **重试分类族（failure class）**:
-上游响应按**故障可归因性**分成四族，决定"换 key / 冷却 / 记账"的归属——所有冷却与统计行为都以本分类为准，**不要按状态码数字手工推导**：
+上游响应按**故障可归因性**分成四族，决定"换 key / 冷却 / 记账"的归属——所有冷却与统计行为都以本分类为准，**不要按状态码数字手工推导**。族枚举 = `domain.ts` 的 `RetryClass`；编号→族映射在 provider 描述符（`statusClassMap` + 兜底 `statusClassFallback`）；处理动作与记账策略矩阵见 architecture §6.3：
 - `rate-limit`（429/432）：仅 post-use 冷却，换 key 重试；不记失败、不熔断。
 - `client-error`（400/404/422/433）：客户端/计划确定性错误，立即返回；不重试、不记失败、不需冷却——不是 key 的错。
 - `auth-error`（401/403）：key 级鉴权错误，疑似失效长冷却 + 记当日失败；不碰熔断连续计数。
@@ -75,11 +75,11 @@ _Avoid_: retry loop、重试循环
 _Avoid_: 今天、每日
 
 **小时桶（hour bucket）**:
-用量聚合的最小单位，UTC 整点时段 `YYYY-MM-DDTHH:00`，upstream / dist 两线共用。"今日 / 最近 N 小时"边界由前端按小时分段自行组合。
+用量聚合的最小单位，UTC 整点时段 `YYYY-MM-DDTHH:00`，upstream / dist 两线共用。"今日 / 最近 N 小时"边界由前端按小时分段自行组合。落库默认 ≥30 分钟，显式契约（`usage-store.flushIntervalMs`），不追求实时。
 _Avoid_: 日桶、time bucket
 
 **upstream 统计（upstream stats, `kind='upstream'`）**:
-按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条，`scope` = 上游 key id。成败按**重试分类族**归属：`server-error`（5xx/网络/2xx-不可用）与 `auth-error`（401/403）记失败；`rate-limit`（429/432）与 `client-error`（400/404/422/433）不计。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。**
+按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条，`scope` = 上游 key id。成败按**重试分类族**归属：`server-error`（5xx/网络/2xx-不可用）与 `auth-error`（401/403）记失败；`rate-limit`（429/432）与 `client-error`（400/404/422/433）不计。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。** 429/432（`rate-limit`）不计成功/失败、当前不单列成本；`attempt` 口径 = **非 rate-limit 的"一次尝试"**——即每次真实发送给上游的请求，但限流不计入成败，避免"真实调用次数"与实现背离。
 _Avoid_: 上游调用统计、接口统计
 
 **dist 统计（dist stats, `kind='dist'`）**:
@@ -91,7 +91,7 @@ _Avoid_: 调用统计、请求统计
 _Avoid_: 直接对比 upstream/dist 数字
 
 **写回式近似统计（write-back approximate stats）**:
-用量先在 isolate 内存累积、节流 flush 落库的近似统计：写失败静默、读失败按 0，绝不阻塞主流程。精确度是显式、可消费的设计变量。
+用量先在 isolate 内存累积、节流 flush 落库的近似统计：写失败静默、读失败按 0，绝不阻塞主流程。精确度是显式、可消费的设计变量。契约：单 isolate 缓冲（pending）共用；落库双阈值 **≥30min 或 ≥256 条**（`usage-store.flushIntervalMs` / `flushMaxPending`）；队列清空时兜底 flush（见 queue DO）防止悬空；isolate 被回收时未 flush 增量丢失 ≤ 阈值区间。权重信号 base **独立 120s 刷新**（queue drain 驱动，`signalBaseTtlMs`），**不与 flush 同节奏**。**内存优先边界**：熔断 / 冷却 / 鉴权判据是强一致持久（D1/KV 实时读写），**不进近似统计范围**——近似只影响展示与权重信号，不影响任何硬闸门。
 _Avoid_: 精确统计、real-time stats
 
 **队列任务（queue task）**:
