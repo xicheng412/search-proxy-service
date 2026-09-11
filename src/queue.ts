@@ -1,10 +1,13 @@
 // 队列 Durable Object：每 provider 一把独立队列实例（idFromName(provider)）。
 // 职责：把"同一时刻突发"的请求串行放行——一次只在途 1 个任务，每个任务（含其内部
 // 重试）跑完后隔 intervalMs 再放下一个，从而削峰填谷、把真实上游请求频率压到可调区间。
-// drain 兼任两件统计层维护：每个任务前「权重 base 独立刷新（自节流 ≤120s）」与
-// 队列清空后「兜底 flush」。
+// drain 兼任三件维护：每个任务前「权重 base 独立刷新（自节流 ≤120s）」、
+// 「key 池（KeyPool）每任务前 maybeReload + 任务后 maybeCheckpoint」与
+// 队列清空后「兜底 flush（usage + key 池 flushNow 双份）」。
 //
 // 关键事实（用户已确认）：
+//   - 该 DO 同时持有本 provider 的上游 key 池内存权威态（冷却/熔断，见 key-pool.ts）；
+//     admin 变更经 `/_internal/sync-keys` 推式重读，另有 60s 陈旧兜底（maybeReload）。
 //   - 每个任务 = 一次"对上游的完整处理"（含 searchWithRetry 最多换 MAX_ATTEMPTS 把 key），
 //     重试是同一任务的内部动作，不会重新入队/额外吃 3s 间隔。
 //   - 等待中任务数达到 maxDepth → 新请求直接 429（拒入，不排队）。
@@ -23,6 +26,7 @@ import { QueueTask } from "./queue-task";
 import { searxngError } from "./adapters/searxng";
 import { readerError } from "./adapters/reader";
 import { cachedQueueConfig } from "./queue-config";
+import { createKeyPool, type KeyPool } from "./key-pool";
 import type { QueueConfig } from "./queue-config";
 
 interface QueuedRequest {
@@ -59,8 +63,27 @@ export class QueueDO extends DurableObject<Env> {
   private pending: QueuedRequest[] = [];
   private draining = false;
   private config = cachedQueueConfig();
+  // 本 provider 的上游 key 池内存权威态（冷却/熔断）。同一 DO 实例恒同 provider，仍按 provider 防御。
+  private pool: { provider: Provider; pool: KeyPool } | null = null;
+
+  private ensurePool(provider: Provider): KeyPool {
+    if (!this.pool || this.pool.provider !== provider) {
+      this.pool = { provider, pool: createKeyPool(this.env, PROVIDERS[provider].upstream) };
+    }
+    return this.pool.pool;
+  }
 
   async fetch(request: Request): Promise<Response> {
+    // admin 变更推式同步：全量重读合并（保留内存冷却）。body 非法/provider 未知 → 400。
+    if (new URL(request.url).pathname === "/_internal/sync-keys") {
+      const body = (await request.json().catch(() => null)) as { provider?: string } | null;
+      if (!body?.provider || !PROVIDERS[body.provider as Provider]) {
+        return Response.json({ detail: { error: "bad sync payload" } }, { status: 400 });
+      }
+      await this.ensurePool(body.provider as Provider).reload(); // 合并重读，保留内存冷却
+      return new Response("ok");
+    }
+
     let payload: { provider: Provider; apiKey: string; task: QueueTask };
     try {
       payload = (await request.json()) as typeof payload;
@@ -147,10 +170,15 @@ export class QueueDO extends DurableObject<Env> {
       // 让每个任务的冷启动/周期刷新都先有新底数，emit(init) 里的 readUpstreamWeightSignal
       // 保持 0 D1 往返（权重刷新节奏与 flush 解耦，不再依赖 flush 节流）。
       await getUsageStore(this.env).refreshWeightBase().catch(() => {});
+      // key 池冷启动/60s 陈旧兜底重读：每个任务前拉最新 key 列表（合并保留内存冷却）。
+      // 失败保留旧内存——冷启动且 D1 挂时 keys 空 → 表现变 503 unavailable（比 502 更合理）。
+      const pool = this.ensurePool(item.provider);
+      await pool.maybeReload().catch(() => {});
       try {
         const deps = {
           env: this.env,
           executionCtx: { waitUntil: (p: Promise<unknown>) => void this.ctx.waitUntil(p) },
+          pool,
         };
         const def = PROVIDERS[item.provider];
         const task = item.task; // 局部捕获，便于 discriminated union 窄化
@@ -164,11 +192,15 @@ export class QueueDO extends DurableObject<Env> {
       } catch (err) {
         item.reject(err);
       }
+      // 每个任务结束后：低频 checkpoint 冷却（dirty 条数/30s 节流；失败静默保留 dirty）。
+      await pool.maybeCheckpoint().catch(() => {});
       // 每个任务结束后（含其内部重试），隔 intervalMs 再放下一个。
       await this.sleepMs(Math.max(1, cfg.intervalMs));
     }
     // 队列清空兜底 flush：防 pending 长期悬空被 DO evict 丢。每轮 drain 至多一次，写批很小。
     await getUsageStore(this.env).flushNow().catch(() => {});
+    // key 池兜底：无条件落库剩余 dirty 冷却。
+    if (this.pool) await this.pool.pool.flushNow().catch(() => {});
   }
 
   private sleepMs(ms: number): Promise<void> {

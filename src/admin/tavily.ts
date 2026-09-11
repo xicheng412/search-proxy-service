@@ -14,6 +14,7 @@ import {
   updateUpstreamKey,
 } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
+import { notifyKeyPoolSync } from "../key-pool";
 import { TAVILY } from "../providers";
 import { errorFragment } from "../views";
 import {
@@ -104,6 +105,7 @@ tavilyAdmin.post("/add", async (c) => {
   }
 
   await addUpstreamKey(env, TAVILY.upstream, key, name);
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });
 
@@ -128,6 +130,7 @@ tavilyAdmin.post("/add/batch", async (c) => {
     await addUpstreamKey(env, TAVILY.upstream, key, name);
   }
 
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });
 
@@ -139,6 +142,7 @@ tavilyAdmin.post("/:id/name", async (c) => {
   const cur = await getUpstreamKey(c.env, TAVILY.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateUpstreamKey(c.env, TAVILY.upstream, id, { name });
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });
 
@@ -150,11 +154,13 @@ tavilyAdmin.post("/:id/toggle", async (c) => {
   await updateUpstreamKey(c.env, TAVILY.upstream, id, {
     status: cur.status === "enabled" ? "disabled" : "enabled",
   });
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });
 
 tavilyAdmin.post("/:id/delete", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   await deleteUpstreamKey(c.env, TAVILY.upstream, c.req.param("id"));
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });

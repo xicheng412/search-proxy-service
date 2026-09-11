@@ -1,8 +1,9 @@
-// 基础设施层·UpstreamKey 聚合持久化（D1 upstream_keys / breaker_state）。
-// 同一聚合（provider 维度的上游 key 池）的两张表在此收口：
-//   - upstream_keys：key / name / status / cooldown_until（key 生命周期）
-//   - breaker_state：连续失败计数（consecutive），id 即上游 key id（1:1，无独立生命周期）
-// cooldown_until 与计数由 applyBreakerOutcome 同批原子更新。
+// 基础设施层·UpstreamKey 聚合持久化（D1 upstream_keys）。
+// 本层管 upstream_keys 注册表：id/key/name/status/created_at 权威在 D1（admin 写）；
+// cooldown_until 由 QueueDO 内存池（key-pool.ts KeyPool）低频 checkpoint 批量写回
+// （checkpointCooldowns），内存永远更新、D1 仅备份/冷启动恢复。
+// breaker_state 已停用：连续失败计数权威在 QueueDO 内存（KeyPool.breaker），不落库；
+// 表结构在迁移文件里保留（迁移工具越界，仅停止读写）。
 // 基础配置（breaker_config/queue_config）与登录会话仍留 KV，不在本层。
 // 本层不吞错；"写失败是否静默、何时写"由上层策略决定。
 // 所有函数以 env: Env 为句柄（同时携带 KV 与 DB），实体走 DB，配置/会话走 KV。
@@ -185,20 +186,6 @@ export async function updateUpstreamKey(
   return row ? toCoreKey(row as Record<string, unknown>) : null;
 }
 
-export async function setUpstreamCooldown(
-  env: Env,
-  def: UpstreamDef,
-  id: string,
-  cooldown_until: number | null
-): Promise<CoreKey | null> {
-  const row = await env.DB.prepare(
-    "UPDATE upstream_keys SET cooldown_until = ?1 WHERE provider = ?2 AND id = ?3 RETURNING id, key, name, status, cooldown_until, created_at"
-  )
-    .bind(cooldown_until, def.provider, id)
-    .first();
-  return row ? toCoreKey(row as Record<string, unknown>) : null;
-}
-
 export async function deleteUpstreamKey(
   env: Env,
   def: UpstreamDef,
@@ -213,56 +200,24 @@ export async function deleteUpstreamKey(
 }
 
 // ---------------------------------------------------------------
-// 熔断状态（breaker_state）——UpstreamKey 聚合自身状态，非独立聚合
+// 冷却批量 checkpoint——QueueDO 内存池低频写回 cooldown_until
 // ---------------------------------------------------------------
 
-/** 熔断状态行：连续失败 + 更新时间（模拟 KV 的 10min TTL 窗口）。 */
-export interface BreakerState {
-  consecutive: number;
-  updated_at: number;
-  created_at: number;
+export interface CooldownEntry {
+  id: string;
+  cooldown_until: number | null;
 }
 
-export async function readBreakerState(
-  env: Env,
-  id: string
-): Promise<BreakerState | null> {
-  const row = await env.DB.prepare(
-    "SELECT consecutive, updated_at, created_at FROM breaker_state WHERE id = ?1"
-  )
-    .bind(id)
-    .first();
-  return row
-    ? {
-        consecutive: row.consecutive as number,
-        updated_at: row.updated_at as number,
-        created_at: row.created_at as number,
-      }
-    : null;
-}
-
-/** 原子批写某次上游结果的 cooldown 更新 + 可选熔断计数 UPSERT。 */
-export async function applyBreakerOutcome(
+/** 批量写回冷却（checkpoint 用）：一次 DB.batch，只写 cooldown_until。 */
+export async function checkpointCooldowns(
   env: Env,
   def: UpstreamDef,
-  id: string,
-  cooldownUntil: number,
-  consecutive: number | null,
-  now: number,
-  createdAt: number = now
+  entries: CooldownEntry[]
 ): Promise<void> {
-  const stmts = [
-    env.DB.prepare(
-      "UPDATE upstream_keys SET cooldown_until = ?1 WHERE provider = ?2 AND id = ?3"
-    ).bind(cooldownUntil, def.provider, id),
-  ];
-  if (consecutive !== null) {
-    stmts.push(
-      env.DB.prepare(
-        `INSERT INTO breaker_state(id,consecutive,updated_at,created_at) VALUES(?1,?2,?3,?4)
-         ON CONFLICT(id) DO UPDATE SET consecutive = excluded.consecutive, updated_at = excluded.updated_at`
-      ).bind(id, consecutive, now, createdAt)
-    );
-  }
+  if (entries.length === 0) return;
+  const stmts = entries.map((e) =>
+    env.DB.prepare("UPDATE upstream_keys SET cooldown_until = ?1 WHERE provider = ?2 AND id = ?3")
+      .bind(e.cooldown_until, def.provider, e.id)
+  );
   await env.DB.batch(stmts);
 }

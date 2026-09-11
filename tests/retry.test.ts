@@ -7,6 +7,7 @@ import type { Env } from "../src/types";
 import { TAVILY } from "../src/providers";
 import type { CoreKey } from "../src/domain";
 import type { UsageStore } from "../src/usage-store";
+import { createKeyPool } from "../src/key-pool";
 import {
   searchWithRetry,
   TRANSITIONS,
@@ -24,7 +25,11 @@ function makeEnv(rows: Record<string, unknown>[]) {
 }
 
 function makeDeps(rows: Record<string, unknown>[]): CoreDeps {
-  return { env: makeEnv(rows), executionCtx: { waitUntil: () => {} } };
+  return {
+    env: makeEnv(rows),
+    executionCtx: { waitUntil: () => {} },
+    pool: createKeyPool(makeEnv(rows), TAVILY.upstream, rows as CoreKey[]),
+  };
 }
 
 function keyRow(id: string, overrides: Record<string, unknown> = {}) {
@@ -290,6 +295,7 @@ function pickCtx(
 ): RetryContext {
   return {
     env: makeEnv([]),
+    pool: createKeyPool(makeEnv([]), TAVILY.upstream, keys),
     def: TAVILY,
     request: req,
     // 仅 emit("pick")：该路径不触 store/cb，stub 即可

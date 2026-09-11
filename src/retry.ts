@@ -22,8 +22,8 @@
 import type { Env } from "./types";
 import type { ProviderConfig } from "./providers";
 import { CoreKey, hourKey, RetryClass } from "./domain";
-import { listUpstreamKeys } from "./storage/upstream-keys";
 import { getUsageStore, type UsageStore } from "./usage-store";
+import type { KeyPool } from "./key-pool";
 import {
   recordUpstreamFailure,
   recordUpstreamSuccess,
@@ -41,6 +41,7 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 export interface CoreDeps {
   env: Env;
   executionCtx: { waitUntil(p: Promise<unknown>): void };
+  pool: KeyPool;
 }
 
 /** 通用重试的结果，交给 onFailure 按协议渲染最终响应。 */
@@ -125,57 +126,41 @@ function classifyStatus(def: ProviderConfig, status: number): RetryClass {
 
 /** 成功：记一次 usage 成功 + 熔断成功（连续失败归零，保留 post-use 冷却）。 */
 async function markSuccess(
-  store: UsageStore,
-  env: Env,
-  def: ProviderConfig,
+  ctx: RetryContext,
   id: string,
-  hour: string,
   now: number
 ): Promise<void> {
-  store.recordUpstreamResult(id, def.name, hour, "success");
-  await recordUpstreamSuccess(env, def.upstream, id, now).catch(() => {});
+  ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "success");
+  await recordUpstreamSuccess(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
 /** 非429失败：记一次 usage 失败 + 熔断失败（指数退避冷却）。 */
 async function markFail(
-  store: UsageStore,
-  env: Env,
-  def: ProviderConfig,
+  ctx: RetryContext,
   id: string,
-  hour: string,
   now: number
 ): Promise<void> {
-  store.recordUpstreamResult(id, def.name, hour, "fail");
-  await recordUpstreamFailure(env, def.upstream, id, now).catch(() => {});
+  ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "fail");
+  await recordUpstreamFailure(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
 /** 429：只写 post-use 冷却，不记 usage（现状行为，保持）。 */
-async function markRateLimit(
-  env: Env,
-  def: ProviderConfig,
-  id: string,
-  now: number
-): Promise<void> {
-  await recordUpstreamRateLimit(env, def.upstream, id, now).catch(() => {});
+async function markRateLimit(ctx: RetryContext, id: string, now: number): Promise<void> {
+  await recordUpstreamRateLimit(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
 /** 401/403 疑似失效：记一次 usage 失败 + 长冷却（默认12h），不碰连续失败计数。 */
-async function markInvalid(
-  store: UsageStore,
-  env: Env,
-  def: ProviderConfig,
-  id: string,
-  hour: string,
-  now: number
-): Promise<void> {
-  store.recordUpstreamResult(id, def.name, hour, "fail");
-  await recordUpstreamInvalid(env, def.upstream, id, now).catch(() => {});
+async function markInvalid(ctx: RetryContext, id: string, now: number): Promise<void> {
+  ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "fail");
+  await recordUpstreamInvalid(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
 // ---- 重试状态机（FSM）：状态 / 事件 / 上下文 / 迁移表 / 读取 / 渲染 ----
 // 终态集合 = RetryOutcome 全部类别：success → res 直接返回；其余 → onFailure。
-// usage/熔断持久态/队列 DO/协议渲染不进机器：写副作用在迁移 action，读在 emit，
+// usage/队列 DO/协议渲染不进机器：写副作用在迁移 action，读在 emit，
 // 协议渲染经 RetryCallbacks（cb）访问。
+// 熔断/冷却权威态在 DO 内存池（KeyPool）：选 key 的 key 列表来自 ctx.pool（DO 内存），
+// 不再每请求读 D1；mark* 对 pool.applyBreakerOutcome 的原地改对 ctx.keys 即刻可见。
 
 type RetryState =
   | "init"
@@ -208,6 +193,7 @@ interface RetryContext {
   cb: RetryCallbacks;
   store: UsageStore;
   hour: string;
+  pool: KeyPool;
   keys: CoreKey[];
   statsMap: Record<string, number>;
   tried: Set<string>;
@@ -248,34 +234,28 @@ export const TRANSITIONS: Record<string, Transition> = {
   "pick:depleted": { to: "exhausted" },
   "in-flight:success": {
     to: "success",
-    action: (ctx) =>
-      markSuccess(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+    action: (ctx) => markSuccess(ctx, ctx.currentKey!.id, Date.now()),
   },
   "in-flight:unusable": {
     to: "pick",
-    action: (ctx) =>
-      markFail(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+    action: (ctx) => markFail(ctx, ctx.currentKey!.id, Date.now()),
   },
   "in-flight:network": {
     to: "pick",
-    action: (ctx) =>
-      markFail(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+    action: (ctx) => markFail(ctx, ctx.currentKey!.id, Date.now()),
   },
   "in-flight:rate-limit": {
     to: "pick",
-    action: (ctx) =>
-      markRateLimit(ctx.env, ctx.def, ctx.currentKey!.id, Date.now()),
+    action: (ctx) => markRateLimit(ctx, ctx.currentKey!.id, Date.now()),
   },
   "in-flight:client-error": { to: "client-error" },
   "in-flight:auth-error": {
     to: "pick",
-    action: (ctx) =>
-      markInvalid(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+    action: (ctx) => markInvalid(ctx, ctx.currentKey!.id, Date.now()),
   },
   "in-flight:server-error": {
     to: "pick",
-    action: (ctx) =>
-      markFail(ctx.store, ctx.env, ctx.def, ctx.currentKey!.id, ctx.hour, Date.now()),
+    action: (ctx) => markFail(ctx, ctx.currentKey!.id, Date.now()),
   },
 };
 
@@ -286,7 +266,7 @@ export const TRANSITIONS: Record<string, Transition> = {
 export async function emit(state: RetryState, ctx: RetryContext): Promise<RetryEvent> {
   switch (state) {
     case "init": {
-      ctx.keys = await listUpstreamKeys(ctx.env, ctx.def.upstream);
+      ctx.keys = ctx.pool.getKeys();
       if (ctx.keys.length === 0) return { kind: "no-keys" };
 
       const now0 = Date.now();
@@ -419,6 +399,7 @@ export async function searchWithRetry(
     cb,
     store,
     hour,
+    pool: deps.pool,
     keys: [],
     statsMap: {},
     tried: new Set(),

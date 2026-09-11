@@ -14,6 +14,7 @@ import {
   updateUpstreamKey,
 } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
+import { notifyKeyPoolSync } from "../key-pool";
 import { EXA } from "../providers";
 import { errorFragment } from "../views";
 import {
@@ -104,6 +105,7 @@ exaAdmin.post("/add", async (c) => {
   }
 
   await addUpstreamKey(env, EXA.upstream, key, name);
+  await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
 });
 
@@ -128,6 +130,7 @@ exaAdmin.post("/add/batch", async (c) => {
     await addUpstreamKey(env, EXA.upstream, key, name);
   }
 
+  await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
 });
 
@@ -139,6 +142,7 @@ exaAdmin.post("/:id/name", async (c) => {
   const cur = await getUpstreamKey(c.env, EXA.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateUpstreamKey(c.env, EXA.upstream, id, { name });
+  await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
 });
 
@@ -150,11 +154,13 @@ exaAdmin.post("/:id/toggle", async (c) => {
   await updateUpstreamKey(c.env, EXA.upstream, id, {
     status: cur.status === "enabled" ? "disabled" : "enabled",
   });
+  await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
 });
 
 exaAdmin.post("/:id/delete", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   await deleteUpstreamKey(c.env, EXA.upstream, c.req.param("id"));
+  await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
 });

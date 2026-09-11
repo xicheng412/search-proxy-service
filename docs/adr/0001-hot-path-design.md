@@ -16,7 +16,7 @@
 
 - 看**消费者**与**误差方向**。
 - **可近似**：统计、权重、展示计数。误差方向甚至有益——`1/(fail+1)` 权重小幅失真只是让负载更均衡，权重本就该贴近"最近大盘"而非"本瞬间"。
-- **近似禁区**（`docs/architecture.md §5.1.1`）：安全放行决策——熔断/冷却状态（`breaker_state`、`cooldown_until`）、鉴权与 key 状态。任一优化不得削它们，不许一秒误差。
+- **近似禁区**（`docs/architecture.md §5.1.1`）：安全放行决策——熔断/冷却状态（`breaker_state`、`cooldown_until`）、鉴权与 key 状态。任一优化不得削它们，不许一秒误差。**前提是多写者或跨进程副本**；若冷却/熔断状态的唯一写者就是选 key 的那个单点进程（本仓库：per-provider `QueueDO` 内存池 `KeyPool`），则内存即权威、读取无陈旧、不属近似；此时 D1 降为低频 checkpoint（≤30s），丢失方向安全（提前放行/重置计数）。
 - 结论先行：数值越不重要、误差越无害，越值得往下做。
 
 ## 2. 第二问（核心分叉）：这份数据是谁产的？
@@ -83,4 +83,5 @@
 | Cache API + TTL + 写失效 | `storage.ts` `getDistributedKey`（每次鉴权） | D1 SELECT → Cache 命中 0 |
 | 模块级 3s TTL + 写后失效 | `breaker-config.ts` `cachedBreakerConfig`、`queue-config.ts` `cachedQueueConfig`、`dist-cache-config.ts` `cachedDistCacheConfig` | 每次事件 KV get → TTL 内 0 |
 | isolate 内存 MRU + pending（30s，miss 才 `.all()`） | `usage-store.ts` `weightCache` / `distCache`（admin 展示） | D1 聚合 → 命中 0 |
+| DO 内存权威 + 低频 checkpoint | `queue.ts` KeyPool（冷却/熔断） | 每请求 D1 读写 → 内存；D1 ≤30s |
 | 常量一次解析 | `config.ts` `resolvePublicBaseUrl` | env 读 → 一次 |

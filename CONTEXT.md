@@ -91,7 +91,7 @@ _Avoid_: 调用统计、请求统计
 _Avoid_: 直接对比 upstream/dist 数字
 
 **写回式近似统计（write-back approximate stats）**:
-用量先在 isolate 内存累积、节流 flush 落库的近似统计：写失败静默、读失败按 0，绝不阻塞主流程。精确度是显式、可消费的设计变量。契约：单 isolate 缓冲（pending）共用；落库双阈值 **≥30min 或 ≥256 条**（`usage-store.flushIntervalMs` / `flushMaxPending`）；队列清空时兜底 flush（见 queue DO）防止悬空；isolate 被回收时未 flush 增量丢失 ≤ 阈值区间。权重信号 base **独立 120s 刷新**（queue drain 驱动，`signalBaseTtlMs`），**不与 flush 同节奏**。**内存优先边界**：熔断 / 冷却 / 鉴权判据是强一致持久（D1/KV 实时读写），**不进近似统计范围**——近似只影响展示与权重信号，不影响任何硬闸门。
+用量先在 isolate 内存累积、节流 flush 落库的近似统计：写失败静默、读失败按 0，绝不阻塞主流程。精确度是显式、可消费的设计变量。契约：单 isolate 缓冲（pending）共用；落库双阈值 **≥30min 或 ≥256 条**（`usage-store.flushIntervalMs` / `flushMaxPending`）；队列清空时兜底 flush（见 queue DO）防止悬空；isolate 被回收时未 flush 增量丢失 ≤ 阈值区间。权重信号 base **独立 120s 刷新**（queue drain 驱动，`signalBaseTtlMs`），**不与 flush 同节奏**。**内存优先边界**：熔断 / 冷却判据强一致，权威态在持有该 key 池的单进程内存（per-provider QueueDO，`key-pool.ts`；D1 为 ≤30s 低频 checkpoint，丢失方向安全）；鉴权判据仍走 Cache API 读穿。近似只影响展示与权重信号，不影响任何硬闸门。
 _Avoid_: 精确统计、real-time stats
 
 **队列任务（queue task）**:

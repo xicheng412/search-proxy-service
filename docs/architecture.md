@@ -188,7 +188,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
             ↑              │
 ┌───────────┴──────────────┴──────────────────────────┐
 │ storage/  D1 实体读写                                  │
-│  upstream-keys.ts (+ breaker_state) / dist-keys.ts    │
+│  upstream-keys.ts (+ 冷却 checkpoint) / dist-keys.ts   │
 │  (+ Cache API 读缓存) / usage.ts / patch.ts           │
 │  配置与会话走 KV（breaker-config / queue-config /      │
 │  dist-cache-config / session:）                        │
@@ -196,7 +196,9 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
             ↑
 ┌───────────┴───────────────────────────────────────────┐
 │  usage-store.ts（内存缓冲 → 节流 flush → storage/usage）│
-│  circuit-breaker.ts（熔断策略 → storage/upstream-keys）│
+│  key-pool.ts（每 provider 内存池：冷却/熔断权威 +      │
+│  checkpoint，由 queue.ts 持有）                         │
+│  circuit-breaker.ts（熔断策略 → key-pool 内存）         │
 │  breaker-config.ts（冷却时长运行时参数, KV + TTL 缓存） │
 └───────────┬───────────────────────────────────────────┘
             ↑
@@ -234,11 +236,12 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 | `providers/` | 一个 provider 的全部事实（base、capabilities、上游键名、id 前缀、test body、错误体格式） | 不写业务逻辑 |
 | `adapters/searxng.ts` | 消费方 ACL：searxng 参数→Tavily 请求体 / Tavily 响应→searxng JSON / searxng 错误体 | 不 import 仓库模块；不读 KV/DB |
 | `adapters/reader.ts` | 消费方 ACL：/reader/<url> 抠目标 / 目标→Tavily Extract 请求体 / Tavily 响应→纯文本 / reader 错误体 | 不 import 仓库模块；不读 KV/DB |
-| `storage/upstream-keys.ts` | 上游 key + 熔断状态（`breaker_state`）D1 读写 + keyset 分页 | 不做节流/不吞错/不写策略 |
+| `storage/upstream-keys.ts` | 上游 key 注册表 D1 读写 + keyset 分页 + 冷却批量 checkpoint | 不做节流/不吞错/不写策略；熔断/冷却权威态在 `queue.ts` 的 KeyPool |
 | `storage/dist-keys.ts` | 分发 key D1 读写 + Cache API 鉴权读缓存（读穿 + 写失效） | 不写业务逻辑 |
 | `storage/usage.ts` | 用量小时桶 D1 读写（UPSERT 求和 / 按窗口查询） | 不带内存缓冲（那是 usage-store 的活） |
 | `usage-store.ts` | 内存累积 + 节流 flush + 读叠加（按 UTC 小时桶） | 不改 domain 规则；不直接被 admin 写 |
 | `circuit-breaker.ts` | 连续失败计数 → 冷却（经 `breaker-config` 读运行时参数） | 不感知 provider；失败静默 |
+| `key-pool.ts` | 每 provider DO 内存的 key 池 + 冷却/熔断权威态；合并 reload / 阈值 checkpoint / 推式同步接口 | 不做协议、不碰 usage 统计 |
 | `breaker-config.ts` / `queue-config.ts` / `dist-cache-config.ts` | 读/写 KV 运行时参数（TTL 缓存，写后失效） | 不经手请求热路径 |
 | `retry.ts` | 重试状态机（FSM）+ 选 key + 上游传输（`proxyToUpstream`，30s 超时） | 不接触 Hono Context；不含协议适配 |
 | `queue-task.ts` | 队列任务 DTO（`NativeTask` / `SearxngTask`） | 零依赖叶模块，不读 KV/DB |
@@ -271,7 +274,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 
 两类存储，职责二分：
 
-- **D1**（binding `DB`）：实体数据——上游 key、分发 key、用量小时桶、熔断状态。
+- **D1**（binding `DB`）：实体数据——上游 key 注册表（`upstream_keys`，含冷却 checkpoint 备份）、分发 key、用量小时桶。
 - **KV**（binding `KV`）：运行时参数（`breaker_config` / `queue_config` / `dist_cache_config`）与登录会话（`session:<sid>`）。KV 上的 TTL 相当于 D1 迁移前留下的"零维护清理"习惯。
 
 ### 5.1 D1 表结构
@@ -279,7 +282,8 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 ```
 upstream_keys(provider, id, key, name, status, cooldown_until, created_at)
               PK (provider, id); provider = 'tavily'|'exa'|未来
-breaker_state(id, consecutive, updated_at, created_at)   -- 连续失败计数（1:1 上游 key）
+              -- cooldown_until：QueueDO 内存池低频 checkpoint ≤30s 写回（见 §6.2）
+breaker_state(id, consecutive, updated_at, created_at)   -- 已停用（迁移保留）：连续计数权威在 QueueDO 内存
 distributed_keys(api_key, note, status, created_at)      -- PK api_key
 usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
               PK (kind, scope, provider, hour)
@@ -293,7 +297,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 | 实体上 D1，参数/会话留 KV | 实体改删查 + 分页强于 KV；参数要"≤3s 生效"且低写频，KV 正合适 | 各自用擅长的 |
 | 上游 key 用表 + `(provider,id)` 主键 | provider 作维度字段，新增只加值 | 与 `providers/` 描述符对齐 |
 | 用量按 UTC 小时桶 + 索引 | 热路径聚合一次往返（`SUM + GROUP BY`） | 见 §5.2 精度契约 |
-| 熔断计数 1:1 存行 + `updated_at` | 10 分钟空窗用 `updated_at` 模拟 KV 的 TTL | 不依赖定时器；同批原子写冷却+计数 |
+| 熔断连续计数权威在 QueueDO 内存（`key-pool.ts`），不落库 | 10 分钟空窗用内存 `updated_at` 判定 | 单点写者内存即权威，选 key 无陈旧；丢失方向安全（重置计数） |
 | 用量超 90 天清理 | `scheduled` cron（每天 UTC 03:00）删 `usage_counts` | D1 无 TTL，主动设保留期 |
 
 > **分发 key 鉴权有 Cache API 快路径**：`storage/dist-keys.ts` 对 `getDistributedKey` 做读穿缓存（写操作失效），撤销/禁用的最坏生效延迟 = `dist_cache_config.cacheTtlSec`（默认 300s，可调）。
@@ -320,7 +324,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（小时桶聚合后每 key 每日 ≤ 24 行）。不为 index-only scan 给 `usage_counts` 扩覆盖索引——写侧按 30min/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。
 
 **不进入置换范围**（精确语义，禁止近似）：
-- 熔断 / 冷却状态（`breaker_state`、`cooldown_until`）：安全相关的放行决策，不许一秒误差。
+- 熔断 / 冷却状态（`breaker_state`、`cooldown_until`）：安全相关的放行决策，不许一秒误差。前提是多写者或跨进程副本；本仓库的冷却/熔断唯一写者即选 key 的单点进程（per-provider `QueueDO` 内存池 `KeyPool`，见 ADR-0001 §1 与 §6.2），内存即权威、读取无陈旧，D1 仅低频 checkpoint（丢失方向安全），不属"近似"。
 - 鉴权、key 状态与任何硬约束。
 
 #### 5.2.2 两个统计维度：upstream 成本线 vs dist 消费线（为何不要求一致）
@@ -360,6 +364,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 - 429 → 仅 post-use 冷却，不碰连续失败计数。
 - breaker 计数有 10 分钟空窗——10 分钟内无新失败（`updated_at` 落后超窗）则视为"该 key 已恢复"。
 - **post-use / base / invalid 三个时长存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（≤3s 生效），无需重新部署**（见 `src/breaker-config.ts`）。
+- **权威态落点**：冷却与熔断计数的唯一写者是持有该 key 池的单点进程（per-provider `QueueDO` 内存，`key-pool.ts`），选 key 读到的即最新值；D1 仅为低频 checkpoint（`CHECKPOINT_INTERVAL_MS` 30s / `CHECKPOINT_MIN_DIRTY` 16 条双阈值）。冷启动/60s 兜底从 D1 重读并**合并**（保留内存冷却）；管理页「冷却」徽章读 D1 快照，最多滞后 30s（展示路径，非放行判据）。
 
 ### 6.3 自动重试（`searchWithRetry` 核，位于 `src/retry.ts`）
 
@@ -462,6 +467,7 @@ exhausted → onFailure（透传最后响应或 503/502）。
 - **连接断开**：任务仍未轮到（signal aborted）→ 直接丢弃，不烧上游配额。
 - **任务内部重试不重新入队**：一个任务 = 一次"对上游的完整处理"（`searchWithRetry` 最多换 `MAX_ATTEMPTS` 把 key），重试试的是 key，不是重新排队。
 - **参数运行时调整**：`intervalMs` / `maxDepth` / `waitBudgetMs` 存 KV `queue_config`（见 `src/queue-config.ts`），改 KV 即生效（≤3s）。
+- **兼持上游 key 池内存权威态**：该 DO 同时持有本 provider 的 key 池（冷却/熔断权威，见 §6.2）；admin 写 D1 后经 `POST https://queue.internal/_internal/sync-keys`（body `{provider}`）推式全量重读；drain 每任务前 `maybeReload`（含 60s 陈旧兜底）、任务后 `maybeCheckpoint`、收尾 `flushNow`。
 
 ### 6.5 错误体格式
 

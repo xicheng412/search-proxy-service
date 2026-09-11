@@ -26,7 +26,7 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 
 - **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`); `GET /reader/<url>` serves **Tavily Extract as plain text** (`Bearer reader-tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider or capability with a descriptor file.
 - **Tavily Extract passthrough.** `POST /extract` with `Bearer tavily-…` transparently forwards to Tavily Extract, sharing the exact same retry/breaker/usage-accounting pipeline as `/search` (native-only by design).
-- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed.
+- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed. Cooldown/breaker state is authoritative in the per-provider Durable Object's memory (D1 is a low-frequency checkpoint).
 - **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` park the key with a 12h suspected-invalid cooldown then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped — across both capability endpoints (`/search`, `/extract`).
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily Search request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
@@ -144,7 +144,7 @@ Full step-by-step (new Cloudflare account, custom domain, troubleshooting) is in
 | Runtime | Cloudflare Workers (V8 isolates) |
 | Framework | [Hono](https://hono.dev/) 4.x |
 | Language | TypeScript 5.7 (strict) |
-| Storage | Cloudflare Workers KV |
+| Storage | Cloudflare D1 (entities) + Workers KV (runtime config/session) + Durable Objects (key pool memory) |
 | Admin UI | HTMX 1.9 + native HTML (no SPA, no bundler) |
 | CLI | Wrangler 4.x |
 
@@ -154,7 +154,8 @@ Full step-by-step (new Cloudflare account, custom domain, troubleshooting) is in
 src/
 ├── index.ts             # Hono app + routes
 ├── domain.ts            # pure domain: types, parseDistKey, value semantics
-├── storage.ts           # D1 entity layer (upstream/dist keys, usage hour buckets, breaker state)
+├── storage/             # D1 entity layer (upstream registry, dist keys, usage hour buckets)
+├── key-pool.ts          # per-provider in-memory key pool (cooldown/breaker authority + checkpoint)
 ├── usage-store.ts       # hour-bucket usage stats (write-back, in-memory buffering → D1)
 ├── circuit-breaker.ts   # cooldown: post-use + breaker + invalid (params runtime from KV)
 ├── breaker-config.ts    # runtime cooldown params (KV breaker_config, admin-adjustable)

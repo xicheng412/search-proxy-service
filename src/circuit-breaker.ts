@@ -4,29 +4,29 @@
 //   2. 熔断冷却：每次非429失败后，指数退避 = base × 2^连续失败次数（base 默认 10min，可调）
 //   3. 疑似失效冷却：每次 401/403 后固定 invalidCooldownSec（默认 12h，可调），不碰连续失败计数
 // 成功时连续失败归零，冷却仅保留 post-use 时长。
-// 读写失败均静默：它是保险机制，不阻塞主流程。
+// 连续失败计数与冷却权威态在 key 池（KeyPool，每 provider 一把 QueueDO 内存）；
+// 10min 空窗（BREAKER_TTL_MS）用内存 updated_at 判定。本模块不再直接读 D1，
+// 只经由 pool 读写内存（D1 由池的"合并 reload + 低频 checkpoint"负责）。
 // 时长参数来自 KV 运行时配置（breaker_config，基础配置留 KV），经模块级 TTL 缓存读取，≤ cacheTtl 生效。
-// 连续失败状态存 D1 breaker_state；10min 窗口（BREAKER_TTL_SECONDS）用 updated_at 模拟 KV TTL。
 
 import type { Env } from "./types";
-import { UpstreamDef } from "./domain";
-import { setUpstreamCooldown, readBreakerState, applyBreakerOutcome } from "./storage/upstream-keys";
+import type { KeyPool } from "./key-pool";
 import { cachedBreakerConfig } from "./breaker-config";
 
 const BREAKER_TTL_MS = 10 * 60 * 1000; // 连续失败计数空窗 10 分钟后自动归零
 const config = cachedBreakerConfig();
 
 /**
- * 成功响应：post-use 冷却 + 连续失败计数归零。
+ * 成功响应：post-use 冷却 + 连续失败计数归零。写 target 仅为内存池，无 IO 失败路径。
  */
 export async function recordUpstreamSuccess(
   env: Env,
-  def: UpstreamDef,
+  pool: KeyPool,
   id: string,
   now: number = Date.now()
 ): Promise<void> {
   const { postUseCooldownSec } = await config.get(env.KV);
-  await applyBreakerOutcome(env, def, id, now + postUseCooldownSec * 1000, 0, now).catch(() => {});
+  pool.applyBreakerOutcome(id, now + postUseCooldownSec * 1000, 0, now);
 }
 
 /**
@@ -34,17 +34,17 @@ export async function recordUpstreamSuccess(
  */
 export async function recordUpstreamFailure(
   env: Env,
-  def: UpstreamDef,
+  pool: KeyPool,
   id: string,
   now: number = Date.now()
 ): Promise<void> {
   const { postUseCooldownSec, breakerBaseSec } = await config.get(env.KV);
-  const cur = await readBreakerState(env, id).catch(() => null);
+  const cur = pool.getBreakerState(id);
   // 窗口外（距上次 > BREAKER_TTL_MS）视为已恢复，重新从 1 计。
   const consecutive = cur && now - cur.updated_at < BREAKER_TTL_MS ? cur.consecutive + 1 : 1;
   const cooldownMs = breakerBaseSec * 1000 * Math.pow(2, consecutive);
   const until = now + Math.max(postUseCooldownSec * 1000, cooldownMs);
-  await applyBreakerOutcome(env, def, id, until, consecutive, now, cur?.created_at ?? now).catch(() => {});
+  pool.applyBreakerOutcome(id, until, consecutive, now);
 }
 
 /**
@@ -52,12 +52,12 @@ export async function recordUpstreamFailure(
  */
 export async function recordUpstreamRateLimit(
   env: Env,
-  def: UpstreamDef,
+  pool: KeyPool,
   id: string,
   now: number = Date.now()
 ): Promise<void> {
   const { postUseCooldownSec } = await config.get(env.KV);
-  await setUpstreamCooldown(env, def, id, now + postUseCooldownSec * 1000).catch(() => {});
+  pool.applyBreakerOutcome(id, now + postUseCooldownSec * 1000, null, now);
 }
 
 /**
@@ -66,11 +66,11 @@ export async function recordUpstreamRateLimit(
  */
 export async function recordUpstreamInvalid(
   env: Env,
-  def: UpstreamDef,
+  pool: KeyPool,
   id: string,
   now: number = Date.now()
 ): Promise<void> {
   const { postUseCooldownSec, invalidCooldownSec } = await config.get(env.KV);
   const until = now + Math.max(postUseCooldownSec, invalidCooldownSec) * 1000;
-  await setUpstreamCooldown(env, def, id, until).catch(() => {});
+  pool.applyBreakerOutcome(id, until, null, now);
 }
