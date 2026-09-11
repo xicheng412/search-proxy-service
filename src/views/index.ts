@@ -334,7 +334,7 @@ export function adminPage(data: DashboardData): string {
     <input type="number" name="maxDepth" min="1" value="${data.queueMaxDepth}" required style="max-width:140px;">
     <label class="muted">等待上限 (ms)</label>
     <input type="number" name="waitBudgetMs" min="1000" value="${data.queueWaitBudgetMs}" required style="max-width:140px;">
-    <button type="submit">保存</button>
+    <button type="submit" style="padding:3px 8px; align-self:center;">保存</button>
   </form>
 </section>
 <section class="card">
@@ -348,7 +348,7 @@ export function adminPage(data: DashboardData): string {
     <input type="number" name="breakerBaseSec" min="1" step="1" value="${data.breakerBaseSec}" required style="max-width:140px;">
     <label class="muted">疑似失效 (秒)</label>
     <input type="number" name="invalidCooldownSec" min="1" step="1" value="${data.invalidCooldownSec}" required style="max-width:140px;">
-    <button type="submit">保存</button>
+    <button type="submit" style="padding:3px 8px; align-self:center;">保存</button>
   </form>
 </section>
 <section class="card">
@@ -358,7 +358,7 @@ export function adminPage(data: DashboardData): string {
     ${csrfField(data.csrf)}
     <label class="muted">鉴权缓存 TTL (秒)</label>
     <input type="number" name="cacheTtlSec" min="1" step="1" value="${data.distCacheTtlSec}" required style="max-width:140px;">
-    <button type="submit">保存</button>
+    <button type="submit" style="padding:3px 8px; align-self:center;">保存</button>
   </form>
 </section>`;
   return layout("总览 · Tavily Proxy", body, {
