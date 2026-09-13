@@ -160,21 +160,27 @@ export function adminPage(data: DashboardData): string {
   const body = `
 <section class="stats">
   <div class="card stat">
-    <h2>Tavily Keys</h2>
-    <div class="stat-num">${data.tavilyTotal}</div>
-    <div class="muted">启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}</div>
+    <div class="stat-info">
+      <div class="stat-name">Tavily Keys</div>
+      <div class="stat-num">${data.tavilyTotal}</div>
+      <div class="muted">启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}</div>
+    </div>
     <a class="btn" href="/admin/tavily">进入管理 →</a>
   </div>
   <div class="card stat">
-    <h2>Exa Keys</h2>
-    <div class="stat-num">${data.exaTotal}</div>
-    <div class="muted">启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}</div>
+    <div class="stat-info">
+      <div class="stat-name">Exa Keys</div>
+      <div class="stat-num">${data.exaTotal}</div>
+      <div class="muted">启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}</div>
+    </div>
     <a class="btn" href="/admin/exa">进入管理 →</a>
   </div>
   <div class="card stat">
-    <h2>分发 Keys</h2>
-    <div class="stat-num">${data.distTotal}</div>
-    <div class="muted">启用 ${data.distEnabled} · 停用 ${data.distTotal - data.distEnabled}</div>
+    <div class="stat-info">
+      <div class="stat-name">分发 Keys</div>
+      <div class="stat-num">${data.distTotal}</div>
+      <div class="muted">启用 ${data.distEnabled} · 停用 ${data.distTotal - data.distEnabled}</div>
+    </div>
     <a class="btn" href="/admin/keys">进入管理 →</a>
   </div>
 </section>

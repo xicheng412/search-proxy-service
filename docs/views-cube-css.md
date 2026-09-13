@@ -29,7 +29,7 @@
 2. **新增单一视觉 → Utility 类**：例如按钮尺寸统一走 `.btn-sm`（padding `3px 8px`），禁止再内联 `style="padding:3px 8px;"`。
 3. **新组件骨架 → Block 类**；**变体 → Exception 类**，用增类而非写死结构。
 4. **内联 `style` 仅允许一次性特殊布局**（如 dist 页顶部「复制 base url」行的右对齐 + 负 margin hack）。一个内联写法重复出现就是抽类的信号。
-5. **保持同特异性选择器的相对顺序**：同名特异的规则后者覆盖前者，重排时别乱动。已确认的安全点：`.stat .stat-num` 必须在 `.dash-rail .stat-num` 之后；`.dash-rail .card.stat`（12px）与 `@media` 内同款（10px）靠 `@media` 恒在末尾保证窄屏生效。
+5. **保持同特异性选择器的相对顺序**：同名特异的规则后者覆盖前者，重排时别乱动。已确认的安全点：rail 矮卡数字不用 `.stat .stat-num`（40px）——由 `.dash-rail .card.stat .stat-num`（28px）凭更高特异性独立指定，与排序无关；`.dash-rail .card.stat`（12px）与 `@media` 内同款（10px）靠 `@media` 恒在末尾保证窄屏生效。
 6. **CSS/JS 已抽入 `static/`（Cloudflare Static Assets 托管）**：新增样式优先复用 `static/admin.css` 的 CUBE 类；确需独立文件时先确认复用不足。改 `static/` 下文件需重新部署才生效。
 
 ## 简约而不是教条

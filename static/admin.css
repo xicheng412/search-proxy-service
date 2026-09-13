@@ -32,7 +32,10 @@ a{ color:var(--accent); }
 form.row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
 form.row input { flex:1; }
 .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
-         gap:20px; margin-bottom:20px; }
+         gap:14px; margin-bottom:20px; }
+/* 顶部统计卡左侧竖排信息（名字 → 大数字 → 小信息），右侧挂跳转按钮。 */
+.stat-info { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.stat-info .stat-name { font-size:13px; color:var(--muted); font-weight:600; }
 /* 用量左栏（三张矮卡竖排）+ 右侧折线图。 */
 .dash-main { display:flex; gap:20px; margin-bottom:20px; align-items:stretch; }
 .dash-rail { width:210px; flex-shrink:0; display:flex; flex-direction:column; gap:12px; }
@@ -53,7 +56,6 @@ header h1 { font-size:18px; margin:0; }
             color:var(--muted); font-size:14px; }
 .nav-item:hover { color:var(--txt); background:var(--card); }
 .dash-rail .stat-label { font-size:13px; color:var(--muted); margin-bottom:8px; }
-.dash-rail .stat-num { font-size:28px; font-weight:700; line-height:1; color:var(--txt); }
 .dash-rail-foot { font-size:11px; color:var(--muted); margin-top:4px; }
 .card { background:var(--card); border:1px solid var(--line);
         border-radius:12px; padding:16px; }
@@ -98,9 +100,19 @@ pre.code{ background:#0f172a; border:1px solid var(--line); border-radius:8px;
 .badge.warn{ background:#33300a; color:#facc15; }
 button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
 button.danger { background:#7f1d1d; color:#fecaca; }
+/* 顶部统计卡（Tavily/Exa/分发）紧凑变体：左右分栏 + 右侧实底跳转按钮。 */
+.stats .card.stat { display:flex; align-items:center; justify-content:space-between;
+  gap:16px; padding:14px 16px; border-radius:8px; }
+.stats .card.stat .stat-num { font-size:32px; line-height:1.05; margin:0; }
+.stats .card.stat .muted { font-size:12px; margin:0; }
+.stats .card.stat .btn { background:var(--accent); color:#04121f; border:0;
+  border-radius:8px; padding:6px 14px; font-size:13px; font-weight:600; white-space:nowrap; }
+.stats .card.stat .btn:hover { filter:brightness(1.08); }
 /* dash 布局上下文里的 card 变体（rail 瘦卡撑高 / chart 占满右区）。 */
 .dash-rail .card.stat { flex:1; display:flex; flex-direction:column; justify-content:center;
   padding:12px 16px; }
+/* rail 矮卡数字：独立于 .stat .stat-num（40px）的窄卡字号，凭更高特异性生效、与排序无关。 */
+.dash-rail .card.stat .stat-num { font-size:28px; }
 .dash-main .card.chart { flex:1; min-width:0; }
 /* 表单项行内垂直居中（dashboard 参数保存行）。 */
 .row.center { align-items:center; }
