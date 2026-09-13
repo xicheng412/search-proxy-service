@@ -43,3 +43,8 @@ crons = ["0 3 * * *"]
 [observability.logs]
 enabled = false
 invocation_logs = false
+
+# 静态资源（admin.css / admin.js / dashboard.js / help.css）由 Cloudflare 边缘 CDN 服务。
+# 用默认 assest_caching（public, max-age=0, must-revalidate + ETag）：改动 deploy 后下一次刷新即新，无需 hash 指纹。
+[assets]
+directory = "./static"

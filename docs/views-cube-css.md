@@ -1,14 +1,14 @@
 # views/ CSS 组织约定（CUBE CSS）
 
 后台管理页样式遵循 **CUBE CSS**（Composition / Utility / Block / Exception）组织。
-本文档规定分层边界与维护规则。样式唯一承载处：`src/views/index.ts` 的 `layout()` 内嵌 `<style>`。
+后台样式唯一承载：**`static/admin.css`**（CUBE 分层注释照守；Cloudflare Static Assets 托管 + 默认缓存策略：改完 deploy，下一次刷新浏览器即见新版，无需 hash）；帮助页样式 **`static/help.css`**，独立于 CUBE 体系。
 
 ## 适用范围
 
 - **适用**：`src/views/` 下用 `layout()` 渲染的后台页面（Tavily / Exa / 分发 Keys / Dashboard / 登录）。
 - **不适用**：`src/views/help.ts` 是独立静态页、自带完整样式，自成一体；若要纳入本约定，需先把公共样式抽出来。
 
-## 分层（`<style>` 内按此顺序分区块注释）
+## 分层（`static/admin.css` 内按此顺序分区块注释）
 
 | 层 | 管什么 | 现状类 |
 |---|---|---|
@@ -29,9 +29,8 @@
 2. **新增单一视觉 → Utility 类**：例如按钮尺寸统一走 `.btn-sm`（padding `3px 8px`），禁止再内联 `style="padding:3px 8px;"`。
 3. **新组件骨架 → Block 类**；**变体 → Exception 类**，用增类而非写死结构。
 4. **内联 `style` 仅允许一次性特殊布局**（如 dist 页顶部「复制 base url」行的右对齐 + 负 margin hack）。一个内联写法重复出现就是抽类的信号。
-5. **`<style>` 写在 TS 模板字符串里**，**.css 注释中禁止使用反引号 `` ` ``**（会截断模板字符串，tsc 报 `TS1005`）。改样式后跑 `pnpm typecheck`。
-6. **保持同特异性选择器的相对顺序**：同名特异的规则后者覆盖前者，重排时别乱动。已确认的安全点：`.stat .stat-num` 必须在 `.dash-rail .stat-num` 之后；`.dash-rail .card.stat`（12px）与 `@media` 内同款（10px）靠 `@media` 恒在末尾保证窄屏生效。
-7. **不拆独立 CSS 文件**：项目无静态资源服务，后台样式统一内嵌 `layout()`；拆文件需先引入 assets 服务，属复杂度转移，默认不做。
+5. **保持同特异性选择器的相对顺序**：同名特异的规则后者覆盖前者，重排时别乱动。已确认的安全点：`.stat .stat-num` 必须在 `.dash-rail .stat-num` 之后；`.dash-rail .card.stat`（12px）与 `@media` 内同款（10px）靠 `@media` 恒在末尾保证窄屏生效。
+6. **CSS/JS 已抽入 `static/`（Cloudflare Static Assets 托管）**：新增样式优先复用 `static/admin.css` 的 CUBE 类；确需独立文件时先确认复用不足。改 `static/` 下文件需重新部署才生效。
 
 ## 简约而不是教条
 
