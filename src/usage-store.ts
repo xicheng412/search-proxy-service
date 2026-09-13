@@ -50,9 +50,6 @@ export interface UsageStore {
   refreshWeightBase(): Promise<void>;
 }
 
-/** dist 行 provider 列哨兵值：schema 中 provider 列 NOT NULL 且入 PK，dist 不区分后端统一写该值；dist 读路径无视其值。 */
-export const DIST_PROVIDER = "*";
-
 /**
  * dashboard 近5天趋势图单个数据点：某 UTC 小时桶 × provider 的上游真实调用尝试次数（success+fail）。
  * 刻意固化为 tavily/exa 两个字段（计划审批"两条线"展示，见 docs/architecture.md §4.2 已知例外）。
@@ -84,8 +81,9 @@ export interface UsageStoreOpts {
   seriesTtlMs?: number;
 }
 
+// dist 行无 provider 维度（0004 后 provider 为 NULL）：拼键时归一为空串，upstream 为真实 provider。
 const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "hour">) =>
-  `${r.kind}\u0000${r.scope}\u0000${r.provider}\u0000${r.hour}`;
+  `${r.kind}\u0000${r.scope}\u0000${r.provider ?? ""}\u0000${r.hour}`;
 
 export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStore {
   const flushIntervalMs = opts.flushIntervalMs ?? 30 * 60 * 1000;
@@ -196,7 +194,8 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
   }
 
   function recordDistCall(apiKey: string, hour: string, outcome: Result): void {
-    const key = bufKey({ kind: "dist", scope: apiKey, provider: DIST_PROVIDER, hour });
+    // dist 无 provider 维度：provider 恒 null（0004 起不落哨兵值）。
+    const key = bufKey({ kind: "dist", scope: apiKey, provider: null, hour });
     const cur = pending.get(key) ?? { success: 0, fail: 0 };
     if (outcome === "success") cur.success += 1;
     else cur.fail += 1;

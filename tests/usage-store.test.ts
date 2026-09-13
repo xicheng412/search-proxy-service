@@ -267,12 +267,12 @@ describe("readUpstreamSeries", () => {
 });
 
 describe("readDistSeries", () => {
-  // 混合 provider（含哨兵 '*'）的 dist 行：calls 必须为跨 provider 合计。
+  // dist 行 provider 恒 NULL（0004 起无 provider 维度）：calls 须为该小时全部行 success+fail 合计。
   const distRows = [
-    { hour: "2026-09-01T08:00", provider: "tavily", success: 3, fail: 1 },
-    { hour: "2026-09-01T08:00", provider: "exa", success: 2, fail: 0 },
-    { hour: "2026-09-01T08:00", provider: "*", success: 1, fail: 0 },
-    { hour: "2026-09-01T09:00", provider: "tavily", success: 1, fail: 0 },
+    { hour: "2026-09-01T08:00", provider: null, success: 3, fail: 1 },
+    { hour: "2026-09-01T08:00", provider: null, success: 2, fail: 0 },
+    { hour: "2026-09-01T08:00", provider: null, success: 1, fail: 0 },
+    { hour: "2026-09-01T09:00", provider: null, success: 1, fail: 0 },
   ];
   const seriesMinHour = "2026-09-01T00:00";
 

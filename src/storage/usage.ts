@@ -13,7 +13,7 @@ export type UsageKind = "upstream" | "dist";
 export interface UsageIncrement {
   kind: UsageKind;
   scope: string; // upstream key id | dist api_key
-  provider: string; // 'tavily' | 'exa' | future
+  provider: string | null; // upstream: 'tavily' | 'exa' | future；dist 无 provider 维度，恒 null
   hour: string; // 'YYYY-MM-DDTHH:00' UTC
   success: number;
   fail: number;
@@ -24,10 +24,10 @@ export interface UsageWindow {
   fail: number;
 }
 
-/** 某个小时桶 × provider 的聚合行（跨全部 scope）。 */
+/** 某个小时桶 × provider 的聚合行（跨全部 scope）。dist 无 provider 维度，provider 为 null。 */
 export interface HourlyRow {
   hour: string;
-  provider: string;
+  provider: string | null;
   success: number;
   fail: number;
 }
@@ -35,33 +35,19 @@ export interface HourlyRow {
 /** 批量 merge 用量增量（UPSERT 求和）。用 DB.batch 一次性事务提交。 */
 export async function mergeUsage(env: Env, rows: UsageIncrement[]): Promise<void> {
   if (rows.length === 0) return;
+  // UPSERT 冲突键 = 0004 后新 PK (kind,scope,hour)。旧 target (kind,scope,provider,hour)
+  // 在新 PK 下不匹配任何唯一约束（SQLite 语法报错），故迁移 0004 必须先于新代码部署；
+  // 窗口期（旧代码 + 新表）旧 flush 写失败属「写失败静默、统计有损」的既有语义。
   const stmts = rows.map((r) =>
     env.DB.prepare(
       `INSERT INTO usage_counts(kind,scope,provider,hour,success,fail)
        VALUES(?1,?2,?3,?4,?5,?6)
-       ON CONFLICT(kind,scope,provider,hour) DO UPDATE SET
+       ON CONFLICT(kind,scope,hour) DO UPDATE SET
          success = success + excluded.success,
          fail    = fail + excluded.fail`
     ).bind(r.kind, r.scope, r.provider, r.hour, r.success, r.fail)
   );
   await env.DB.batch(stmts);
-}
-
-/** 按时间窗求和（hour >= minHour 的 UTC 小时桶）。 */
-export async function sumUsage(
-  env: Env,
-  kind: UsageKind,
-  scope: string,
-  provider: string,
-  minHour: string
-): Promise<UsageWindow> {
-  const row = await env.DB.prepare(
-    `SELECT COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
-     FROM usage_counts WHERE kind = ?1 AND scope = ?2 AND provider = ?3 AND hour >= ?4`
-  )
-    .bind(kind, scope, provider, minHour)
-    .first();
-  return { success: (row?.success as number) ?? 0, fail: (row?.fail as number) ?? 0 };
 }
 
 /** 多 scope 按 provider 分组的求和（一次往返）。返回 scope -> (provider -> window)。 */
@@ -78,7 +64,8 @@ export async function sumUsageByScopes(
   const mergeRows = (results: unknown[]) => {
     for (const r of results as Record<string, unknown>[]) {
       const scope = r.scope as string;
-      (out[scope] ??= {})[r.provider as string] = {
+      // dist 行 provider 为 NULL：归一为空串组键，避免 JS 把 null 转成 "null" 组名。
+      (out[scope] ??= {})[(r.provider as string | null) ?? ""] = {
         success: (r.success as number) ?? 0,
         fail: (r.fail as number) ?? 0,
       };
@@ -133,7 +120,7 @@ export async function readHourly(
   return (results as Record<string, unknown>[]).map((r) => ({
     kind,
     scope,
-    provider: r.provider as string,
+    provider: r.provider as string | null,
     hour: r.hour as string,
     success: (r.success as number) ?? 0,
     fail: (r.fail as number) ?? 0,
@@ -157,7 +144,7 @@ export async function readSeriesByProvider(
     .all();
   return (results as Record<string, unknown>[]).map((r) => ({
     hour: r.hour as string,
-    provider: r.provider as string,
+    provider: r.provider as string | null,
     success: (r.success as number) ?? 0,
     fail: (r.fail as number) ?? 0,
   }));
