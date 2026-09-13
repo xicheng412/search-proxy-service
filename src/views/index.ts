@@ -59,7 +59,7 @@ export function upstreamPaginationHtml(
   }
   if (pagination.previous) parts.push(btn(pagination.previous, "上一页"));
   if (pagination.next) parts.push(btn(pagination.next, "下一页"));
-  return `<div class="pagination" style="margin-top:10px;display:flex;gap:8px;align-items:center;">${parts.join("")}</div>`;
+  return `<div class="pagination">${parts.join("")}</div>`;
 }
 
 type NavKey = "dashboard" | "tavily" | "exa" | "keys";
@@ -145,90 +145,119 @@ export function layout(
     document.addEventListener('htmx:afterSwap', formatLocalTimes);
   </script>
   <style>
+    /* ============================================================
+     * CUBE CSS 组织约定（Composition / Utility / Block / Exception）。
+     * 分层边界与维护规则见 docs/views-cube-css.md；后台样式唯一定义在本
+     * 文件（项目无静态资源；help 页自成一页，不在本约定范围内）。
+     * 模板里禁止重复内联 flex/grid/gap/padding/wrap——重复出现即抽类，
+     * 一次性特殊布局（如负 margin hack）才允许留内联。
+     * ============================================================ */
+
+    /* ---------- Theme tokens（颜色/字号唯一事实源；禁止硬编码替代） ---------- */
     :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0;
             --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --bad:#f87171; }
+
+    /* ---------- Base elements（原生元素默认；组件视觉由 Block 覆盖） ---------- */
     * { box-sizing:border-box; }
     body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
            background:var(--bg); color:var(--txt); }
-    header { padding:16px 24px; border-bottom:1px solid var(--line);
-             display:flex; justify-content:space-between; align-items:center; gap:16px;
-             flex-wrap:wrap; }
-    header h1 { font-size:18px; margin:0; }
-    .nav { display:flex; gap:4px; flex-wrap:wrap; }
-    .nav-item { padding:6px 14px; border-radius:8px; text-decoration:none;
-                color:var(--muted); font-size:14px; }
-    .nav-item:hover { color:var(--txt); background:var(--card); }
-    .nav-item.active { color:#04121f; background:var(--accent); font-weight:600; }
-    .wrap { max-width:1180px; margin:0 auto; padding:24px; }
+    input[type=text],input[type=password] { background:#0f172a; color:var(--txt);
+      border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%; }
+    button { background:var(--accent); color:#04121f; border:0; border-radius:8px;
+      padding:8px 14px; font-weight:600; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { text-align:left; padding:8px 6px; }
+    thead th { border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-weight:600; }
+    a{ color:var(--accent); }
+
+    /* ---------- Composition（元素间布局关系；禁止在模板内联 flex/grid/gap/wrap 重复） ---------- */
+    /* 横向按钮组 / 内联控件组：gap 4px、允许换行、垂直居中。 */
+    .hstack { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+    .pagination { display:flex; gap:8px; align-items:center; margin-top:10px; }
+    form.row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+    form.row input { flex:1; }
     .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
              gap:20px; margin-bottom:20px; }
     /* 用量左栏（三张矮卡竖排）+ 右侧折线图。 */
     .dash-main { display:flex; gap:20px; margin-bottom:20px; align-items:stretch; }
     .dash-rail { width:210px; flex-shrink:0; display:flex; flex-direction:column; gap:12px; }
-    .dash-rail .card.stat { flex:1; display:flex; flex-direction:column; justify-content:center;
-      padding:12px 16px; }
+    .header-actions { display:flex; align-items:center; gap:14px; }
+    /* 相邻卡片间距（块间节奏）。 */
+    .wrap > .card + .card { margin-top:20px; }
+
+    /* ---------- Block（组件骨架：结构 + 自有视觉） ---------- */
+    .wrap { max-width:1180px; margin:0 auto; padding:24px; }
+    header { padding:16px 24px; border-bottom:1px solid var(--line);
+             display:flex; justify-content:space-between; align-items:center; gap:16px;
+             flex-wrap:wrap; }
+    header h1 { font-size:18px; margin:0; }
+    .header-help { color:var(--accent); text-decoration:none; font-size:14px; }
+    .header-help:hover { text-decoration:underline; }
+    .nav { display:flex; gap:4px; flex-wrap:wrap; }
+    .nav-item { padding:6px 14px; border-radius:8px; text-decoration:none;
+                color:var(--muted); font-size:14px; }
+    .nav-item:hover { color:var(--txt); background:var(--card); }
     .dash-rail .stat-label { font-size:13px; color:var(--muted); margin-bottom:8px; }
     .dash-rail .stat-num { font-size:28px; font-weight:700; line-height:1; color:var(--txt); }
     .dash-rail-foot { font-size:11px; color:var(--muted); margin-top:4px; }
-    .dash-main .card.chart { flex:1; min-width:0; }
-    /* 窄屏：左栏三卡横向并排、图整宽下沉、口径注换行占整行。 */
-    @media (max-width:800px) {
-      .dash-main { flex-direction:column; }
-      .dash-rail { width:auto; flex-direction:row; flex-wrap:wrap; }
-      .dash-rail .card.stat { padding:10px 8px; }
-      .dash-rail-foot { flex-basis:100%; margin-top:2px; }
-    }
-    /* 固定高度容器承接 Chart.js responsive：容器高度由本处定死、不随 canvas 内联高度
-       变化，避免 Chart.js #5805/#11821 的「容器高度↔canvas 高度」反馈无限拉高。 */
-    .card.chart .chart-box { position:relative; height:300px; width:100%; }
-    .card.chart .chart-box canvas { display:block; width:100%; height:100%; }
     .card { background:var(--card); border:1px solid var(--line);
             border-radius:12px; padding:16px; }
     .card h2 { font-size:15px; margin:0 0 12px; color:var(--accent); }
     .stat .stat-num { font-size:40px; font-weight:700; line-height:1; margin:8px 0 12px;
                       color:var(--txt); }
     .stat .muted { margin-bottom:16px; }
+    /* 固定高度容器承接 Chart.js responsive：容器高度由本处定死、不随 canvas 内联高度
+       变化，避免 Chart.js #5805/#11821 的「容器高度↔canvas 高度」反馈无限拉高。 */
+    .card.chart .chart-box { position:relative; height:300px; width:100%; }
+    .card.chart .chart-box canvas { display:block; width:100%; height:100%; }
     .btn { display:inline-block; padding:8px 14px; border-radius:8px; text-decoration:none;
            background:var(--accent); color:#04121f; font-weight:600; font-size:14px; }
     .btn:hover { filter:brightness(1.08); }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
-    th,td { text-align:left; padding:8px 6px; }
-    thead th { border-bottom:1px solid var(--line); }
-    th { color:var(--muted); font-weight:600; }
-    .muted{ color:var(--muted); }
     .badge{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; }
-    .badge.ok{ background:#052e16; color:var(--ok); }
-    .badge.off{ background:#3f1d1d; color:var(--bad); }
-    .badge.warn{ background:#33300a; color:#facc15; }
-    input[type=text],input[type=password] { background:#0f172a; color:var(--txt);
-      border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%; }
-    button { background:var(--accent); color:#04121f; border:0; border-radius:8px;
-      padding:8px 14px; font-weight:600; cursor:pointer; }
-    button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
-    .header-actions { display:flex; align-items:center; gap:14px; }
-    .header-help { color:var(--accent); text-decoration:none; font-size:14px; }
-    .header-help:hover { text-decoration:underline; }
-    button.danger { background:#7f1d1d; color:#fecaca; }
     .menu-wrap { position:relative; display:inline-block; }
     .menu { position:absolute; right:0; top:calc(100% + 4px); z-index:20; min-width:200px;
             background:var(--card); border:1px solid var(--line); border-radius:8px;
             padding:4px; box-shadow:0 6px 18px rgba(0,0,0,.35); }
     .menu button { display:block; width:100%; text-align:left; padding:6px 10px;
                    font-weight:500; white-space:nowrap; }
-    form.row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-    form.row input { flex:1; }
-    .hint{ font-size:11px; color:var(--muted); margin-top:6px; }
     .plain{ background:#052e16; border:1px solid var(--ok); color:var(--ok);
       border-radius:8px; padding:10px 12px; word-break:break-all;
       font-family:ui-monospace,Menlo,monospace; margin-bottom:8px; }
-    .err{ color:var(--bad); }
     .toast{ background:#164e63; padding:6px 10px; border-radius:8px; font-size:12px; }
-    a{ color:var(--accent); }
-    .wrap > .card + .card { margin-top:20px; }
     pre.code{ background:#0f172a; border:1px solid var(--line); border-radius:8px;
       padding:10px 12px; font-family:ui-monospace,Menlo,monospace; font-size:12px;
       overflow-x:auto; white-space:pre; }
+
+    /* ---------- Utility（单一视觉原子类；跨组件复用，直接叠加在 Block 上） ---------- */
+    .muted{ color:var(--muted); }
+    .hint{ font-size:11px; color:var(--muted); margin-top:6px; }
+    .err{ color:var(--bad); }
     .hl{ color:var(--accent); }
+    /* 小尺寸操作按钮（padding 原内联 3px 8px 的统一落点）；与 ghost/danger 组合使用。 */
+    .btn-sm { padding:3px 8px; }
+
+    /* ---------- Exception（Block 的上下文变体/修饰；不新增逻辑即不出现） ---------- */
+    .nav-item.active { color:#04121f; background:var(--accent); font-weight:600; }
+    .badge.ok{ background:#052e16; color:var(--ok); }
+    .badge.off{ background:#3f1d1d; color:var(--bad); }
+    .badge.warn{ background:#33300a; color:#facc15; }
+    button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+    button.danger { background:#7f1d1d; color:#fecaca; }
+    /* dash 布局上下文里的 card 变体（rail 瘦卡撑高 / chart 占满右区）。 */
+    .dash-rail .card.stat { flex:1; display:flex; flex-direction:column; justify-content:center;
+      padding:12px 16px; }
+    .dash-main .card.chart { flex:1; min-width:0; }
+    /* 表单项行内垂直居中（dashboard 参数保存行）。 */
+    .row.center { align-items:center; }
+
+    /* ---------- Responsive（窄屏变体，恒在样式末尾以便按序覆盖同类规则） ---------- */
+    @media (max-width:800px) {
+      .dash-main { flex-direction:column; }
+      .dash-rail { width:auto; flex-direction:row; flex-wrap:wrap; }
+      .dash-rail .card.stat { padding:10px 8px; }
+      .dash-rail-foot { flex-basis:100%; margin-top:2px; }
+    }
   </style>
 </head>
 <body>
@@ -326,7 +355,7 @@ export function adminPage(data: DashboardData): string {
 <section class="card">
   <h2>上游请求队列 · 参数</h2>
   <p class="hint" style="margin:0 0 12px;">突发请求会被串行放行到上游（Tavily / Exa 各自独立队列）：每个任务处理完隔 <strong>intervalMs</strong> 再放下一个；等待中达到 <strong>maxDepth</strong> 时新请求返回 429；排队等待超过 <strong>waitBudgetMs</strong> 也会直接 429。改这里即生效（≤3s 内），无需重新部署。想在放开频率时调大数值即可。</p>
-  <form method="post" action="/admin/queue-config" class="row">
+  <form method="post" action="/admin/queue-config" class="row center">
     ${csrfField(data.csrf)}
     <label class="muted">间隔 (ms)</label>
     <input type="number" name="intervalMs" min="100" value="${data.queueIntervalMs}" required style="max-width:140px;">
@@ -334,13 +363,13 @@ export function adminPage(data: DashboardData): string {
     <input type="number" name="maxDepth" min="1" value="${data.queueMaxDepth}" required style="max-width:140px;">
     <label class="muted">等待上限 (ms)</label>
     <input type="number" name="waitBudgetMs" min="1000" value="${data.queueWaitBudgetMs}" required style="max-width:140px;">
-    <button type="submit" style="padding:3px 8px; align-self:center;">保存</button>
+    <button type="submit" class="btn-sm">保存</button>
   </form>
 </section>
 <section class="card">
   <h2>冷却参数</h2>
   <p class="hint" style="margin:0 0 12px;"><strong>post-use</strong> 每次使用后（无论成败）的固定冷却；<strong>熔断</strong> 每次非 429 失败后指数退避 <code>base × 2^连续失败次数</code>；<strong>疑似失效</strong> 每次 401/403（key 级鉴权错误）后固定冷却，到点重试一次，成功自动恢复。三者在同一把 key 上取较久者生效。改这里即生效（≤3s 内），无需重新部署。</p>
-  <form method="post" action="/admin/breaker-config" class="row">
+  <form method="post" action="/admin/breaker-config" class="row center">
     ${csrfField(data.csrf)}
     <label class="muted">每次使用冷却 (秒)</label>
     <input type="number" name="postUseCooldownSec" min="0" step="1" value="${data.postUseCooldownSec}" required style="max-width:140px;">
@@ -348,17 +377,17 @@ export function adminPage(data: DashboardData): string {
     <input type="number" name="breakerBaseSec" min="1" step="1" value="${data.breakerBaseSec}" required style="max-width:140px;">
     <label class="muted">疑似失效 (秒)</label>
     <input type="number" name="invalidCooldownSec" min="1" step="1" value="${data.invalidCooldownSec}" required style="max-width:140px;">
-    <button type="submit" style="padding:3px 8px; align-self:center;">保存</button>
+    <button type="submit" class="btn-sm">保存</button>
   </form>
 </section>
 <section class="card">
   <h2>鉴权缓存参数</h2>
   <p class="hint" style="margin:0 0 12px;">分发 key 鉴权结果缓存在 Cache API 中，命中时无需读取 D1。缓存 TTL 越长，D1 读越少；禁用/删除后的最坏生效延迟也越长。写路径会主动失效缓存。改这里即生效（≤3s 内），无需重新部署。</p>
-  <form method="post" action="/admin/dist-cache-config" class="row">
+  <form method="post" action="/admin/dist-cache-config" class="row center">
     ${csrfField(data.csrf)}
     <label class="muted">鉴权缓存 TTL (秒)</label>
     <input type="number" name="cacheTtlSec" min="1" step="1" value="${data.distCacheTtlSec}" required style="max-width:140px;">
-    <button type="submit" style="padding:3px 8px; align-self:center;">保存</button>
+    <button type="submit" class="btn-sm">保存</button>
   </form>
 </section>`;
   return layout("总览 · Tavily Proxy", body, {
@@ -519,9 +548,9 @@ export function distListFragment(
             <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
             <td title="该分发 key 最近24小时（含当前小时）的请求数">${s.success + s.fail}</td>
             <td>
-              <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+              <div class="hstack">
                 <div class="menu-wrap">
-                  <button class="ghost" type="button" data-menu-toggle title="复制调用凭据" style="padding:3px 8px;">复制 ▾</button>
+                  <button class="ghost btn-sm" type="button" data-menu-toggle title="复制调用凭据">复制 ▾</button>
                   <div class="menu" hidden>
                     <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）">复制 tavily 调用key</button>
                     <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）">复制 exa 调用key</button>
@@ -532,12 +561,12 @@ export function distListFragment(
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
                       hx-swap="innerHTML" style="display:inline-block;">
                   ${csrfField(csrf)}
-                  <button class="ghost" type="submit" style="padding:3px 8px;">${k.status === "enabled" ? "停用" : "启用"}</button>
+                  <button class="ghost btn-sm" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
                 </form>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/delete" hx-target="#keys-list"
                       hx-swap="innerHTML" hx-confirm="确认删除该分发 key？" style="display:inline-block;">
                   ${csrfField(csrf)}
-                  <button class="danger" type="submit" style="padding:3px 8px;">删除</button>
+                  <button class="danger btn-sm" type="submit">删除</button>
                 </form>
               </div>
             </td>
@@ -554,8 +583,8 @@ export function distListFragment(
   </form>
   <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 10px;">
     ${publicBaseUrl ? `<span class="muted" style="font-size:11px;">${esc(publicBaseUrl)}</span>` : ""}
-    <button class="ghost" type="button" data-copy="${esc(publicBaseUrl)}" title="复制调用基础地址" style="padding:3px 8px;">复制 base url</button>
-    <button class="ghost" type="button" data-copy="${esc(publicBaseUrl + "/search")}" title="复制搜索端点：POST base/search" style="padding:3px 8px;">复制 /search</button>
+    <button class="ghost btn-sm" type="button" data-copy="${esc(publicBaseUrl)}" title="复制调用基础地址">复制 base url</button>
+    <button class="ghost btn-sm" type="button" data-copy="${esc(publicBaseUrl + "/search")}" title="复制搜索端点：POST base/search">复制 /search</button>
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>

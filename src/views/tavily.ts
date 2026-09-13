@@ -47,12 +47,12 @@ export function tavilyListFragment(
           return `<tr>
             <td>${esc(maskKey(k.key))}</td>
             <td>
-              <form hx-post="/admin/tavily/${esc(k.id)}/name" hx-target="#tavily-list"
-                    hx-swap="innerHTML" style="display:flex;gap:4px;align-items:center;">
+              <form class="hstack" hx-post="/admin/tavily/${esc(k.id)}/name" hx-target="#tavily-list"
+                    hx-swap="innerHTML">
                 ${csrfField(csrf)}
                 <input type="text" name="name" value="${esc(k.name)}"
                   style="width:110px;padding:4px 6px;">
-                <button class="ghost" type="submit" style="padding:3px 8px;">保存</button>
+                <button class="ghost btn-sm" type="submit">保存</button>
               </form>
             </td>
             <td>${st}</td>
@@ -60,16 +60,18 @@ export function tavilyListFragment(
             <td>${s.success}</td>
             <td>${s.fail}</td>
             <td>
+              <div class="hstack">
               <form hx-post="/admin/tavily/${esc(k.id)}/toggle" hx-target="#tavily-list"
-                    hx-swap="innerHTML" style="display:inline;">
+                    hx-swap="innerHTML">
                 ${csrfField(csrf)}
-                <button class="ghost" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
+                <button class="ghost btn-sm" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
               </form>
               <form hx-post="/admin/tavily/${esc(k.id)}/delete" hx-target="#tavily-list"
-                    hx-swap="innerHTML" hx-confirm="确认删除该 Tavily key？" style="display:inline;">
+                    hx-swap="innerHTML" hx-confirm="确认删除该 Tavily key？">
                 ${csrfField(csrf)}
-                <button class="danger" type="submit">删除</button>
+                <button class="danger btn-sm" type="submit">删除</button>
               </form>
+              </div>
             </td>
           </tr>`;
         })

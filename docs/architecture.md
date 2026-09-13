@@ -249,7 +249,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 | `proxy.ts` | 边界：鉴权 + 任务打装 + 队列转发 + native/searxng 执行器（经 retry 核 callbacks 注入） | 不含重试策略；不读视图模板 |
 | `auth.ts` | 登录 / 会话（KV）/ CSRF / 登出 | 不写业务数据 |
 | `admin/` | 路由 + 鉴权校验 + 调 storage / usage-store / 三组参数 | 不直接拼 HTML；视图在 views/ |
-| `views/` | 模板片段（HTMX 友好）+ 渲染函数 | 不写 IO |
+| `views/` | 模板片段（HTMX 友好）+ 渲染函数；样式组织见 [views-cube-css.md](./views-cube-css.md) | 不写 IO |
 | `config.ts` | `PUBLIC_BASE_URL` 唯一取值点（缓存） | 不参与请求热路径 |
 | `scripts/deploy.sh` | 注入 `PUBLIC_BASE_URL` → `wrangler deploy` | 不存任何真实域名 |
 
@@ -286,10 +286,11 @@ upstream_keys(provider, id, key, name, status, cooldown_until, created_at)
 breaker_state(id, consecutive, updated_at, created_at)   -- 已停用（迁移保留）：连续计数权威在 QueueDO 内存
 distributed_keys(api_key, note, status, created_at)      -- PK api_key
 usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
-              PK (kind, scope, provider, hour)
+              PK (kind, scope, hour); provider 可空（dist 无 provider 维度写 NULL，见 0004）
 索引：idx_upstream_keys_provider_created_id (keyset 分页)
-     idx_usage_scope_window (kind, scope, hour, provider)
-     idx_usage_window        (kind, provider, hour)
+     idx_usage_scope  (kind, scope, hour, provider)
+     idx_usage_window (kind, hour, provider)
+     idx_usage_signal (kind, hour, scope, fail)  -- 选 key 权重信号 index-only（见 0004）
 ```
 
 | 设计点 | 决策 | 原因 |
@@ -321,7 +322,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
    - 热路径选 key 权重只依赖 `本 isolate 内存增量 + 长效缓存 base`，权重 base **独立 120s 刷新**（queue drain 驱动，与 flush 节奏解耦），稳态 0 D1 往返。误差方向是"比真实略旧的失败数"：刚出问题的 key 到下一轮刷新才被压低，对负载均衡是可接受甚至更稳的行为（§6.1 权重本就该贴近"最近大盘"而非"本瞬间"）。
    - 高频读一律挂缓存；缓存命中即 0 D1。**目标形态：代理热路径 0 次 D1 统计往返。**
 2. **用次数换往返**：去不掉的读（展示类）保持低频；多批/多条查询用 `DB.batch()` 合并为一次往返；只 SELECT 消费方真正要的列与维度（例：选 key 只取 `SUM(fail)` + `GROUP BY scope`，不取 provider 拆分、不取 success）。
-3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（小时桶聚合后每 key 每日 ≤ 24 行）。不为 index-only scan 给 `usage_counts` 扩覆盖索引——写侧按 30min/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。
+3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（小时桶聚合后每 key 每日 ≤ 24 行）。默认不为 index-only scan 扩覆盖索引——写侧按 30min/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。**唯一例外：`idx_usage_signal`（0004）**——选 key 权重信号查询 `WHERE kind='upstream' AND hour>=? GROUP BY scope` 无任何 hour 前缀索引可用、实际全扫 kind 历史（90d×key×provider），与"瓶颈不是行数"的前提相悖；覆盖索引把扫描裁到窗口小时桶且免回表，写放大与 0004 重建后整体缩小的索引基本持平（见 ADR-0002）。
 
 **不进入置换范围**（精确语义，禁止近似）：
 - 熔断 / 冷却状态（`breaker_state`、`cooldown_until`）：安全相关的放行决策，不许一秒误差。前提是多写者或跨进程副本；本仓库的冷却/熔断唯一写者即选 key 的单点进程（per-provider `QueueDO` 内存池 `KeyPool`，见 ADR-0001 §1 与 §6.2），内存即权威、读取无陈旧，D1 仅低频 checkpoint（丢失方向安全），不属"近似"。
@@ -332,7 +333,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 `usage_counts` 由 `kind` 列隔离两条独立统计线。**它们是两个维度，不是同一事件的两个视图，不要求一致**：
 
 - **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。**provider 线 = 该公司全部能力的上游尝试合计（Search + Extract 并账，不按能力拆分）**。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
-- **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求计数」，`scope` = 分发 api_key，success/fail 二元、**不区分后端/协议**——provider 列统一写哨兵 `'*'`（该列 NOT NULL 且入 PK，属 schema 约束；dist 读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。请求进入重试核（`retry.ts` prologue）即记成功，即使最终全部 key 失败返回 503；searxng 参数错误记 fail；searxng `pageno>1` 空结果记 success 但不耗上游；**队列拒入（maxDepth 429）与未轮到断开不计**。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h调用」（逐 key、单列次数）消费。
+- **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求计数」，`scope` = 分发 api_key，success/fail 二元、**不区分后端/协议**——provider 列为 NULL（0004 起 dist 无 provider 维度，读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。请求进入重试核（`retry.ts` prologue）即记成功，即使最终全部 key 失败返回 503；searxng 参数错误记 fail；searxng `pageno>1` 空结果记 success 但不耗上游；**队列拒入（maxDepth 429）与未轮到断开不计**。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h调用」（逐 key、单列次数）消费。
 
 **双源展示是有意的**：Dashboard 上 **24h/昨日卡 = dist（消费量）**，**近 5 天趋势图 = upstream（上游真实调用负载、Tavily/Exa 两线）**——各自回答不同问题，不对齐。
 
