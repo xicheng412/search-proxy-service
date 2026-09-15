@@ -57,6 +57,19 @@ export async function listUpstreamKeys(
   return (results as Record<string, unknown>[]).map(toCoreKey);
 }
 
+/** dashboard 统计卡用：按 provider 计数 total/enabled（注册口径，不含 cooldown）。 */
+export async function countUpstreamKeys(
+  env: Env,
+  def: UpstreamDef
+): Promise<{ total: number; enabled: number }> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN status = 'enabled' THEN 1 ELSE 0 END), 0) AS enabled
+     FROM upstream_keys WHERE provider = ?1`
+  ).bind(def.provider).first();
+  return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
+}
+
 /** 按 provider + id 单行读取（管理页 name/toggle 用，避免为一条 key 拉全量列表）。 */
 export async function getUpstreamKey(
   env: Env,
@@ -178,7 +191,7 @@ export async function updateUpstreamKey(
   patch: Partial<Pick<CoreKey, "name" | "status">>
 ): Promise<CoreKey | null> {
   const { sets, binds } = buildSetClause(patch, ["name", "status"], 1);
-  if (sets.length === 0) return listUpstreamKeys(env, def).then((ks) => ks.find((k) => k.id === id) ?? null);
+  if (sets.length === 0) return getUpstreamKey(env, def, id);
   const whereIdx = binds.length + 1;
   const sql =
     `UPDATE upstream_keys SET ${sets.join(", ")} WHERE provider = ?${whereIdx} AND id = ?${whereIdx + 1} RETURNING id, key, name, status, cooldown_until, created_at`;

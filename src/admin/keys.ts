@@ -7,6 +7,7 @@ import { DistStats, hourKey } from "../domain";
 import {
   deleteDistributedKey,
   generateDistributedKey,
+  getDistributedKey,
   listDistributedKeys,
   updateDistributedKey,
 } from "../storage/dist-keys";
@@ -69,7 +70,7 @@ keysAdmin.post("/generate", async (c) => {
 keysAdmin.post("/:apiKey/toggle", async (c) => {
   if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const apiKey = c.req.param("apiKey");
-  const cur = (await listDistributedKeys(c.env)).find((k) => k.api_key === apiKey);
+  const cur = await getDistributedKey(c.env, apiKey);
   if (!cur) return c.html(errorFragment("未找到该 key"));
   await updateDistributedKey(c.env, apiKey, {
     status: cur.status === "enabled" ? "disabled" : "enabled",

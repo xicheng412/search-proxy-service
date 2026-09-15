@@ -95,9 +95,20 @@ export function makeScriptedD1(steps: D1Step[]): ScriptedD1 {
 
   const db = {
     prepare(sql: string) {
+      const stmt = (binds: unknown[]) => bound(sql, binds);
       return {
         bind(...binds: unknown[]) {
-          return bound(sql, binds);
+          return stmt(binds);
+        },
+        // 真实 D1 允许未绑定的 statement 直接 .first()/.all()/.run()，镜像该行为（记录 binds: []）。
+        all() {
+          return stmt([]).all();
+        },
+        first() {
+          return stmt([]).first();
+        },
+        run() {
+          return stmt([]).run();
         },
       };
     },

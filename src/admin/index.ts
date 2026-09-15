@@ -4,8 +4,8 @@ import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getSession, getCsrfToken, validateCsrf } from "../auth";
 import { hourKey } from "../domain";
-import { listDistributedKeys } from "../storage/dist-keys";
-import { listUpstreamKeys } from "../storage/upstream-keys";
+import { countDistributedKeys } from "../storage/dist-keys";
+import { countUpstreamKeys } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
 import { readQueueConfig, writeQueueConfig } from "../queue-config";
 import { readBreakerConfig, writeBreakerConfig } from "../breaker-config";
@@ -48,9 +48,9 @@ admin.get("/", async (c) => {
   const env = c.env;
   const kv = c.env.KV; // 基础配置（queue/breaker）与会话仍走 KV
   const [tkeys, ekeys, dkeys] = await Promise.all([
-    listUpstreamKeys(env, TAVILY.upstream),
-    listUpstreamKeys(env, EXA.upstream),
-    listDistributedKeys(env),
+    countUpstreamKeys(env, TAVILY.upstream),
+    countUpstreamKeys(env, EXA.upstream),
+    countDistributedKeys(env),
   ]);
 
   const store = getUsageStore(env);
@@ -59,26 +59,31 @@ admin.get("/", async (c) => {
     store.readDistSeries(seriesMinHour),
     store.readUpstreamSeries(seriesMinHour),
   ]);
-  const queueCfg = await readQueueConfig(kv);
+  const [queueCfg, breakerCfg, distCacheCfg, csrf] = await Promise.all([
+    readQueueConfig(kv),
+    readBreakerConfig(kv),
+    readDistCacheConfig(kv),
+    getCsrfToken(c).then((t) => t ?? ""),
+  ]);
 
   return c.html(
     adminPage({
-      tavilyTotal: tkeys.length,
-      tavilyEnabled: tkeys.filter((k) => k.status === "enabled").length,
-      exaTotal: ekeys.length,
-      exaEnabled: ekeys.filter((k) => k.status === "enabled").length,
-      distTotal: dkeys.length,
-      distEnabled: dkeys.filter((k) => k.status === "enabled").length,
+      tavilyTotal: tkeys.total,
+      tavilyEnabled: tkeys.enabled,
+      exaTotal: ekeys.total,
+      exaEnabled: ekeys.enabled,
+      distTotal: dkeys.total,
+      distEnabled: dkeys.enabled,
       distSeries: JSON.stringify(distSeries),
       upstreamSeries: JSON.stringify(upstreamSeries),
       queueIntervalMs: queueCfg.intervalMs,
       queueMaxDepth: queueCfg.maxDepth,
       queueWaitBudgetMs: queueCfg.waitBudgetMs,
-      postUseCooldownSec: (await readBreakerConfig(kv)).postUseCooldownSec,
-      breakerBaseSec: (await readBreakerConfig(kv)).breakerBaseSec,
-      invalidCooldownSec: (await readBreakerConfig(kv)).invalidCooldownSec,
-      distCacheTtlSec: (await readDistCacheConfig(kv)).cacheTtlSec,
-      csrf: (await getCsrfToken(c)) ?? "",
+      postUseCooldownSec: breakerCfg.postUseCooldownSec,
+      breakerBaseSec: breakerCfg.breakerBaseSec,
+      invalidCooldownSec: breakerCfg.invalidCooldownSec,
+      distCacheTtlSec: distCacheCfg.cacheTtlSec,
+      csrf,
     })
   );
 });

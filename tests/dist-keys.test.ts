@@ -5,6 +5,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { Env } from "../src/types";
 import {
+  countDistributedKeys,
   getDistributedKey,
   generateDistributedKey,
   updateDistributedKey,
@@ -87,6 +88,23 @@ describe("getDistributedKey 读穿缓存", () => {
       if (prev === undefined) delete (globalThis as unknown as { caches?: unknown }).caches;
       else (globalThis as unknown as { caches: unknown }).caches = prev;
     }
+  });
+});
+
+describe("countDistributedKeys 统计读模型", () => {
+  it("聚合全表 total/enabled，无绑定", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ total: 5, enabled: 3 }] }]);
+    const r = await countDistributedKeys(makeEnv(db));
+    expect(r).toEqual({ total: 5, enabled: 3 });
+    const [call] = log();
+    expect(call.op).toBe("first");
+    expect(call.sql).toContain("FROM distributed_keys");
+    expect(call.binds).toEqual([]);
+  });
+
+  it("空表返回 0/0", async () => {
+    const { db } = makeScriptedD1([]);
+    await expect(countDistributedKeys(makeEnv(db))).resolves.toEqual({ total: 0, enabled: 0 });
   });
 });
 

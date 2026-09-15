@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import type { Env } from "../src/types";
 import { TAVILY } from "../src/providers";
 import {
+  countUpstreamKeys,
   listUpstreamKeysPage,
   updateUpstreamKey,
   addUpstreamKey,
@@ -147,12 +148,32 @@ describe("updateUpstreamKey 动态 SET 与空 patch", () => {
     expect(call.binds).toEqual(["n2", "disabled", def.provider, "k1"]);
   });
 
-  it("空 patch 走读回路径（listUpstreamKeys 一次 all，不额外 SELECT）", async () => {
+  it("空 patch 走身份读回路径（getUpstreamKey 一次 first）", async () => {
     const { db, log } = makeScriptedD1([{ results: [keyRow("k1", 1)] }]);
     const r = await updateUpstreamKey({ DB: db } as unknown as Env, def, "k1", {});
     expect(r?.id).toBe("k1");
     expect(log()).toHaveLength(1);
-    expect(log()[0].op).toBe("all");
+    const [call] = log();
+    expect(call.op).toBe("first");
+    expect(call.sql).toContain("WHERE provider = ?1 AND id = ?2");
+    expect(call.binds).toEqual([def.provider, "k1"]);
+  });
+});
+
+describe("countUpstreamKeys 统计读模型", () => {
+  it("按 provider 聚合 total/enabled，绑定 provider", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ total: 3, enabled: 2 }] }]);
+    const r = await countUpstreamKeys({ DB: db } as unknown as Env, def);
+    expect(r).toEqual({ total: 3, enabled: 2 });
+    const [call] = log();
+    expect(call.op).toBe("first");
+    expect(call.sql).toContain("FROM upstream_keys WHERE provider = ?1");
+    expect(call.binds).toEqual([def.provider]);
+  });
+
+  it("空表返回 0/0", async () => {
+    const { db } = makeScriptedD1([]);
+    await expect(countUpstreamKeys({ DB: db } as unknown as Env, def)).resolves.toEqual({ total: 0, enabled: 0 });
   });
 });
 

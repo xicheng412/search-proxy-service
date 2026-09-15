@@ -58,6 +58,18 @@ export async function listDistributedKeys(env: Env): Promise<DistributedKey[]> {
   return (results as Record<string, unknown>[]).map(toDistKey);
 }
 
+/** dashboard 统计卡用：全局计数 total/enabled（dist 无 provider 维度）。 */
+export async function countDistributedKeys(
+  env: Env
+): Promise<{ total: number; enabled: number }> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN status = 'enabled' THEN 1 ELSE 0 END), 0) AS enabled
+     FROM distributed_keys`
+  ).first();
+  return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
+}
+
 export async function getDistributedKey(
   env: Env,
   apiKey: string
