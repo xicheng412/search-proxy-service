@@ -2,7 +2,7 @@
 // 使用 fake D1（prepare/all），不连接真实 Cloudflare 资源。
 
 import { describe, it, expect } from "vitest";
-import { createUsageStore } from "../src/usage-store";
+import { createUsageStore } from "../src/usage";
 import { hourKey } from "../src/domain";
 import type { Env } from "../src/types";
 import { makeConstantD1, makeScriptedD1 } from "./helpers/fake-d1";

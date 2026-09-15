@@ -22,7 +22,7 @@
 import type { Env } from "./types";
 import type { ProviderConfig } from "./providers";
 import { CoreKey, hourKey, RetryClass } from "./domain";
-import { getUsageStore, type UsageStore } from "./usage-store";
+import { getUsageStore, type UsageStore } from "./usage";
 import type { KeyPool } from "./key-pool";
 import {
   recordUpstreamFailure,

@@ -23,7 +23,7 @@ import {
   hourKey,
 } from "./domain";
 import { getDistributedKey } from "./storage/dist-keys";
-import { getUsageStore } from "./usage-store";
+import { getUsageStore } from "./usage";
 import { searchWithRetry, type CoreDeps } from "./retry";
 import type { NativeTask, SearxngTask, ReaderTask, QueueTask } from "./queue/task";
 import {

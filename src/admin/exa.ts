@@ -13,7 +13,7 @@ import {
   UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage/upstream-keys";
-import { getUsageStore } from "../usage-store";
+import { getUsageStore } from "../usage";
 import { notifyKeyPoolSync } from "../key-pool";
 import { EXA } from "../providers";
 import { errorFragment } from "../views";

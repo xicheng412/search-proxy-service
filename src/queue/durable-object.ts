@@ -21,7 +21,7 @@ import { Provider } from "../domain";
 import { PROVIDERS } from "../providers";
 import type { ProviderConfig } from "../providers";
 import { runNativeTask, runSearxngTask, runReaderTask } from "../proxy";
-import { getUsageStore } from "../usage-store";
+import { getUsageStore } from "../usage";
 import { QueueTask } from "./task";
 import { searxngError } from "../adapters/searxng";
 import { readerError } from "../adapters/reader";

@@ -6,7 +6,7 @@ import { describe, it, expect, vi, afterEach, type Mock } from "vitest";
 import type { Env } from "../src/types";
 import { TAVILY } from "../src/providers";
 import type { CoreKey } from "../src/domain";
-import type { UsageStore } from "../src/usage-store";
+import type { UsageStore } from "../src/usage";
 import { createKeyPool } from "../src/key-pool";
 import {
   searchWithRetry,

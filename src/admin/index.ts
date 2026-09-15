@@ -6,7 +6,7 @@ import { getSession, getCsrfToken, validateCsrf } from "../auth";
 import { hourKey } from "../domain";
 import { countDistributedKeys } from "../storage/dist-keys";
 import { countUpstreamKeys } from "../storage/upstream-keys";
-import { getUsageStore } from "../usage-store";
+import { getUsageStore } from "../usage";
 import { readQueueConfig, writeQueueConfig } from "../queue/config";
 import { readBreakerConfig, writeBreakerConfig } from "../breaker-config";
 import { readDistCacheConfig, writeDistCacheConfig } from "../dist-cache-config";

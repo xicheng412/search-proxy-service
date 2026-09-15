@@ -11,7 +11,7 @@ import {
   listDistributedKeys,
   updateDistributedKey,
 } from "../storage/dist-keys";
-import { getUsageStore } from "../usage-store";
+import { getUsageStore } from "../usage";
 import { resolvePublicBaseUrl } from "../config";
 import {
   distGenerateResult,
