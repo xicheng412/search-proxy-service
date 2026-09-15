@@ -6,7 +6,7 @@ import { resolvePublicBaseUrl } from "./config";
 import { helpPage } from "./views/help";
 import { handleLogin, handleLogout } from "./auth";
 import { admin } from "./admin";
-import { loginPage } from "./views";
+import { loginPage } from "./views/login";
 
 export type { Env } from "./types";
 export { QueueDO } from "./queue";

@@ -264,7 +264,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 
 其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
 
-> **已知例外（Dashboard 上游趋势图序列）**：`usage-store.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/index.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
+> **已知例外（Dashboard 上游趋势图序列）**：`usage-store.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
 
 > **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径 / 一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `queue.ts` 分派。例见 `searxng`、`reader`。
 
