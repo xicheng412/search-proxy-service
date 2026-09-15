@@ -7,7 +7,7 @@ import { hourKey } from "../domain";
 import { countDistributedKeys } from "../storage/dist-keys";
 import { countUpstreamKeys } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage-store";
-import { readQueueConfig, writeQueueConfig } from "../queue-config";
+import { readQueueConfig, writeQueueConfig } from "../queue/config";
 import { readBreakerConfig, writeBreakerConfig } from "../breaker-config";
 import { readDistCacheConfig, writeDistCacheConfig } from "../dist-cache-config";
 import { EXA, TAVILY } from "../providers";

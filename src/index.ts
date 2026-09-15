@@ -9,7 +9,7 @@ import { admin } from "./admin";
 import { loginPage } from "./views/login";
 
 export type { Env } from "./types";
-export { QueueDO } from "./queue";
+export { QueueDO } from "./queue/durable-object";
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 

@@ -3,7 +3,7 @@
 // KVNamespace 是 workers-types 全局类型（tests 不在 tsc include 内），仅作标注形参。
 
 import { describe, it, expect } from "vitest";
-import { DEFAULT_QUEUE_CONFIG, readQueueConfig } from "../src/queue-config";
+import { DEFAULT_QUEUE_CONFIG, readQueueConfig } from "../../src/queue/config";
 import type { KVNamespace } from "@cloudflare/workers-types";
 
 function fakeKv(raw: unknown): KVNamespace {

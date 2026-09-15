@@ -16,18 +16,18 @@
 //   - 连接断开：任务仍未轮到（signal aborted）→ 直接丢弃，不烧上游配额。
 
 import { DurableObject } from "cloudflare:workers";
-import { Env } from "./types";
-import { Provider } from "./domain";
-import { PROVIDERS } from "./providers";
-import type { ProviderConfig } from "./providers";
-import { runNativeTask, runSearxngTask, runReaderTask } from "./proxy";
-import { getUsageStore } from "./usage-store";
-import { QueueTask } from "./queue-task";
-import { searxngError } from "./adapters/searxng";
-import { readerError } from "./adapters/reader";
-import { cachedQueueConfig } from "./queue-config";
-import { createKeyPool, type KeyPool } from "./key-pool";
-import type { QueueConfig } from "./queue-config";
+import { Env } from "../types";
+import { Provider } from "../domain";
+import { PROVIDERS } from "../providers";
+import type { ProviderConfig } from "../providers";
+import { runNativeTask, runSearxngTask, runReaderTask } from "../proxy";
+import { getUsageStore } from "../usage-store";
+import { QueueTask } from "./task";
+import { searxngError } from "../adapters/searxng";
+import { readerError } from "../adapters/reader";
+import { cachedQueueConfig } from "./config";
+import { createKeyPool, type KeyPool } from "../key-pool";
+import type { QueueConfig } from "./config";
 
 interface QueuedRequest {
   provider: Provider;

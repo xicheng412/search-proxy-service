@@ -81,7 +81,7 @@
 |---|---|---|
 | 后台刷新快照 + pending（0 往返） | `usage-store.ts` `signalBase` + `readUpstreamWeightSignal`（代理选 key 权重） | 每次请求 D1 聚合 → 0 |
 | Cache API + TTL + 写失效 | `storage.ts` `getDistributedKey`（每次鉴权） | D1 SELECT → Cache 命中 0 |
-| 模块级 3s TTL + 写后失效 | `breaker-config.ts` `cachedBreakerConfig`、`queue-config.ts` `cachedQueueConfig`、`dist-cache-config.ts` `cachedDistCacheConfig` | 每次事件 KV get → TTL 内 0 |
+| 模块级 3s TTL + 写后失效 | `breaker-config.ts` `cachedBreakerConfig`、`queue/config.ts` `cachedQueueConfig`、`dist-cache-config.ts` `cachedDistCacheConfig` | 每次事件 KV get → TTL 内 0 |
 | isolate 内存 MRU + pending（30s，miss 才 `.all()`） | `usage-store.ts` `weightCache` / `distCache`（admin 展示） | D1 聚合 → 命中 0 |
-| DO 内存权威 + 低频 checkpoint | `queue.ts` KeyPool（冷却/熔断） | 每请求 D1 读写 → 内存；D1 ≤30s |
+| DO 内存权威 + 低频 checkpoint | `durable-object.ts` KeyPool（冷却/熔断） | 每请求 D1 读写 → 内存；D1 ≤30s |
 | 常量一次解析 | `config.ts` `resolvePublicBaseUrl` | env 读 → 一次 |

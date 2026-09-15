@@ -3,7 +3,7 @@
 // 对外提供"统计"读契约（小时桶 SUM，今日边界由调用方给定 minHour）。
 // 精度契约（近似值）：同一实例内 record* 后立即 Read 可见（本实例增量叠加）；
 // 跨实例最多延迟「≥30min 或 ≥256 条」（双阈值，见 flushSoon）；队列清空时兜底 flush
-// （见 queue.ts drain）；isolate 回收时未 flush 增量丢失 ≤ 上述阈值区间。
+// （见 durable-object.ts drain）；isolate 回收时未 flush 增量丢失 ≤ 上述阈值区间。
 // flush 写失败静默，读失败按 0 处理，绝不阻塞主流程。
 // 用量按 UTC 小时桶落库（usage_counts）；success/fail 二选一，calls = 二者之和（派生）。
 

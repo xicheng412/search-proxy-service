@@ -25,7 +25,7 @@ import {
 import { getDistributedKey } from "./storage/dist-keys";
 import { getUsageStore } from "./usage-store";
 import { searchWithRetry, type CoreDeps } from "./retry";
-import type { NativeTask, SearxngTask, ReaderTask, QueueTask } from "./queue-task";
+import type { NativeTask, SearxngTask, ReaderTask, QueueTask } from "./queue/task";
 import {
   parseSearxngParams,
   buildTavilyBody,
@@ -115,7 +115,7 @@ async function authenticate(
 // 队列任务执行器：主 Worker 鉴权后把"一次相对上游的请求"打成可序列化任务，转发给
 // 所属 provider 的队列 DO；DO 串行放行（intervalMs 间隔），调用下方执行器跑完整
 // 重试/冷却/统计。native / searxng / reader 各一个执行器，供 DO 引用（不依赖 Hono Context）。
-// 任务 DTO 类型见 src/queue-task.ts；重试核见 src/retry.ts。
+// 任务 DTO 类型见 src/queue/task.ts；重试核见 src/retry.ts。
 // ---------------------------------------------------------------
 
 /** native 执行器（透传）：构建 passthrough 回调，交给通用重试核。 */

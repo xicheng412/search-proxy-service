@@ -1,5 +1,5 @@
 // 基础设施层·上游 key 池内存权威态（KeyPool）。
-// 每 provider 一把，由该 provider 的 QueueDO（queue.ts）持有；同一进程单点写者：
+// 每 provider 一把，由该 provider 的 QueueDO（durable-object.ts）持有；同一进程单点写者：
 //   - 冷却（cooldown_until）与熔断连续计数（breaker: Map）只在本池内存被改，
 //     选 key（retry.ts emit(init) 读 pool.getKeys()）读到的就是刚写入的值——强一致。
 //   - D1 仅是低频 checkpoint 备份：checkpointCooldowns 批量写回 cooldown_until。
