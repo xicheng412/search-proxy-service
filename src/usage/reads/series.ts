@@ -5,6 +5,7 @@
 import type { Env } from "../../types";
 import type { UsageCore } from "../core";
 import { readSeriesByProvider as storeReadSeriesByProvider } from "../../storage/usage";
+import { hourKey } from "../../domain";
 
 /**
  * dashboard 近5天趋势图单个数据点：某 UTC 小时桶 × provider 的上游真实调用尝试次数（success+fail）。
@@ -36,11 +37,33 @@ export function makeSeriesRead(env: Env, core: UsageCore, opts: SeriesOpts = {})
   let upstreamSeriesCache: { minHour: string; at: number; base: UpstreamSeriesPoint[] } | null = null;
   let distSeriesCache: { minHour: string; at: number; base: DistSeriesPoint[] } | null = null;
 
+  // Dashboard 序列契约（2026-09 修复）：返回 minHour..当前小时 完整小时序列，无调用桶补 0。
+  // 背景：趋势图用 Chart.js time scale 按真实时间间距渲染 x 轴；此前序列只含「有调用的小时」，
+  // 缺失小时无槽位 → 无数据小时被跳过、坐标不等间隔（问题记录见 docs/architecture.md §5.2.2）。
+  // 异常范围（minHour 晚于当前小时 / 解析失败）兜底：原样返回稀疏数组，绝不抛出。
+  function fillRange<T extends { hour: string }>(
+    sparse: T[],
+    minHour: string,
+    zero: (hour: string) => T,
+  ): T[] {
+    const start = Date.parse(minHour + "Z");
+    const end = Date.parse(hourKey() + "Z");
+    if (!isFinite(start) || !isFinite(end) || end < start) return sparse;
+    const byHour = new Map(sparse.map((p) => [p.hour, p]));
+    const out: T[] = [];
+    for (let ms = start; ms <= end; ms += 3_600_000) {
+      const h = hourKey(ms);
+      out.push(byHour.get(h) ?? zero(h));
+    }
+    return out;
+  }
+
   /**
    * 全部分发 key 的上游真实调用尝试序列（D1 base + pending 叠加；TTL seriesTtlMs）。
    * 下方两处 `if (provider === ...)` 折叠（D1 base 与 pending）按 provider 名硬编码 tavily/exa，
    * 属 docs/architecture.md §4.2 的已知例外：新增 provider 时须扩展 UpstreamSeriesPoint、
    * 本函数两处折叠与 views/dashboard.ts dashboardScript（dist 序列无须参与）。
+   * 返回 `minHour..当前小时` 完整小时序列，空桶补 0（原因见 `fillRange` 注释）。
    */
   async function upstream(minHour: string): Promise<UpstreamSeriesPoint[]> {
     const now = Date.now();
@@ -81,12 +104,13 @@ export function makeSeriesRead(env: Env, core: UsageCore, opts: SeriesOpts = {})
       else if (e.provider === "exa") entry.exa += calls;
     });
     result.sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0));
-    return result;
+    return fillRange(result, minHour, (hour) => ({ hour, tavily: 0, exa: 0 }));
   }
 
   /**
    * 全部分发 key 的 dist 小时序列（D1 base + pending 叠加；TTL seriesTtlMs）。
    * calls = 该小时桶跨全部 provider 的 success+fail 合计（不落入 provider 维度）。
+   * 返回 `minHour..当前小时` 完整小时序列，空桶补 0（原因见 `fillRange` 注释）。
    */
   async function dist(minHour: string): Promise<DistSeriesPoint[]> {
     const now = Date.now();
@@ -121,7 +145,7 @@ export function makeSeriesRead(env: Env, core: UsageCore, opts: SeriesOpts = {})
       entry.calls += e.success + e.fail;
     });
     result.sort((a, b) => (a.hour < b.hour ? -1 : b.hour < a.hour ? 1 : 0));
-    return result;
+    return fillRange(result, minHour, (hour) => ({ hour, calls: 0 }));
   }
 
   return { upstream, dist };

@@ -333,6 +333,8 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 `usage_counts` 由 `kind` 列隔离两条独立统计线。**它们是两个维度，不是同一事件的两个视图，不要求一致**：
 
 - **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。**provider 线 = 该公司全部能力的上游尝试合计（Search + Extract 并账，不按能力拆分）**。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
+
+**Dashboard 序列读侧契约**：`readUpstreamSeries`/`readDistSeries`（`src/usage/reads/series.ts`）返回 `minHour..当前小时` 的完整小时序列，空桶补 0——因前端趋势图用 Chart.js time scale 按真实时间间距渲染，稀疏序列会让 x 轴跳过无数据小时（2026-09 修复）。
 - **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求计数」，`scope` = 分发 api_key，success/fail 二元、**不区分后端/协议**——provider 列为 NULL（0004 起 dist 无 provider 维度，读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。请求进入重试核（`retry.ts` prologue）即记成功，即使最终全部 key 失败返回 503；searxng 参数错误记 fail；searxng `pageno>1` 空结果记 success 但不耗上游；**队列拒入（maxDepth 429）与未轮到断开不计**。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h调用」（逐 key、单列次数）消费。
 
 **双源展示是有意的**：Dashboard 上 **24h/昨日卡 = dist（消费量）**，**近 5 天趋势图 = upstream（上游真实调用负载、Tavily/Exa 两线）**——各自回答不同问题，不对齐。

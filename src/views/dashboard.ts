@@ -118,8 +118,10 @@ export function adminPage(data: DashboardData): string {
 
 /**
  * Dashboard 图表脚本：注入 dist / upstream 两段序列 JSON（`\u003c` 转义防 `</script`），
- * 再按序引入 Chart.js CDN 与 static/dashboard.js——统计卡与趋势图的渲染逻辑已移入
- * 该文件，其 dataset 语义见 static/dashboard.js 顶部注释。
+ * 再按序引入 Chart.js CDN、date-fns time-scale 适配器与 static/dashboard.js——统计卡与
+ * 趋势图的渲染逻辑已移入该文件，其 dataset 语义见 static/dashboard.js 顶部注释。
+ * Chart.js 时间轴需额外引入 date-fns 适配器（chartjs-adapter-date-fns 3.0.0，自带 date-fns，
+ * `Chart` 全局存在时自动注册 _adapters._date，无需额外 JS）。
  * JSON 注入用 `\u003c` 而非 HTML esc：`<script>` 内容是 raw text，实体不反解码，
  * esc 把 `"` 变 `&quot;` 会破坏 JSON；`\u003c` 是合法 JSON 转义且防 `</script`/`<!--`。
  */
@@ -127,5 +129,6 @@ function dashboardScript(distSeriesJson: string, upstreamSeriesJson: string): st
   return `<script type="application/json" id="dist-series">${distSeriesJson.replace(/</g, "\\u003c")}</script>
 <script type="application/json" id="upstream-series">${upstreamSeriesJson.replace(/</g, "\\u003c")}</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="/dashboard.js"></script>`;
 }

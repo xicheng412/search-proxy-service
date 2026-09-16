@@ -1,7 +1,7 @@
 // 用量分发统计批量读取 + 30s 缓存 + pending 叠加的可执行验证。
 // 使用 fake D1（prepare/all），不连接真实 Cloudflare 资源。
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createUsageStore } from "../src/usage";
 import { hourKey } from "../src/domain";
 import type { Env } from "../src/types";
@@ -209,13 +209,30 @@ describe("readUpstreamSeries", () => {
   ];
   const seriesMinHour = "2026-09-01T00:00";
 
-  it("按小时升序聚合各 provider 的 success+fail，缺失 provider 补 0", async () => {
+  beforeEach(() => {
+    // 固定 now=2026-09-01T11:00Z → 序列范围 00:00..11:00 共 12 个桶（只 mock Date，不碰 timer）。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-01T11:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("按小时升序聚合各 provider 的 success+fail，缺失 provider 补 0；空桶补 0", async () => {
     const { db, allCalls } = makeConstantD1(upstreamRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
     const res = await store.readUpstreamSeries(seriesMinHour);
     expect(res).toEqual([
+      { hour: "2026-09-01T00:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T01:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T02:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T03:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T04:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T05:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T06:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T07:00", tavily: 0, exa: 0 },
       { hour: "2026-09-01T08:00", tavily: 4, exa: 2 },
       { hour: "2026-09-01T09:00", tavily: 1, exa: 0 },
+      { hour: "2026-09-01T10:00", tavily: 0, exa: 0 },
+      { hour: "2026-09-01T11:00", tavily: 0, exa: 0 },
     ]);
     expect(allCalls()).toBe(1);
   });
@@ -225,7 +242,7 @@ describe("readUpstreamSeries", () => {
     const store = createUsageStore({ DB: db } as unknown as Env);
     await store.readUpstreamSeries(seriesMinHour);
     const res = await store.readUpstreamSeries(seriesMinHour);
-    expect(res).toHaveLength(2);
+    expect(res).toHaveLength(12);
     expect(allCalls()).toBe(1);
   });
 
@@ -240,11 +257,8 @@ describe("readUpstreamSeries", () => {
     store.recordDistCall("key-x", h, "success"); // 不应混入 upstream
 
     const res = await store.readUpstreamSeries(seriesMinHour);
-    expect(res).toEqual([
-      { hour: "2026-09-01T08:00", tavily: 4, exa: 2 },
-      { hour: "2026-09-01T09:00", tavily: 1, exa: 0 },
-      { hour: "2026-09-01T10:00", tavily: 2, exa: 1 },
-    ]);
+    expect(res).toHaveLength(12);
+    expect(res[10]).toEqual({ hour: "2026-09-01T10:00", tavily: 2, exa: 1 });
     expect(allCalls()).toBe(1); // 仍在 TTL 窗口内，无新 D1 查询
   });
 
@@ -260,8 +274,9 @@ describe("readUpstreamSeries", () => {
     const { db, allCalls } = makeConstantD1(upstreamRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
     await store.readUpstreamSeries(seriesMinHour);
-    const res = await store.readUpstreamSeries("2026-09-02T00:00");
-    expect(res).toHaveLength(2);
+    // 04:00 起读：范围 04:00..11:00 共 8 桶（原用未来日会命中 fillRange 兜底分支，改用范围内的 minHour）。
+    const res = await store.readUpstreamSeries("2026-09-01T04:00");
+    expect(res).toHaveLength(8);
     expect(allCalls()).toBe(2);
   });
 });
@@ -276,13 +291,30 @@ describe("readDistSeries", () => {
   ];
   const seriesMinHour = "2026-09-01T00:00";
 
-  it("按小时升序聚合，calls 为跨全部 provider 的 success+fail 合计", async () => {
+  beforeEach(() => {
+    // 固定 now=2026-09-01T11:00Z → 序列范围 00:00..11:00 共 12 个桶（只 mock Date，不碰 timer）。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-01T11:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("按小时升序聚合，calls 为跨全部 provider 的 success+fail 合计；空桶补 0", async () => {
     const { db, allCalls } = makeConstantD1(distRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
     const res = await store.readDistSeries(seriesMinHour);
     expect(res).toEqual([
+      { hour: "2026-09-01T00:00", calls: 0 },
+      { hour: "2026-09-01T01:00", calls: 0 },
+      { hour: "2026-09-01T02:00", calls: 0 },
+      { hour: "2026-09-01T03:00", calls: 0 },
+      { hour: "2026-09-01T04:00", calls: 0 },
+      { hour: "2026-09-01T05:00", calls: 0 },
+      { hour: "2026-09-01T06:00", calls: 0 },
+      { hour: "2026-09-01T07:00", calls: 0 },
       { hour: "2026-09-01T08:00", calls: 7 }, // (3+1)+(2+0)+(1+0)
       { hour: "2026-09-01T09:00", calls: 1 },
+      { hour: "2026-09-01T10:00", calls: 0 },
+      { hour: "2026-09-01T11:00", calls: 0 },
     ]);
     expect(allCalls()).toBe(1);
   });
@@ -292,7 +324,7 @@ describe("readDistSeries", () => {
     const store = createUsageStore({ DB: db } as unknown as Env);
     await store.readDistSeries(seriesMinHour);
     const res = await store.readDistSeries(seriesMinHour);
-    expect(res).toHaveLength(2);
+    expect(res).toHaveLength(12);
     expect(allCalls()).toBe(1);
   });
 
@@ -307,11 +339,8 @@ describe("readDistSeries", () => {
     store.recordUpstreamResult("up-9", "tavily", h, "success"); // 不应混入 dist
 
     const res = await store.readDistSeries(seriesMinHour);
-    expect(res).toEqual([
-      { hour: "2026-09-01T08:00", calls: 7 },
-      { hour: "2026-09-01T09:00", calls: 1 },
-      { hour: "2026-09-01T10:00", calls: 3 },
-    ]);
+    expect(res).toHaveLength(12);
+    expect(res[10]).toEqual({ hour: "2026-09-01T10:00", calls: 3 });
     expect(allCalls()).toBe(1); // 仍在 TTL 窗口内，无新 D1 查询
   });
 
@@ -327,8 +356,9 @@ describe("readDistSeries", () => {
     const { db, allCalls } = makeConstantD1(distRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
     await store.readDistSeries(seriesMinHour);
-    const res = await store.readDistSeries("2026-09-02T00:00");
-    expect(res).toHaveLength(2);
+    // 04:00 起读：范围 04:00..11:00 共 8 桶。
+    const res = await store.readDistSeries("2026-09-01T04:00");
+    expect(res).toHaveLength(8);
     expect(allCalls()).toBe(2);
   });
 });

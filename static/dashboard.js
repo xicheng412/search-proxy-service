@@ -78,20 +78,17 @@
   new Chart(canvas, {
     type: 'line',
     data: {
-      labels: pts.map(function (p) {
-        return new Date(p.t).toLocaleString('zh-CN', {
-          month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false,
-        });
-      }),
+      // x 用真实时间（Chart.js time scale，需 chartjs-adapter-date-fns）：服务端序列已补 0，
+      // 无数据小时也有 {x,y} 点，坐标按真实时间等间隔、不跳格，无需 spanGaps。
       datasets: [
-        { label: 'Tavily', data: pts.map(function (p) { return p.tavily; }),
+        { label: 'Tavily', data: pts.map(function (p) { return { x: p.t, y: p.tavily }; }),
           borderColor: readVar('--accent', '#38bdf8'),
           backgroundColor: readVar('--accent', '#38bdf8'), fill: false,
-          spanGaps: true, pointRadius: 1.5 },
-        { label: 'Exa', data: pts.map(function (p) { return p.exa; }),
+          pointRadius: 1.5 },
+        { label: 'Exa', data: pts.map(function (p) { return { x: p.t, y: p.exa }; }),
           // Exa 数据系列专属色（非主题 token，数据编码而非主题）
           borderColor: '#a78bfa', backgroundColor: '#a78bfa', fill: false,
-          spanGaps: true, pointRadius: 1.5 },
+          pointRadius: 1.5 },
       ],
     },
     options: {
@@ -99,7 +96,9 @@
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: { ticks: { color: readVar('--muted', '#94a3b8'), maxTicksLimit: 10, maxRotation: 0 },
+        x: { type: 'time',
+             time: { unit: 'hour', tooltipFormat: 'MM/dd HH:mm', displayFormats: { hour: 'MM/dd HH:mm' } },
+             ticks: { color: readVar('--muted', '#94a3b8'), maxTicksLimit: 10, maxRotation: 0 },
              grid: { color: readVar('--line', '#334155') } },
         y: { beginAtZero: true, ticks: { color: readVar('--muted', '#94a3b8'), precision: 0 },
              grid: { color: readVar('--line', '#334155') } },
