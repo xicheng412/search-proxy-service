@@ -5,6 +5,7 @@ import {
   UpstreamPagination,
   esc,
   csrfField,
+  formatRemaining,
   layout,
   upstreamPaginationHtml,
 } from "./index";
@@ -38,7 +39,7 @@ export function exaListFragment(
           const s = statsMap[k.id] ?? { success: 0, fail: 0 };
           const cooling =
             k.cooldown_until != null && k.cooldown_until > now
-              ? `<span class="badge warn">冷却中</span>`
+              ? `<span class="badge warn" data-cooldown-until="${k.cooldown_until}">${formatRemaining(k.cooldown_until - now)}</span>`
               : `<span class="muted">-</span>`;
           const st =
             k.status === "enabled"

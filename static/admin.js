@@ -39,3 +39,36 @@ function formatLocalTimes() {
 }
 document.addEventListener('DOMContentLoaded', formatLocalTimes);
 document.addEventListener('htmx:afterSwap', formatLocalTimes);
+
+// 冷却倒计时：读 data-cooldown-until（服务端 SSR 的绝对 ms 截止戳，见 src/views/index.ts
+// formatRemaining，文案保持逐字符一致）。单一全局 setInterval，每次 tick 重新 querySelectorAll——
+// HTMX 换片段后新行天然被下一拍扫到（无需重挂），脱离 DOM 的元素不再返回（无定时器泄漏）。
+// 到 0 时整格替换为 `<span class="muted">-</span>`，与 SSR 空态一致。
+function cooldownText(ms) {
+  if (ms <= 0) return null;
+  if (Math.ceil(ms / 1000) >= 100) return '冷却：' + Math.ceil(ms / 60000) + 'min';
+  return '冷却：' + Math.ceil(ms / 1000) + 's';
+}
+function tickCooldowns() {
+  var els = document.querySelectorAll('[data-cooldown-until]');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var until = parseInt(el.getAttribute('data-cooldown-until') || '', 10);
+    if (isNaN(until)) continue;
+    var remain = until - Date.now();
+    if (remain <= 0) {
+      var cell = el.closest('td');
+      if (cell) cell.innerHTML = '<span class="muted">-</span>';
+      continue;
+    }
+    var txt = cooldownText(remain);
+    // 文案未变不写 DOM：冷却长时（如 12h 只到分钟档）前台 tick 每秒跑到，避免无谓写入
+    if (el.textContent !== txt) el.textContent = txt;
+  }
+}
+document.addEventListener('DOMContentLoaded', function () {
+  tickCooldowns(); // 首屏立即刷一次，不等第一个间隔
+  setInterval(tickCooldowns, 1000);
+});
+// 片段交换后 0ms 刷新，避免等下一拍（幂等：同一 tick 函数，不挂新实例）
+document.addEventListener('htmx:afterSwap', tickCooldowns);

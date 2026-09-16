@@ -21,6 +21,17 @@ export function csrfField(token: string): string {
   return `<input type="hidden" name="csrf_token" value="${esc(token)}">`;
 }
 
+/**
+ * 冷却剩余量的展示文案（Tavily/Exa 徽章共用；static/admin.js 的 cooldownText 保持逐字符一致）。
+ * ≥100s → 「冷却：Nmin」（ceil 到整数分钟，估算值）；<100s → 「冷却：Ns」。
+ * ms <= 0 返回 "-"，与列表空态一致。
+ */
+export function formatRemaining(ms: number): string {
+  if (ms <= 0) return "-";
+  if (Math.ceil(ms / 1000) >= 100) return `冷却：${Math.ceil(ms / 60_000)}min`;
+  return `冷却：${Math.ceil(ms / 1_000)}s`;
+}
+
 // ---------------------------------------------------------------
 // 上游 Key 管理页分页（Tavily/Exa 共享）
 // ---------------------------------------------------------------
