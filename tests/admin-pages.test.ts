@@ -73,6 +73,22 @@ function get(path: string, headers: Record<string, string> = {}) {
   } as unknown as ExecutionContext);
 }
 
+function post(path: string, fields: Record<string, string>, cookie?: string) {
+  const headers: Record<string, string> = {
+    "content-type": "application/x-www-form-urlencoded",
+  };
+  if (cookie) headers["cookie"] = cookie;
+  return worker.fetch(
+    new Request("https://proxy.example" + path, {
+      method: "POST",
+      headers,
+      body: new URLSearchParams(fields).toString(),
+    }),
+    env,
+    { waitUntil: () => {} } as unknown as ExecutionContext
+  );
+}
+
 // 取 `<script ... id="X">…</script>` 的正文（断言图表 JSON 注入内容）。
 function scriptBody(html: string, id: string): string {
   const marker = `id="${id}">`;
@@ -156,5 +172,37 @@ describe("dashboard 总览页（views/dashboard.ts）", () => {
 
     // 导航高亮 dashboard
     expect(html).toContain('nav-item active" href="/admin"');
+  });
+});
+
+describe("认证流 POST 全组装（CSRF 收口后）", () => {
+  it("POST /admin/login → 302 + 会话 cookie（不被 admin 守卫/CSRF 中间件遮蔽）", async () => {
+    const res = await post("/admin/login", { password: "admin-pass" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin");
+    const cookies = res.headers.getSetCookie();
+    expect(cookies.some((c) => c.startsWith("admin_session="))).toBe(true);
+  });
+
+  it("POST /admin/login 密码错误 → 302 回登录页带 error（不经 CSRF）", async () => {
+    const res = await post("/admin/login", { password: "wrong" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("/admin/login?error=1");
+  });
+
+  it("POST /admin/logout → 302 回登录页（守卫放行、CSRF 不拦登出，与 login 同子应用）", async () => {
+    kvStore.set(
+      "session:sid-9",
+      JSON.stringify({
+        created_at: Date.now(),
+        expires_at: Date.now() + 86_400_000,
+        csrf: "t",
+      })
+    );
+    const res = await post("/admin/logout", {}, "admin_session=sid-9");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin/login");
+    // 会话已销毁
+    expect(kvStore.has("session:sid-9")).toBe(false);
   });
 });

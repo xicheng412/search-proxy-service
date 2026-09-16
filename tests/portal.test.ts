@@ -18,6 +18,14 @@ function get(path: string) {
   } as unknown as ExecutionContext);
 }
 
+function post(path: string, headers: Record<string, string> = {}) {
+  return worker.fetch(
+    new Request("https://proxy.example" + path, { method: "POST", headers }),
+    env,
+    { waitUntil: () => {} } as unknown as ExecutionContext
+  );
+}
+
 describe("公开门户路由（无需会话）", () => {
   it("GET / → 200 text/plain 导航文本，列出全部入口", async () => {
     const res = await get("/");
@@ -53,5 +61,55 @@ describe("公开门户路由（无需会话）", () => {
     const res = await get("/admin/help");
     expect(res.status).toBe(401);
     expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("子页面基点未登录 GET → 302 登录页；非页面 GET/POST → 401（isPage 派生边界）", async () => {
+    for (const p of [
+      "/admin/tavily", "/admin/tavily/",
+      "/admin/exa", "/admin/exa/",
+      "/admin/keys", "/admin/keys/",
+    ]) {
+      const res = await get(p);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("/admin/login");
+    }
+    for (const p of ["/admin/tavily/list", "/admin/exa/list", "/admin/keys/list"]) {
+      const res = await get(p);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("location")).toBeNull();
+    }
+    const res = await post("/admin/keys/generate");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("location")).toBeNull();
+  });
+});
+
+describe("数据面端点（全组装）边界", () => {
+  it("POST /search 无 token → 401 tavily 格式（authenticate 随 proxyApp 全组装生效）", async () => {
+    const res = await post("/search");
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({
+      detail: { error: "Unauthorized: missing API key." },
+    });
+  });
+
+  it("POST /search 非法前缀 → 401（不查库）；数据面端点带 CORS 头", async () => {
+    const res = await post("/search", { authorization: "Bearer bogus" });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({
+      detail: {
+        error:
+          'Unauthorized: expect "Authorization: Bearer <tavily|exa|searxng-tavily|reader-tavily>-<key>".',
+      },
+    });
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("cors 收敛：/、/help、/admin/login 无 CORS 头（cors 只作用于数据面端点）", async () => {
+    for (const p of ["/", "/help", "/admin/login"]) {
+      const r = await get(p);
+      expect(r.status).toBe(200);
+      expect(r.headers.get("access-control-allow-origin")).toBeNull();
+    }
   });
 });

@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
-import { getSession, getCsrfToken, validateCsrf } from "../auth";
+import { getCsrfToken } from "../auth";
 import { hourKey } from "../domain";
 import { countDistributedKeys } from "../storage/dist-keys";
 import { countUpstreamKeys } from "../storage/upstream-keys";
@@ -14,45 +14,30 @@ import { EXA, TAVILY } from "../providers";
 import { errorFragment } from "../views";
 import { adminPage } from "../views/dashboard";
 import { exaAdmin } from "./exa";
+import { sessionGuard, csrfGuard } from "./guard";
 import { keysAdmin } from "./keys";
 import { tavilyAdmin } from "./tavily";
 
 export const admin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
-// 管理接口鉴权：页面 GET 未登录 → 302 跳登录；其余（HTMX 片段/写操作）→ 401。
-admin.use("*", async (c, next) => {
-  const session = await getSession(c);
-  if (!session) {
-    const isPage =
-      c.req.method === "GET" &&
-      [
-        "/admin",
-        "/admin/",
-        "/admin/tavily",
-        "/admin/tavily/",
-        "/admin/exa",
-        "/admin/exa/",
-        "/admin/keys",
-        "/admin/keys/",
-      ].includes(c.req.path);
-    if (isPage) {
-      return c.redirect("/admin/login?next=" + encodeURIComponent(c.req.path));
-    }
-    return c.text("Unauthorized", 401);
-  }
-  c.set("admin", true);
-  await next();
-});
+type AdminApp = Hono<{ Bindings: Env; Variables: AppVariables }>;
+// 子页挂载表：路径单一事实源——route 挂载与 isPage 推导共用同一份。
+const adminSubPages: Array<{ path: string; app: AdminApp }> = [
+  { path: "/tavily", app: tavilyAdmin },
+  { path: "/exa",    app: exaAdmin },
+  { path: "/keys",   app: keysAdmin },
+];
+// 页面 = 根仪表盘(/admin 含尾斜杠) + 各挂载基点("/admin" + path 含尾斜杠)。派生值，非另抄清单。
+const isPagePath = (p: string) =>
+  p === "/admin" || p === "/admin/" ||
+  adminSubPages.some(({ path }) => {
+    const base = "/admin" + path;
+    return p === base || p === base + "/";
+  });
 
-// CSRF 收口：所有 admin POST 写操作统一校验 token（此前散落在 16 处 handler 内的样板
-// 已删除，统一由本中间件兜住；行为不变——失败仍是 errorFragment("CSRF 校验失败") 403）。
-// GET 渲染表单仍各自取 getCsrfToken 注入隐藏字段。
-admin.use("*", async (c, next) => {
-  if (c.req.method === "POST" && !(await validateCsrf(c))) {
-    return c.html(errorFragment("CSRF 校验失败"), 403);
-  }
-  await next();
-});
+// 鉴权中间件抽取至 ./guard：会话守卫（页面 GET 未登录 302 跳登录 / 其余 401）+ CSRF 收口（POST 校验）。
+admin.use("*", sessionGuard(isPagePath));
+admin.use("*", csrfGuard);
 
 
 // ---------- Dashboard 总览页 ----------
@@ -157,6 +142,4 @@ admin.post("/dist-cache-config", async (c) => {
   return c.redirect("/admin", 303);
 });
 
-admin.route("/tavily", tavilyAdmin);
-admin.route("/exa", exaAdmin);
-admin.route("/keys", keysAdmin);
+for (const { path, app } of adminSubPages) admin.route(path, app);
