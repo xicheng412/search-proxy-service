@@ -44,6 +44,17 @@ admin.use("*", async (c, next) => {
   await next();
 });
 
+// CSRF 收口：所有 admin POST 写操作统一校验 token（此前散落在 16 处 handler 内的样板
+// 已删除，统一由本中间件兜住；行为不变——失败仍是 errorFragment("CSRF 校验失败") 403）。
+// GET 渲染表单仍各自取 getCsrfToken 注入隐藏字段。
+admin.use("*", async (c, next) => {
+  if (c.req.method === "POST" && !(await validateCsrf(c))) {
+    return c.html(errorFragment("CSRF 校验失败"), 403);
+  }
+  await next();
+});
+
+
 // ---------- Dashboard 总览页 ----------
 admin.get("/", async (c) => {
   const env = c.env;
@@ -91,7 +102,6 @@ admin.get("/", async (c) => {
 
 // 更新上游请求队列参数（CSRF 校验 + 数值校验；写 KV，DO 侧 TTL 缓存 ≤3s 生效）
 admin.post("/queue-config", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const intervalMs = Number(body["intervalMs"]);
   const maxDepth = Number(body["maxDepth"]);
@@ -115,7 +125,6 @@ admin.post("/queue-config", async (c) => {
 
 // 更新熔断/冷却参数（CSRF 校验 + 数值校验；写 KV，circuit-breaker 侧 TTL 缓存 ≤3s 生效）
 admin.post("/breaker-config", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const postUseCooldownSec = Number(body["postUseCooldownSec"]);
   const breakerBaseSec = Number(body["breakerBaseSec"]);
@@ -139,7 +148,6 @@ admin.post("/breaker-config", async (c) => {
 
 // 更新鉴权缓存 TTL（CSRF 校验 + 数值校验；缓存自然过期或写路径主动失效）
 admin.post("/dist-cache-config", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const cacheTtlSec = Number(body["cacheTtlSec"]);
   if (!Number.isFinite(cacheTtlSec) || cacheTtlSec < 1) {

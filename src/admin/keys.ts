@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
-import { getCsrfToken, validateCsrf } from "../auth";
+import { getCsrfToken } from "../auth";
 import { DistStats, hourKey } from "../domain";
 import {
   deleteDistributedKey,
@@ -54,7 +54,6 @@ keysAdmin.get("/list", async (c) => {
 
 // 生成新 key（明文只显示一次；请求时用 <provider>-<key> 前缀决定路由）
 keysAdmin.post("/generate", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const note = ((body["note"] as string) ?? "").trim();
   if (!note) return c.html(errorFragment("备注必填"));
@@ -68,7 +67,6 @@ keysAdmin.post("/generate", async (c) => {
 });
 
 keysAdmin.post("/:apiKey/toggle", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const apiKey = c.req.param("apiKey");
   const cur = await getDistributedKey(c.env, apiKey);
   if (!cur) return c.html(errorFragment("未找到该 key"));
@@ -79,7 +77,6 @@ keysAdmin.post("/:apiKey/toggle", async (c) => {
 });
 
 keysAdmin.post("/:apiKey/delete", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   await deleteDistributedKey(c.env, c.req.param("apiKey"));
   return c.redirect("/admin/keys/list", 303);
 });

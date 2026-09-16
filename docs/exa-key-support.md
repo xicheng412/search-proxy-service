@@ -78,7 +78,7 @@ export interface DistStats { tavily: number; exa: number; }
 | 持久化 | `src/storage.ts` | KV 纯读写原语 + Keys 数组泛型 CRUD |
 | 统计缓冲 | `src/usage-store.ts` | 内存累积 + 节流 flush + 读叠加 |
 | 熔断 | `src/circuit-breaker.ts` | 连续失败计数 → 冷却；与统计分离 |
-| 应用编排 | `src/proxy.ts` | 鉴权 + 选 key + 转发 + 分类，由描述符驱动 |
+| 应用编排 | `src/proxy/{authenticate,forward,handlers}.ts` | 准入中间件 + 打装/转发 + 端点 handler，由描述符驱动 |
 | Provider 防腐 | `src/providers/{tavily,exa,index}.ts` | 一个 provider 的全部事实 |
 | 管理路由 | `src/admin/{tavily,exa,keys,index}.ts` | 后台路由 + 鉴权 + 调 storage / usage-store |
 | 视图模板 | `src/views/{tavily,exa,index}.ts` | HTMX 片段 + 渲染函数 |
@@ -102,7 +102,7 @@ Authorization: Bearer <provider>-<key>
 
 ## 5. 代理与统计
 
-- `handleProviderProxy`（[`src/proxy.ts`](../src/proxy.ts)）：
+- `handleProviderProxy`（[`src/proxy/`](../src/proxy/)）：
   - 加权随机选 key（`1 / (fail+1)`，排除 disabled / 冷却）
   - 无可用 → 503（该 provider 格式）
   - 透明转发

@@ -4,8 +4,8 @@
 // 不 assert 重试核内部（retry.test.ts 覆盖）：本文件只证明 reader 路由的门禁与打装。
 
 import { describe, it, expect, vi, type Mock } from "vitest";
-import { Hono } from "hono";
-import { handleReader } from "../src/proxy";
+import type { Hono } from "hono";
+import { proxyApp } from "../src/routes/proxy";
 import type { AppVariables, Env } from "../src/types";
 import { makeConstantD1 } from "./helpers/fake-d1";
 
@@ -34,8 +34,8 @@ function buildApp(distRows: Record<string, unknown>[]) {
     ADMIN_PASSWORD: "x",
     PUBLIC_BASE_URL: "https://proxy.example",
   } as unknown as Env;
-  const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
-  app.get("/reader/*", handleReader);
+  // proxyApp 已内建 authenticate + cors + handler；app.request(path, init, env) 契约不变
+  const app = proxyApp;
   return { app, env, queue };
 }
 

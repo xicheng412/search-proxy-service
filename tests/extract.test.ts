@@ -5,8 +5,8 @@
 // 命中 extract 的任务确实带对 path 进队列"，这是 /extract 各维度统计正确的起点。
 
 import { describe, it, expect, vi, type Mock } from "vitest";
-import { Hono } from "hono";
-import { handleExtract } from "../src/proxy";
+import type { Hono } from "hono";
+import { proxyApp } from "../src/routes/proxy";
 import type { AppVariables, Env } from "../src/types";
 import { makeConstantD1 } from "./helpers/fake-d1";
 
@@ -40,8 +40,8 @@ function buildApp(distRows: Record<string, unknown>[]) {
     ADMIN_PASSWORD: "x",
     PUBLIC_BASE_URL: "https://proxy.example",
   } as unknown as Env;
-  const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
-  app.post("/extract", handleExtract);
+  // proxyApp 已内建 authenticate + cors + handler；app.request(path, init, env) 契约不变
+  const app = proxyApp;
   return { app, env, queue };
 }
 

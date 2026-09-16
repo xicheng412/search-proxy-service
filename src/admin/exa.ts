@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { Env, AppVariables } from "../types";
-import { getCsrfToken, validateCsrf } from "../auth";
+import { getCsrfToken } from "../auth";
 import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
@@ -75,7 +75,6 @@ exaAdmin.get("/list", async (c) => {
 
 // 新增 Exa key（可附带 test call；name 可选，未填则自动生成）
 exaAdmin.post("/add", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const key = ((body["key"] as string) ?? "").trim();
   let name = ((body["name"] as string) ?? "").trim();
@@ -111,7 +110,6 @@ exaAdmin.post("/add", async (c) => {
 
 // 批量添加 Exa keys（逗号或换行分隔；name 前缀可选，未填则自动生成）
 exaAdmin.post("/add/batch", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const body = await c.req.parseBody();
   const keysText = ((body["keys"] as string) ?? "").trim();
   const namePrefix = ((body["name"] as string) ?? "").trim();
@@ -135,7 +133,6 @@ exaAdmin.post("/add/batch", async (c) => {
 });
 
 exaAdmin.post("/:id/name", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");
   const body = await c.req.parseBody();
   const name = (((body["name"] as string) ?? "").trim() || "未命名");
@@ -147,7 +144,6 @@ exaAdmin.post("/:id/name", async (c) => {
 });
 
 exaAdmin.post("/:id/toggle", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   const id = c.req.param("id");
   const cur = await getUpstreamKey(c.env, EXA.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
@@ -159,7 +155,6 @@ exaAdmin.post("/:id/toggle", async (c) => {
 });
 
 exaAdmin.post("/:id/delete", async (c) => {
-  if (!(await validateCsrf(c))) return c.html(errorFragment("CSRF 校验失败"), 403);
   await deleteUpstreamKey(c.env, EXA.upstream, c.req.param("id"));
   await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);

@@ -1,5 +1,7 @@
 // 共享类型：Worker 绑定与上下文变量。
 
+import type { DistributedKey, Provider, WireProtocol } from "./domain";
+
 export type Env = {
   KV: KVNamespace;
   /** D1 数据库：实体数据（上游/分发 key、用量小时桶、熔断状态）。 */
@@ -11,6 +13,15 @@ export type Env = {
   PUBLIC_BASE_URL: string;
 };
 
+/** 数据面鉴权结果：由 authenticate 中间件注入 c.var.auth，供各 handler 直接消费。 */
+export interface AuthContext {
+  protocol: WireProtocol;
+  provider: Provider;
+  apiKey: string;
+  distKey: DistributedKey;
+}
+
 export type AppVariables = {
   admin: boolean;
+  auth: AuthContext;
 };
