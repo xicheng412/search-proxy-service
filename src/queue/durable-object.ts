@@ -17,13 +17,16 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { Env } from "../types";
-import { Provider } from "../domain";
+import { Provider, hourKey } from "../domain";
 import { PROVIDERS } from "../providers";
 import type { ProviderConfig } from "../providers";
 import { runNativeTask } from "../proxy/executors/native";
 import { runSearxngTask } from "../proxy/executors/searxng";
 import { runReaderTask } from "../proxy/executors/reader";
 import { getUsageStore } from "../usage";
+import { getEventBus, type DomainEventBus } from "../events";
+import { recordUpstreamOutcome } from "../circuit-breaker";
+import { upstreamFetch } from "../transport";
 import { QueueTask } from "./task";
 import { searxngError } from "../adapters/searxng";
 import { readerError } from "../adapters/reader";
@@ -66,12 +69,43 @@ export class QueueDO extends DurableObject<Env> {
   private config = cachedQueueConfig();
   // 本 provider 的上游 key 池内存权威态（冷却/熔断）。同一 DO 实例恒同 provider，仍按 provider 防御。
   private pool: { provider: Provider; pool: KeyPool } | null = null;
+  // 本 isolate 的事件总线（getEventBus 单例）；首次取用即注册本 DO 的上游结果订阅（幂等）。
+  private events: DomainEventBus | null = null;
 
   private ensurePool(provider: Provider): KeyPool {
     if (!this.pool || this.pool.provider !== provider) {
       this.pool = { provider, pool: createKeyPool(this.env, PROVIDERS[provider].upstream) };
     }
     return this.pool.pool;
+  }
+
+  /**
+   * 事件总线惰性取用（drain 每任务都构造 deps，但订阅只注册一次，防记账叠加）。
+   * UpstreamAttemptSettled 订阅是 DO 专属——主 Worker 永不发布该事件（FSM 只在 DO 跑）；
+   * 订阅者按 cls 路由旧 mark* 四胞胎的等价副作用：冷却写 KeyPool（内存）+ usage 记账。
+   */
+  private ensureBus(): DomainEventBus {
+    if (!this.events) {
+      this.events = getEventBus(this.env);
+      this.events.subscribe((ev) => {
+        if (ev.type !== "upstream-attempt-settled") return;
+        // 惰性取池：注册时 this.pool 尚为 null，不能在闭包里直接捕获 this.pool 值。
+        const pool = this.ensurePool(ev.provider);
+        const store = getUsageStore(this.env);
+        // 冷却：按 cls 走同一策略（client-error 不会被发事件，见 retry FSM）。
+        void recordUpstreamOutcome(this.env, pool, ev.keyId, ev.cls, ev.at).catch(() => {});
+        // usage 记账（与旧 mark* 表一致）：auth/server-error→fail、success→success、rate-limit→不记。
+        if (ev.cls !== "rate-limit") {
+          store.recordUpstreamResult(
+            ev.keyId,
+            ev.provider,
+            hourKey(ev.at),
+            ev.cls === "success" ? "success" : "fail"
+          );
+        }
+      });
+    }
+    return this.events;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -112,7 +146,9 @@ export class QueueDO extends DurableObject<Env> {
     return new Promise<Response>((resolve, reject) => {
       if (this.pending.length >= cfg.maxDepth) {
         // 拒入：等待中已满。错误体按线协议渲染（searxng→{error}；native→provider 官方格式），
-        // Retry-After 按当前间隔给调用方退避提示。
+        // Retry-After 按当前间隔给调用方退避提示。发布 QueueRejected（订阅者显式不计统计，
+        // 仅作诊断挂点）。ensureBus 会顺带注册上游订阅——惰性、幂等，无副作用。
+        this.ensureBus().publish({ type: "queue-rejected", apiKey: payload.apiKey });
         resolve(rateLimitResponse(def, payload.task, cfg,
           `too many queued requests (max ${cfg.maxDepth}); retry later`));
         return;
@@ -136,6 +172,8 @@ export class QueueDO extends DurableObject<Env> {
       item.timer = setTimeout(() => {
         if (item.settled) return;
         item.settled = true;
+        // 排队超时（等待过长）：与拒入同语义——不计统计，经 QueueRejected 留诊断挂点。
+        this.ensureBus().publish({ type: "queue-rejected", apiKey: item.apiKey });
         resolve(
           rateLimitResponse(def, payload.task, cfg,
             `request waited too long (max ${cfg.waitBudgetMs}ms); retry later`)
@@ -179,6 +217,9 @@ export class QueueDO extends DurableObject<Env> {
           env: this.env,
           executionCtx: { waitUntil: (p: Promise<unknown>) => void this.ctx.waitUntil(p) },
           pool,
+          events: this.ensureBus(),
+          transport: upstreamFetch,
+          usage: getUsageStore(this.env),
         };
         const def = PROVIDERS[item.provider];
         const task = item.task; // 局部捕获，便于 discriminated union 窄化

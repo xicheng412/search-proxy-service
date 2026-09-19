@@ -1,8 +1,8 @@
-// 领域层·重试状态机（FSM）+ 上游传输（src/retry.ts）。
+// 领域服务·RetryStateMachine：通用重试状态机核（src/domain-services/retry-state-machine.ts）。
 // searchWithRetry 以声明式状态机驱动重试：状态（init/pick/in-flight + 终态）、
 // 扁平事件（RetryEvent：每个失败类一个 kind，无子分派）、迁移表（TRANSITIONS：
 // key = `${state}:${kind}`，含可选 action）+ 少量行驱动器。读取进 emit、写副作用进
-// 迁移 action、请求级 bookkeeping 进 prologue。
+// 迁移 action（发布领域事件）、请求级 bookkeeping 进 prologue。
 //
 // 一次请求最多尝试 MAX_ATTEMPTS 个不同上游 key，每次失败按分类走冷却/统计/换 key：
 //   分类族枚举见 domain.ts RetryClass；编号→族映射见各 provider 描述符 statusClassMap /
@@ -16,32 +16,33 @@
 // TRANSITIONS / emit / RetryState / RetryEvent / RetryContext 仅供 tests 引用
 // （FSM 单测的唯一触达面，别无实现出口）。
 //
-// 注意：上游传输（proxyToUpstream / UPSTREAM_TIMEOUT_MS）随核在此，因为 searchWithRetry
-// 内部直接调用它；若留在 proxy.ts 会造成 retry.ts ←→ proxy.ts 循环依赖。
+// 领域服务不 import 基础设施实现（仅类型）：上游传输、事件发布、用量统计均经
+// CoreDeps 端口注入（transport / events / usage，实现在组合根装配——QueueDO 的
+// drain 与主 Worker 的 events 单例）。领域事件经 DomainEventSink 端口发布。
 
-import type { Env } from "./types";
-import type { ProviderConfig } from "./providers";
-import { CoreKey, hourKey, RetryClass } from "./domain";
-import { getUsageStore, type UsageStore } from "./usage";
-import type { KeyPool } from "./key-pool";
-import {
-  recordUpstreamFailure,
-  recordUpstreamSuccess,
-  recordUpstreamRateLimit,
-  recordUpstreamInvalid,
-} from "./circuit-breaker";
+import type { Env } from "../types";
+import type { ProviderConfig } from "../providers";
+import type { CoreKey, DomainEventSink, RetryClass } from "../domain";
+import type { UsageStore } from "../usage";
+import type { KeyPool } from "../key-pool";
+import { isCandidate, selectUpstreamKey } from "./selection";
+import { classifyStatus } from "./classify";
+import type { upstreamFetch } from "../transport";
 
 /** 单次请求最多尝试的上游 key 数量。 */
 const MAX_ATTEMPTS = 3;
-
-/** 单次上游请求超时（网络无响应视为失败，换 key 重试）。 */
-const UPSTREAM_TIMEOUT_MS = 30_000;
 
 /** 队列 DO 执行所需的最小依赖（替代整颗 Hono Context）。 */
 export interface CoreDeps {
   env: Env;
   executionCtx: { waitUntil(p: Promise<unknown>): void };
   pool: KeyPool;
+  /** 领域事件发布端口（实现注入，见 src/events.ts；保持同步，无 async 逃逸）。 */
+  events: DomainEventSink;
+  /** 上游传输端口（实现见 src/transport.ts；组合根注入，测试可替换）。 */
+  transport: typeof upstreamFetch;
+  /** 用量统计门面（实现见 src/usage；组合根注入——领域服务不直接取单例）。 */
+  usage: UsageStore;
 }
 
 /** 通用重试的结果，交给 onFailure 按协议渲染最终响应。 */
@@ -61,106 +62,16 @@ export interface RetryCallbacks {
   ): Promise<Response>;
 }
 
-/** 单个 key 当前是否可用：status=enabled 且未过 cooldown_until。 */
-function isCandidate(k: CoreKey, now: number): boolean {
-  return k.status === "enabled" && (k.cooldown_until == null || k.cooldown_until <= now);
-}
-
-/**
- * 加权随机：只从 status=enabled、未冷却 且 未被排除的 key 中选择；
- * 权重 = 1 / (该 key 滑动窗口失败数信号 + 1)，即失败越少权重越高（0 失败最高）。
- * statsMap 为空（单选候选时跳过统计）则退化为均匀权重。
- */
-function selectUpstreamKey(
-  keys: CoreKey[],
-  statsMap: Record<string, number>,
-  now: number = Date.now(),
-  excludeIds?: Set<string>
-): CoreKey | null {
-  const candidates = keys.filter(
-    (k) => isCandidate(k, now) && (!excludeIds || !excludeIds.has(k.id))
-  );
-  if (candidates.length === 0) return null;
-
-  const weights = candidates.map((k) => {
-    const fail = statsMap[k.id] ?? 0;
-    return 1 / (fail + 1);
-  });
-  const total = weights.reduce((a, b) => a + b, 0);
-  let r = Math.random() * total;
-  for (let i = 0; i < candidates.length; i++) {
-    r -= weights[i];
-    if (r <= 0) return candidates[i];
-  }
-  return candidates[candidates.length - 1];
-}
-
-async function proxyToUpstream(
-  def: ProviderConfig,
-  path: string,
-  upstreamKey: string,
-  body: string,
-  contentType: string
-): Promise<Response> {
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${upstreamKey}`,
-    "content-type": contentType || "application/json",
-  };
-  return fetch(def.base + path, {
-    method: "POST",
-    headers,
-    body,
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-  });
-}
-
-/**
- * 分类语义：编号→族映射见各 provider 描述符 `statusClassMap`/`statusClassFallback`；
- * FSM 动作仍按族（事件 kind）驱动，此处只做一次查找，不含任何业务分支。
- */
-function classifyStatus(def: ProviderConfig, status: number): RetryClass {
-  return def.statusClassMap?.[status] ?? def.statusClassFallback;
-}
-
-// ---- 副作用捆绑 helper：把"内存统计 + 熔断状态写入"成对打包，供迁移 action 复用 ----
-
-/** 成功：记一次 usage 成功 + 熔断成功（连续失败归零，保留 post-use 冷却）。 */
-async function markSuccess(
-  ctx: RetryContext,
-  id: string,
-  now: number
-): Promise<void> {
-  ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "success");
-  await recordUpstreamSuccess(ctx.env, ctx.pool, id, now).catch(() => {});
-}
-
-/** server-error 族失败：记一次 usage 失败 + 熔断失败（指数退避冷却）。 */
-async function markFail(
-  ctx: RetryContext,
-  id: string,
-  now: number
-): Promise<void> {
-  ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "fail");
-  await recordUpstreamFailure(ctx.env, ctx.pool, id, now).catch(() => {});
-}
-
-/** rate-limit：只写 post-use 冷却，不记 usage。 */
-async function markRateLimit(ctx: RetryContext, id: string, now: number): Promise<void> {
-  await recordUpstreamRateLimit(ctx.env, ctx.pool, id, now).catch(() => {});
-}
-
-/** auth-error：记一次 usage 失败 + 疑似失效长冷却（默认12h），不碰连续失败计数。 */
-async function markInvalid(ctx: RetryContext, id: string, now: number): Promise<void> {
-  ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "fail");
-  await recordUpstreamInvalid(ctx.env, ctx.pool, id, now).catch(() => {});
-}
+// ---- 迁移 action：把"一次上游尝试结束"发布为领域事件（UpstreamAttemptSettled）----
+// 冷却/统计副作用由事件订阅者（组合根）按 ev.cls 路由——本 FSM 不内联任何持久化调用；
+// 六条在飞迁移共用 publishAttemptSettled，非重试/终止路径无 action（现状行为）。
 
 // ---- 重试状态机（FSM）：状态 / 事件 / 上下文 / 迁移表 / 读取 / 渲染 ----
 // 终态集合 = RetryOutcome 全部类别：success → res 直接返回；其余 → onFailure。
-// usage/队列 DO/协议渲染不进机器：写副作用在迁移 action，读在 emit，
+// usage/队列 DO/协议渲染不进机器：写副作用在迁移 action（发布领域事件），读在 emit，
 // 协议渲染经 RetryCallbacks（cb）访问。
 // 熔断/冷却权威态在 DO 内存池（KeyPool）：选 key 的 key 列表来自 ctx.pool（DO 内存），
-// 不再每请求读 D1；mark* 对 pool.applyBreakerOutcome 的原地改对 ctx.keys 即刻可见。
+// 不再每请求读 D1；事件订阅者经 pool.applyBreakerOutcome 的原地改对 ctx.keys 即刻可见。
 
 type RetryState =
   | "init"
@@ -187,12 +98,11 @@ type RetryEvent =
   | { kind: "server-error"; res: Response };
 
 interface RetryContext {
-  env: Env;
+  deps: CoreDeps;
   def: ProviderConfig;
   request: { path: string; body: string; contentType: string };
   cb: RetryCallbacks;
   store: UsageStore;
-  hour: string;
   pool: KeyPool;
   keys: CoreKey[];
   statsMap: Record<string, number>;
@@ -207,7 +117,8 @@ export type { RetryState, RetryEvent, RetryContext };
 
 type Transition = {
   to: RetryState;
-  action?: (ctx: RetryContext, ev: RetryEvent) => Promise<void>;
+  // 发布领域事件为同步副作用，action 可返回 void；保留 Promise 以兼容历史 async 形态。
+  action?: (ctx: RetryContext, ev: RetryEvent) => void | Promise<void>;
 };
 
 const TERMINAL = new Set<RetryState>([
@@ -222,9 +133,20 @@ function isTerminal(s: RetryState): boolean {
   return TERMINAL.has(s);
 }
 
+/** 发布一次上游尝试结束的领域事件：keyId/provider 取自身，时刻取当前；调用点只传族。 */
+function publishAttemptSettled(ctx: RetryContext, cls: RetryClass | "success"): void {
+  ctx.deps.events.publish({
+    type: "upstream-attempt-settled",
+    keyId: ctx.currentKey!.id,
+    provider: ctx.def.name,
+    cls,
+    at: Date.now(),
+  });
+}
+
 /**
  * 迁移表：key = `${state}:${event.kind}`，每个可到事件必有迁移（缺配即驱动抛错）。
- * action 为副作用壳，复用现有 mark* helper；非重试性/终止路径无 action（现状行为）。
+ * 在飞迁移的 action 统一发 UpstreamAttemptSettled（按族）；非重试性/终止路径无 action。
  */
 export const TRANSITIONS: Record<string, Transition> = {
   "init:no-keys": { to: "no-keys" },
@@ -232,31 +154,16 @@ export const TRANSITIONS: Record<string, Transition> = {
   "init:ready": { to: "pick" },
   "pick:picked": { to: "in-flight" },
   "pick:depleted": { to: "exhausted" },
-  "in-flight:success": {
-    to: "success",
-    action: (ctx) => markSuccess(ctx, ctx.currentKey!.id, Date.now()),
-  },
-  "in-flight:unusable": {
-    to: "pick",
-    action: (ctx) => markFail(ctx, ctx.currentKey!.id, Date.now()),
-  },
-  "in-flight:network": {
-    to: "pick",
-    action: (ctx) => markFail(ctx, ctx.currentKey!.id, Date.now()),
-  },
-  "in-flight:rate-limit": {
-    to: "pick",
-    action: (ctx) => markRateLimit(ctx, ctx.currentKey!.id, Date.now()),
-  },
+  "in-flight:success": { to: "success", action: (ctx) => publishAttemptSettled(ctx, "success") },
+  // 2xx 但响应内容不可用（上游坏）：按 server-error 族处理（记失败 + 指数退避冷却）
+  "in-flight:unusable": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
+  // 网络异常/超时：同 server-error 族
+  "in-flight:network": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
+  // 限流：仅冷却不记账——订阅者按 cls 不记 usage
+  "in-flight:rate-limit": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "rate-limit") },
   "in-flight:client-error": { to: "client-error" },
-  "in-flight:auth-error": {
-    to: "pick",
-    action: (ctx) => markInvalid(ctx, ctx.currentKey!.id, Date.now()),
-  },
-  "in-flight:server-error": {
-    to: "pick",
-    action: (ctx) => markFail(ctx, ctx.currentKey!.id, Date.now()),
-  },
+  "in-flight:auth-error": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "auth-error") },
+  "in-flight:server-error": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
 };
 
 /**
@@ -296,7 +203,7 @@ export async function emit(state: RetryState, ctx: RetryContext): Promise<RetryE
       const key = ctx.currentKey!;
       let res: Response;
       try {
-        res = await proxyToUpstream(
+        res = await ctx.deps.transport(
           ctx.def,
           ctx.request.path,
           key.key,
@@ -383,22 +290,25 @@ export async function searchWithRetry(
   request: { path: string; body: string; contentType: string },
   cb: RetryCallbacks
 ): Promise<Response> {
-  const store = getUsageStore(deps.env);
-  const env = deps.env;
+  const store = deps.usage;
 
-  // prologue：增加分发 key 请求计数（success/fail 二元，进内存缓冲，尽力而为）
-  const hour = hourKey();
-  store.recordDistCall(apiKey, hour, "success");
+  // prologue：分发 key 请求被受理（成功）——发布领域事件，dist 统计由事件订阅者
+  // 同步记账（等价旧 recordDistCall(apiKey, hour, "success")，小时桶由订阅者换算）。
+  deps.events.publish({
+    type: "dist-request-accepted",
+    apiKey,
+    at: Date.now(),
+    outcome: "success",
+  });
   // 节流触发统计 flush（退避到 waitUntil，双阈值 ≥30min/256 条；不阻塞本请求）
   store.flushSoon(deps.executionCtx);
 
   const ctx: RetryContext = {
-    env,
+    deps,
     def,
     request,
     cb,
     store,
-    hour,
     pool: deps.pool,
     keys: [],
     statsMap: {},

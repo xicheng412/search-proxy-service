@@ -1,7 +1,7 @@
 // native 执行器（透传）：drain 侧把上游响应原样透传给请求端。
 // 不依赖 Hono——由队列 DO 调用，只消费 CoreDeps + ProviderConfig + NativeTask。
 
-import { searchWithRetry, type CoreDeps } from "../../retry";
+import { searchWithRetry, type CoreDeps } from "../../domain-services/retry-state-machine";
 import type { ProviderConfig } from "../../providers";
 import type { NativeTask } from "../../queue/task";
 

@@ -162,3 +162,37 @@ export function autoKeyName(): string {
   return `${get("year")}/${get("month")}/${get("day")}/${get("hour")}:${get("minute")}:${get("second")}+${rand}`;
 }
 
+// ---------------------------------------------------------------
+// 领域事件（分解的命令结果）：type 判定由订阅者 switch，勿建事件层级
+// ---------------------------------------------------------------
+
+/** 一次上游尝试结束（成功 / 失败按族归类）。由重试 FSM 的在飞环节产出，经事件轴驱动冷却与记账。 */
+export interface UpstreamAttemptSettled {
+  type: "upstream-attempt-settled";
+  keyId: string;
+  provider: Provider;
+  // 结果族：成功或 RetryClass（"success" 是成功态；client-error 不入此事件——不换 key 不记账）
+  cls: RetryClass | "success";
+  at: number; // 尝试结束时刻
+}
+
+/** 一次分发 key 请求被受理（受理时刻 at，小时桶由订阅者换算）。由「受理」三处 raise。 */
+export interface DistRequestAccepted {
+  type: "dist-request-accepted";
+  apiKey: string;
+  at: number;
+  outcome: "success" | "fail"; // 受理成功 / 调用方过错被拒
+}
+
+/** 队列拒入/超时（不计统计：订阅者显式忽略，为未来诊断留锚点）。由 QueueDO 的 429 raise。 */
+export interface QueueRejected {
+  type: "queue-rejected";
+  apiKey: string; // 拒入/超时的分发 key（不计统计：订阅者显式忽略）
+}
+
+export type DomainEvent = UpstreamAttemptSettled | DistRequestAccepted | QueueRejected;
+
+/** 领域服务发布事件的能力端口（实现见 src/events.ts；保持同步，无 async 逃逸）。 */
+export interface DomainEventSink {
+  publish(ev: DomainEvent): void;
+}

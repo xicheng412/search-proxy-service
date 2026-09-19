@@ -68,6 +68,20 @@ _Avoid_: 失效冷却、死 key 冷却
 `searchWithRetry` 的声明式状态机——每次尝试换一个上游 key，响应按分类迁移状态（成功 / 换 key 重试 / 立即返回）。
 _Avoid_: retry loop、重试循环
 
+### 领域事件（分解的命令结果）
+
+**UpstreamAttemptSettled**:
+一次上游尝试结束（成功 / 按重试分类族归类失败）分解出的领域事件，由重试 FSM 的在飞环节发布，经同步事件轴驱动冷却与记账——订阅者按 `cls` 路由：success / server-error / auth-error 记 usage（success/fail），rate-limit 只冷却不记账；client-error 不入此事件（不换 key 不记账）。语义与旧 mark* 四胞胎完全一致，只是把「手焊副作用」改为「事件发布 + 订阅者解耦」。
+_Avoid_: 重试结果、markSuccess / markFail
+
+**DistRequestAccepted**:
+一次分发 key 请求被「受理」分解出的领域事件（success = 受理成功、fail = 调用方过错被拒），由三处受理点发布——重试核 prologue、searxng 参数错、searxng pageno>1 空结果。订阅者按 `at` 落小时桶记 dist 统计；「受理」语义与请求最终成败无关（最终 503/502 亦算 success）。
+_Avoid_: dist 请求记录、调用计数
+
+**QueueRejected**:
+队列拒入 / 排队超时（QueueDO 的 429）分解出的领域事件。订阅者显式忽略（不计统计）——与旧「未受理不计」的 by-omission 语义一致，只是把「不计」从省略变成显式声明，留作未来诊断归因的挂点。
+_Avoid_: 丢弃记录、拒绝事件
+
 ### 统计概念
 
 **当日（today）**:

@@ -1,7 +1,7 @@
 // 基础设施层·上游 key 池内存权威态（KeyPool）。
 // 每 provider 一把，由该 provider 的 QueueDO（durable-object.ts）持有；同一进程单点写者：
 //   - 冷却（cooldown_until）与熔断连续计数（breaker: Map）只在本池内存被改，
-//     选 key（retry.ts emit(init) 读 pool.getKeys()）读到的就是刚写入的值——强一致。
+//     选 key（domain-services/retry-state-machine.ts emit(init) 读 pool.getKeys()）读到的就是刚写入的值——强一致。
 //   - D1 仅是低频 checkpoint 备份：checkpointCooldowns 批量写回 cooldown_until。
 //     丢失方向安全：冷却丢 = 提前放行、熔断计数丢 = 重新计数，均为放宽非锁死。
 //   - D1 对 id/key/name/status/created_at 仍权威（admin 写），本池经 reload 合并采纳。
@@ -146,7 +146,15 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
   };
 }
 
-/** admin 每次写 D1 后调用：让该 provider 的 QueueDO 立刻全量重读合并。尽力而为，调用方接 .catch(noop)。 */
+/**
+ * 领域语义词典（命令 → 领域事件 → 订阅者）：
+ *   SaveUpstreamKey / DeleteUpstreamKey（admin 写 D1，tavily.ts / exa.ts 的
+ *   5 种写命令末尾，共 10 处调用点）
+ *     → UpstreamKeyChanged（领域事件，语义名；未显式建模，经本函数推送到 DO）
+ *     → 订阅者 KeyPool.reload（QueueDO `/_internal/sync-keys` 全量重读合并）
+ * 本函数即该语义的收口辅助：任何 upstream key 写操作在持久化（D1）后经它同步内存池。
+ * 尽力而为，调用方接 .catch(noop)，失败由 RELOAD_FLOOR_MS（60s）陈旧兜底重读覆盖。
+ */
 export async function notifyKeyPoolSync(env: Env, provider: string): Promise<void> {
   const id = env.QUEUE.idFromName(provider);
   const stub = env.QUEUE.get(id);

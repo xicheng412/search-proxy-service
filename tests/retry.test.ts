@@ -1,4 +1,5 @@
-// retry 重试矩阵单测：直接调用 searchWithRetry（src/retry.ts），配 fake D1(+fake KV) 环境，
+// retry 重试矩阵单测：直接调用 searchWithRetry（src/domain-services/retry-state-machine.ts），
+// 配 fake D1(+fake KV) 环境，
 // 断言 callback 入参（onFailure 的 outcome.kind / lastRes.status）与 fetch 次数/去重 key。
 // 不 assert 内部实现：熔断写入细节由 tests/breaker.test.ts 覆盖；选 key 权重/统计不在本矩阵。
 
@@ -6,8 +7,9 @@ import { describe, it, expect, vi, afterEach, type Mock } from "vitest";
 import type { Env } from "../src/types";
 import { TAVILY } from "../src/providers";
 import type { CoreKey } from "../src/domain";
-import type { UsageStore } from "../src/usage";
+import { createUsageStore, type UsageStore } from "../src/usage";
 import { createKeyPool } from "../src/key-pool";
+import { upstreamFetch } from "../src/transport";
 import {
   searchWithRetry,
   TRANSITIONS,
@@ -15,7 +17,7 @@ import {
   type CoreDeps,
   type RetryContext,
   type RetryState,
-} from "../src/retry";
+} from "../src/domain-services/retry-state-machine";
 import { makeConstantD1 } from "./helpers/fake-d1";
 
 const fakeKV = { get: async () => null, put: async () => {} };
@@ -29,6 +31,10 @@ function makeDeps(rows: Record<string, unknown>[]): CoreDeps {
     env: makeEnv(rows),
     executionCtx: { waitUntil: () => {} },
     pool: createKeyPool(makeEnv(rows), TAVILY.upstream, rows as CoreKey[]),
+    events: { publish: () => {} },
+    transport: upstreamFetch,
+    // 空 DB 的独立 usage 实例：权重信号读 0，与「选 key 权重不在本矩阵」的断言口径一致。
+    usage: createUsageStore(makeEnv([])),
   };
 }
 
@@ -282,7 +288,7 @@ describe("searchWithRetry 重试矩阵", () => {
   });
 });
 
-// ---- 重试状态机（FSM）单测：零 fetch，直测迁移表与 emit（src/retry.ts 的 test-only 导出）----
+// ---- 重试状态机（FSM）单测：零 fetch，直测迁移表与 emit（retry-state-machine.ts 的 test-only 导出）----
 
 /**
  * 构造 emit("pick") 最小上下文：非 pick 读取路径不触 env/store/cb，用惰性 stub。
@@ -294,17 +300,16 @@ function pickCtx(
   tried = new Set<string>()
 ): RetryContext {
   return {
-    env: makeEnv([]),
     pool: createKeyPool(makeEnv([]), TAVILY.upstream, keys),
     def: TAVILY,
     request: req,
-    // 仅 emit("pick")：该路径不触 store/cb，stub 即可
+    // 仅 emit("pick")：该路径不触 store/cb/events，stub 即可
     cb: {
       onSuccess: async () => null,
       onFailure: async () => new Response("fail", { status: 502 }),
     },
     store: {} as UsageStore,
-    hour: "",
+    deps: makeDeps([]),
     keys,
     statsMap: {},
     tried,

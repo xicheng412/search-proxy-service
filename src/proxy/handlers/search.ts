@@ -5,7 +5,7 @@
 import { Context } from "hono";
 import { Env, AppVariables } from "../../types";
 import { PROVIDERS } from "../../providers";
-import { hourKey } from "../../domain";
+import { getEventBus } from "../../events";
 import { getUsageStore } from "../../usage";
 import { forwardToQueue, runNative } from "../forward";
 import {
@@ -41,16 +41,20 @@ export async function handleSearch(c: Ctx): Promise<Response> {
   const auth = c.var.auth; // 中间件保证存在；错误响应已由 authenticate 短路
   const def = PROVIDERS[auth.provider];
   const apiKey = auth.distKey.api_key;
-  const hour = hourKey();
 
   try {
     if (auth.protocol === "searxng") {
       const params = await collectSearxngParams(c);
       const { params: parsed, error } = parseSearxngParams(params);
       if (error) {
-        // 参数错误也记一次调用（结果记 fail）
+        // 参数错误也记一次调用（结果记 fail）——发布领域事件，统计由订阅者同步记账
         const store = getUsageStore(c.env);
-        store.recordDistCall(apiKey, hour, "fail");
+        getEventBus(c.env).publish({
+          type: "dist-request-accepted",
+          apiKey,
+          at: Date.now(),
+          outcome: "fail",
+        });
         store.flushSoon(c.executionCtx);
         return searxngError(error.status, error.message);
       }
@@ -60,7 +64,12 @@ export async function handleSearch(c: Ctx): Promise<Response> {
       // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
       if (parsed.pageno && parsed.pageno > 1) {
         const store = getUsageStore(c.env);
-        store.recordDistCall(apiKey, hour, "success");
+        getEventBus(c.env).publish({
+          type: "dist-request-accepted",
+          apiKey,
+          at: Date.now(),
+          outcome: "success",
+        });
         store.flushSoon(c.executionCtx);
         const empty = toSearxngResponse(
           { results: [] },

@@ -1,7 +1,7 @@
 // reader 执行器（转换）：drain 侧 GET /reader/<url> → Tavily Extract 请求 → 转纯文本。
 // 不依赖 Hono——由队列 DO 调用，只消费 CoreDeps + ProviderConfig + ReaderTask。
 
-import { searchWithRetry, type CoreDeps } from "../../retry";
+import { searchWithRetry, type CoreDeps } from "../../domain-services/retry-state-machine";
 import type { ProviderConfig } from "../../providers";
 import type { ReaderTask } from "../../queue/task";
 import { buildExtractBody, toTextResponse, readerError } from "../../adapters/reader";

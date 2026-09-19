@@ -1,7 +1,7 @@
 // searxng 执行器（转换）：drain 侧把 Tavily 上游响应转成 SearXNG 标准 JSON。
 // 不依赖 Hono——由队列 DO 调用，只消费 CoreDeps + ProviderConfig + SearxngTask。
 
-import { searchWithRetry, type CoreDeps } from "../../retry";
+import { searchWithRetry, type CoreDeps } from "../../domain-services/retry-state-machine";
 import type { ProviderConfig } from "../../providers";
 import type { SearxngTask } from "../../queue/task";
 import { toSearxngResponse, searxngError } from "../../adapters/searxng";

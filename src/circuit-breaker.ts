@@ -1,76 +1,38 @@
-// 基础设施层·熔断冷却策略。
-// 三层冷却共用一个 cooldown_until 字段，写入时取较大值：
-//   1. Post-use 冷却：每次使用后（无论成败）固定时长（默认 10s，可调）
-//   2. 熔断冷却：仅 server-error 族失败后（5xx / 网络 / 2xx-不可用），指数退避 = base × 2^连续失败次数（base 默认 10min，可调）
-//   3. 疑似失效冷却：每次 401/403 后固定 invalidCooldownSec（默认 12h，可调），不碰连续失败计数
-// 成功时连续失败归零，冷却仅保留 post-use 时长。
+// 基础设施层·熔断冷却「副作用绑定」（Side-effect binder）：读 KV 配置 + 写 KeyPool。
+// 决策（三层冷却数学 / 10min 空窗复位）见 domain-services/breaker-policy.ts 的纯策略
+// computeBreakerOutcome；本文件只负责取参、调用策略、落池，无任何冷却算法分支。
 // 连续失败计数与冷却权威态在 key 池（KeyPool，每 provider 一把 QueueDO 内存）；
-// 10min 空窗（BREAKER_TTL_MS）用内存 updated_at 判定。本模块不再直接读 D1，
-// 只经由 pool 读写内存（D1 由池的"合并 reload + 低频 checkpoint"负责）。
-// 时长参数来自 KV 运行时配置（breaker_config，基础配置留 KV），经模块级 TTL 缓存读取，≤ cacheTtl 生效。
+// 时长参数来自 KV 运行时配置（breaker_config），经模块级 TTL 缓存读取，≤ cacheTtl 生效。
 
 import type { Env } from "./types";
 import type { KeyPool } from "./key-pool";
+import type { RetryClass } from "./domain";
 import { cachedBreakerConfig } from "./breaker-config";
+import { computeBreakerOutcome } from "./domain-services/breaker-policy";
 
-const BREAKER_TTL_MS = 10 * 60 * 1000; // 连续失败计数空窗 10 分钟后自动归零
 const config = cachedBreakerConfig();
 
 /**
- * 成功响应：post-use 冷却 + 连续失败计数归零。写 target 仅为内存池，无 IO 失败路径。
+ * 记录一次上游结果对某 key 的熔断/冷却副作用（写 KeyPool 内存）：
+ * 读 KV 配置 → computeBreakerOutcome 算结局 → applyBreakerOutcome 落池。
+ * result 与领域事件 cls 同源（"success" | RetryClass）；client-error 不入
+ * computeBreakerOutcome（不换 key 不记账），进到由该策略抛错、被订阅者 .catch 兜住。
  */
-export async function recordUpstreamSuccess(
+export async function recordUpstreamOutcome(
   env: Env,
   pool: KeyPool,
   id: string,
+  result: RetryClass | "success",
   now: number = Date.now()
 ): Promise<void> {
-  const { postUseCooldownSec } = await config.get(env.KV);
-  pool.applyBreakerOutcome(id, now + postUseCooldownSec * 1000, 0, now);
-}
-
-/**
- * server-error 族失败：连续失败 +1（10min 窗口内），指数退避冷却 = max(postUse, base × 2^consecutive)。
- */
-export async function recordUpstreamFailure(
-  env: Env,
-  pool: KeyPool,
-  id: string,
-  now: number = Date.now()
-): Promise<void> {
-  const { postUseCooldownSec, breakerBaseSec } = await config.get(env.KV);
-  const cur = pool.getBreakerState(id);
-  // 窗口外（距上次 > BREAKER_TTL_MS）视为已恢复，重新从 1 计。
-  const consecutive = cur && now - cur.updated_at < BREAKER_TTL_MS ? cur.consecutive + 1 : 1;
-  const cooldownMs = breakerBaseSec * 1000 * Math.pow(2, consecutive);
-  const until = now + Math.max(postUseCooldownSec * 1000, cooldownMs);
-  pool.applyBreakerOutcome(id, until, consecutive, now);
-}
-
-/**
- * rate-limit：仅 post-use 冷却，不碰连续失败计数。
- */
-export async function recordUpstreamRateLimit(
-  env: Env,
-  pool: KeyPool,
-  id: string,
-  now: number = Date.now()
-): Promise<void> {
-  const { postUseCooldownSec } = await config.get(env.KV);
-  pool.applyBreakerOutcome(id, now + postUseCooldownSec * 1000, null, now);
-}
-
-/**
- * auth-error 疑似失效：固定 invalidCooldownSec（默认 12h）长冷却，不碰连续失败计数；
- * 以 post-use 为地板（较长者胜）。到点后重试一次；若成功由 recordUpstreamSuccess 自动回缩并归零。
- */
-export async function recordUpstreamInvalid(
-  env: Env,
-  pool: KeyPool,
-  id: string,
-  now: number = Date.now()
-): Promise<void> {
-  const { postUseCooldownSec, invalidCooldownSec } = await config.get(env.KV);
-  const until = now + Math.max(postUseCooldownSec, invalidCooldownSec) * 1000;
-  pool.applyBreakerOutcome(id, until, null, now);
+  const { postUseCooldownSec, breakerBaseSec, invalidCooldownSec } = await config.get(env.KV);
+  const { consecutive, cooldownUntil } = computeBreakerOutcome(
+    pool.getBreakerState(id),
+    result,
+    postUseCooldownSec,
+    breakerBaseSec,
+    invalidCooldownSec,
+    now
+  );
+  pool.applyBreakerOutcome(id, cooldownUntil, consecutive, now);
 }
