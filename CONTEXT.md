@@ -15,7 +15,7 @@ _Avoid_: 真实 key、provider key、外部 key
 _Avoid_: API key、访问 key、客户端 key
 
 **provider**:
-一家上游搜索/数据 API 服务商（公司），本服务代理其若干**能力（capability）**，并以其为路由与统计的维度。当前：Tavily（提供 Search、Extract）、Exa（提供 Search）。新增一个 provider 只加一份描述符。
+一家上游搜索/数据 API 服务商（公司），本服务代理其若干**能力（capability）**，并以其为路由与统计的维度。当前：Tavily（提供 Search、Extract）、Exa（提供 Search）。新增一个 provider 主链路只加一份描述符（另见 architecture §4.2 已知例外：Dashboard 上游趋势图与 `series.ts` 折叠按 provider 名硬编码，发布新 provider 时须同步该例外清单）。
 _Avoid_: 上游、后端、search engine
 
 **能力（capability）**:
@@ -45,7 +45,7 @@ _Avoid_: 可用 key、healthy key
 - `rate-limit`（429/432）：仅 post-use 冷却，换 key 重试；不记失败、不熔断。
 - `client-error`（400/404/422/433）：客户端/计划确定性错误，立即返回；不重试、不记失败、不需冷却——不是 key 的错。
 - `auth-error`（401/403）：key 级鉴权错误，疑似失效长冷却 + 记当日失败；不碰熔断连续计数。
-- `server-error`（其余 5xx / 网络 / **2xx 但响应内容不可用**）：记失败 + 熔断指数退避，换 key。注意 **2xx 而内容不可用也算失败**（上游坏了），与 dist 线"503 也算成功"互为镜像——两条线的 success/fail 都不跟状态码字面走。
+- `server-error`（其余 5xx / 网络 / **2xx 但响应内容不可用**）：记失败 + 熔断指数退避，换 key。注意 **2xx 而内容不可用也算失败**（上游坏了），与 dist 线"503 也算成功"互为镜像——两条线的 success/fail 都不跟状态码字面走。未列出的任何状态码一律归描述符声明的兜底族 `statusClassFallback`（当前 Tavily/Exa 均为 server-error）——保证未知码确定性，不落入 client-error。
 _Avoid_: 状态码、错误类型
 
 **权重（weight）**:
@@ -71,7 +71,7 @@ _Avoid_: retry loop、重试循环
 ### 统计概念
 
 **当日（today）**:
-用量统计的时间边界，UTC 日 00:00（`utcTodayStart()`），upstream / dist 两线共用。管理页「当日成功/失败」按此口径；跨天自然归零，无定时任务。
+用量统计的时间边界，UTC 日 00:00（`utcTodayStart()`），**管理页/服务端口径**。管理页「当日成功/失败」按此口径；跨天自然归零，无定时任务。**注意**：Dashboard「昨日/今日」卡是 dist 线由前端（`static/dashboard.js` `localDayTotal`）按**浏览器本地时区**对小时桶归日组合，与「当日」的 UTC 服务端口径不同，勿混读（见**小时桶**「今日/最近 N 小时」由前端组合）。
 _Avoid_: 今天、每日
 
 **小时桶（hour bucket）**:
@@ -79,11 +79,11 @@ _Avoid_: 今天、每日
 _Avoid_: 日桶、time bucket
 
 **upstream 统计（upstream stats, `kind='upstream'`）**:
-按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条，`scope` = 上游 key id。成败按**重试分类族**归属：`server-error`（5xx/网络/2xx-不可用）与 `auth-error`（401/403）记失败；`rate-limit`（429/432）与 `client-error`（400/404/422/433）不计。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。** 429/432（`rate-limit`）不计成功/失败、当前不单列成本；`attempt` 口径 = **非 rate-limit 的"一次尝试"**——即每次真实发送给上游的请求，但限流不计入成败，避免"真实调用次数"与实现背离。
+按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条，`scope` = 上游 key id。成败按**重试分类族**归属：`server-error`（5xx/网络/2xx-不可用）与 `auth-error`（401/403）记失败；`rate-limit`（429/432）与 `client-error`（400/404/422/433）不计。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。** 429/432（`rate-limit`）不计成功/失败、当前不单列成本；`attempt` 口径 = **计入 success/fail 的发送次数**（即 `calls = success + fail` 的加数）：`rate-limit`（429/432）与 `client-error`（400/404/422/433）不产生 attempt（前者仅冷却、后者直接返回不重试）。真实发出但未记统计的发送（限流、中途中止）单列，不入 `calls`。
 _Avoid_: 上游调用统计、接口统计
 
 **dist 统计（dist stats, `kind='dist'`）**:
-按「分发 key 请求**受理量**」记账的消费线：每单一条、success/fail 二元。**`success` 的语义是「受理」——请求被本服务受理、进入重试核即记 success，与上游成败无关**（最终 503/502 亦算 success；重试放大只出现在 upstream 线，dist 恒一单一条）；`fail` 仅指「受理后因调用方过错被拒」（searxng 参数错误）；未受理不计（鉴权失败、队列拒入 429、连接断开）。**不要把 dist 的 success/fail 读成请求结果成败——上游真实成败见 upstream 线。** 不区分后端/协议（provider 列写哨兵 `'*'`），`scope` = 分发 api_key。消费方只取 `calls = success + fail` 总量（逐 key「最近24h调用」、Dashboard「最近24小时/昨日」卡）。**与 upstream 统计是不同维度，不要求一致。**
+按「分发 key 请求**受理量**」记账的消费线：每单一条、success/fail 二元。**`success` 的语义是「受理」——请求被本服务受理、进入重试核即记 success，与上游成败无关**（最终 503/502 亦算 success；重试放大只出现在 upstream 线，dist 恒一单一条）；`fail` 仅指「受理后因调用方过错被拒」（searxng 参数错误）；未受理不计（鉴权失败、队列拒入 429、连接断开）。「受理」的实现是三处互斥的 `recordDistCall` 入口——重试核 prologue（`retry.ts` `searchWithRetry`）、searxng 参数错记 fail（`proxy/handlers/search.ts`）、searxng `pageno>1` 空结果记 success（同文件）——一条请求恰命中其一，保证每单一条；「进入重试核即记 success」不是唯一记账点。**不要把 dist 的 success/fail 读成请求结果成败——上游真实成败见 upstream 线。** 不区分后端/协议（provider 列写哨兵 `'*'`），`scope` = 分发 api_key。消费方只取 `calls = success + fail` 总量（逐 key「最近24h调用」、Dashboard「最近24小时/昨日」卡）。**与 upstream 统计是不同维度，不要求一致。**
 _Avoid_: 调用统计、请求统计
 
 **统计选数（stat source）**:

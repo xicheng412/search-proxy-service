@@ -1,5 +1,5 @@
 // 熔断/冷却参数配置（可运行时调整）：postUseCooldownSec（每次使用后固定冷却）与
-// breakerBaseSec（非429失败指数退避的基数）。单位为秒。存 KV `breaker_config`（JSON），
+// breakerBaseSec（server-error 族失败指数退避的基数）。单位为秒。存 KV `breaker_config`（JSON），
 // 缺省回退 DEFAULT —— 改 KV 即生效，无需重新部署。
 // circuit-breaker 每次记录前经 cachedBreakerConfig 读取（短 TTL 缓存），变更 ≤ cacheTtl 生效。
 

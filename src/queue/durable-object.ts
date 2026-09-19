@@ -38,7 +38,6 @@ interface QueuedRequest {
   resolve: (res: Response) => void;
   reject: (err: unknown) => void;
   signal: AbortSignal;
-  enteredAt: number;                                  // 入队时刻，用于等待超时判定
   timer: number | null;                               // 等待超时定时器句柄（workers-types: setTimeout → number）
   settled: boolean;                                   // 定时器已回 429（防重复执行上游）
 }
@@ -124,7 +123,6 @@ export class QueueDO extends DurableObject<Env> {
         apiKey: payload.apiKey,
         task: payload.task,
         signal: request.signal,
-        enteredAt: Date.now(),
         timer: null,
         settled: false,
         resolve: () => {},

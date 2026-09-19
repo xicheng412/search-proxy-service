@@ -1,6 +1,8 @@
 // 基础设施层·日用量统计的"权重信号"读产品（原 usage-store.ts 的读侧拆出）。
 // 热路径选 key 信号：滑动窗口失败数快照（后台刷新，最长陈旧 signalBaseTtlMs）+ core pending 叠加，
-// 每请求 0 次 D1 往返。signalBase 状态归本模块闭包；刷新 by flush 钩子（组合根 onFlushed）。
+// 每请求 0 次 D1 往返。signalBase 状态归本模块闭包；刷新驱动共三处：flush 落库钩子（组合根 index.ts onFlushed）、
+// QueueDO drain 每任务前置 refreshWeightBase（queue/durable-object.ts）、外部显式调用 refreshWeightBase；
+// 三处共用 maybeRefresh 的 TTL+minHour 自节流。
 // 依赖方向只向下：reads/ → core → storage/usage → domain；不 import proxy.ts / admin/*。
 
 import type { Env } from "../../types";
@@ -18,7 +20,7 @@ export function makeWeightSignal(env: Env, core: UsageCore, opts: WeightOpts = {
   const weightWindowMs = opts.weightWindowMs ?? 30 * 60 * 1000;
   const signalBaseTtlMs = opts.signalBaseTtlMs ?? 120_000;
 
-  // 热路径选 key 信号：今日失败数快照，由 flush 后台刷新，最长陈旧 signalBaseTtlMs。
+  // 热路径选 key 信号：滑动窗口失败数快照，由 flush/drain/显式三驱动后台刷新，最长陈旧 signalBaseTtlMs。
   let signalBase: { minHour: string; at: number; fail: Record<string, number> } | null = null;
 
   /**

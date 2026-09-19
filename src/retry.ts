@@ -68,7 +68,7 @@ function isCandidate(k: CoreKey, now: number): boolean {
 
 /**
  * 加权随机：只从 status=enabled、未冷却 且 未被排除的 key 中选择；
- * 权重 = 1 / (该 key 今日失败数信号 + 1)，即失败越少权重越高（0 失败最高）。
+ * 权重 = 1 / (该 key 滑动窗口失败数信号 + 1)，即失败越少权重越高（0 失败最高）。
  * statsMap 为空（单选候选时跳过统计）则退化为均匀权重。
  */
 function selectUpstreamKey(
@@ -134,7 +134,7 @@ async function markSuccess(
   await recordUpstreamSuccess(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
-/** 非429失败：记一次 usage 失败 + 熔断失败（指数退避冷却）。 */
+/** server-error 族失败：记一次 usage 失败 + 熔断失败（指数退避冷却）。 */
 async function markFail(
   ctx: RetryContext,
   id: string,
@@ -144,12 +144,12 @@ async function markFail(
   await recordUpstreamFailure(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
-/** 429：只写 post-use 冷却，不记 usage（现状行为，保持）。 */
+/** rate-limit：只写 post-use 冷却，不记 usage。 */
 async function markRateLimit(ctx: RetryContext, id: string, now: number): Promise<void> {
   await recordUpstreamRateLimit(ctx.env, ctx.pool, id, now).catch(() => {});
 }
 
-/** 401/403 疑似失效：记一次 usage 失败 + 长冷却（默认12h），不碰连续失败计数。 */
+/** auth-error：记一次 usage 失败 + 疑似失效长冷却（默认12h），不碰连续失败计数。 */
 async function markInvalid(ctx: RetryContext, id: string, now: number): Promise<void> {
   ctx.store.recordUpstreamResult(id, ctx.def.name, ctx.hour, "fail");
   await recordUpstreamInvalid(ctx.env, ctx.pool, id, now).catch(() => {});

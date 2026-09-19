@@ -361,7 +361,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 ### 6.2 冷却（三层，共用一个字段）
 
 - **Post-use 冷却**：每次使用后（无论成败）自动设置冷却（默认 10s），防止同一 key 被连续请求打穿。
-- **熔断冷却**：非429失败 → 连续失败 +1，指数退避冷却 = max(post-use, base × 2^consecutive)，base 默认 10min。
+- **熔断冷却**：仅 server-error 族失败（5xx / 网络 / 2xx-不可用）→ 连续失败 +1，指数退避冷却 = max(post-use, base × 2^consecutive)，base 默认 10min。
 - **疑似失效冷却**：401/403（key 级鉴权错误）→ 固定 `invalidCooldownSec`（默认 12h），不碰连续失败计数；到点重试一次，成功由 post-use 自动回缩。
 - 成功 → 连续失败归零，仅保留 post-use 冷却。
 - 429 → 仅 post-use 冷却，不碰连续失败计数。

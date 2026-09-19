@@ -28,7 +28,7 @@ export interface UsageStore {
     ids: string[],
     minHour: string
   ): Promise<Record<string, { success: number; fail: number }>>;
-  /** 热路径选 key 信号：今日失败数快照（后台刷新）+ 本实例 pending——0 次 D1 往返。 */
+  /** 热路径选 key 信号：滑动窗口失败数快照（后台刷新）+ 本实例 pending——0 次 D1 往返。 */
   readUpstreamWeightSignal(ids: string[]): Promise<Record<string, number>>;
   /** 批量读多个分发 key 某 UTC 日统计（展示用）：D1 现值 + 本实例增量叠加。 */
   readDistCallsByScopes(

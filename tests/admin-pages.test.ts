@@ -7,14 +7,19 @@
 import { describe, it, expect } from "vitest";
 import worker from "../src/index";
 import type { Env } from "../src/types";
+import { hourKey } from "../src/domain";
 
 type Row = Record<string, unknown>;
 
+// 图表序列小时：取"两天前的当前小时"（恒落在 dashboard 读侧 5 天窗口内）。
+// 不用绝对日期——窗口随真实时钟滑动，硬编码日期会随时间漂移而失效。
+const SERIES_HOUR = hourKey(Date.now() - 2 * 86_400_000);
+
 const SCRIPTED: Record<string, Row[]> = {
   // readSeriesByProvider 的 .all()：binds = (kind, minHour)
-  upstream: [{ hour: "2026-09-14T00:00", provider: "tavily", success: 3, fail: 1 }],
+  upstream: [{ hour: SERIES_HOUR, provider: "tavily", success: 3, fail: 1 }],
   // dist 行无 provider 维度（provider 为 NULL）
-  dist: [{ hour: "2026-09-14T00:00", provider: null, success: 9, fail: 0 }],
+  dist: [{ hour: SERIES_HOUR, provider: null, success: 9, fail: 0 }],
 };
 
 function makeStatement(sql: string, binds: unknown[]) {
@@ -158,7 +163,7 @@ describe("dashboard 总览页（views/dashboard.ts）", () => {
 
     // 图表序列 JSON 注入（raw JSON，非 HTML esc：引号原样）
     const dist = scriptBody(html, "dist-series");
-    expect(dist).toContain('"hour":"2026-09-14T00:00"');
+    expect(dist).toContain(`"hour":"${SERIES_HOUR}"`);
     expect(dist).toContain('"calls":9');
     const upstream = scriptBody(html, "upstream-series");
     expect(upstream).toContain('"tavily":4');
