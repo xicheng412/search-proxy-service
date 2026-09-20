@@ -176,21 +176,9 @@ export interface UpstreamAttemptSettled {
   at: number; // 尝试结束时刻
 }
 
-/** 一次分发 key 请求被受理（受理时刻 at，小时桶由订阅者换算）。由「受理」三处 raise。 */
-export interface DistRequestAccepted {
-  type: "dist-request-accepted";
-  apiKey: string;
-  at: number;
-  outcome: "success" | "fail"; // 受理成功 / 调用方过错被拒
-}
+// 事件轴只服务 UpstreamAttemptSettled：dist 已迁主 Worker 计数（不经事件总线）。
 
-/** 队列拒入/超时（不计统计：订阅者显式忽略，为未来诊断留锚点）。由 QueueDO 的 429 raise。 */
-export interface QueueRejected {
-  type: "queue-rejected";
-  apiKey: string; // 拒入/超时的分发 key（不计统计：订阅者显式忽略）
-}
-
-export type DomainEvent = UpstreamAttemptSettled | DistRequestAccepted | QueueRejected;
+export type DomainEvent = UpstreamAttemptSettled;
 
 /** 领域服务发布事件的能力端口（实现见 src/events.ts；保持同步，无 async 逃逸）。 */
 export interface DomainEventSink {

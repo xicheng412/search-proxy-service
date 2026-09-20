@@ -1,15 +1,13 @@
 // 基础设施层·同步轻量事件分发器（非总线）。
 // 领域事件（domain.ts DomainEvent）经订阅者消费：发布 = 同步遍历订阅者列表，
 // 与现有 mark* `.catch(()=>{})` 语义一致——任一订阅者抛错被捕获后继续下一个，
-// 不中断发布者，也不逃逸 async。各 isolate 一份单例（getEventBus，仿 getUsageStore），
-// 组合根在首次创建时注册通用订阅（见 getEventBus）；QueueDO 额外注册上游结果订阅（幂等）。
+// 不中断发布者，也不逃逸 async。各 isolate 一份单例（getEventBus，仿 getUsageStore）。
+// 仅服务 UpstreamAttemptSettled（QueueDO 侧注册），无通用订阅：dist 已迁主 Worker
+// 计数（countDist 中间件直记，不经事件总线）。
 // 分层约束：domain.ts（纯类型）与领域服务不 import 本模块——领域侧只依赖 DomainEventSink
 // 端口接口（依赖倒置），实现在此经组合根注入。
 
-import type { Env } from "./types";
 import type { DomainEvent, DomainEventSink } from "./domain";
-import { hourKey } from "./domain";
-import { getUsageStore } from "./usage";
 
 export type EventSubscriber = (ev: DomainEvent) => void | Promise<void>;
 
@@ -44,25 +42,12 @@ export function createEventBus(): DomainEventBus {
 let defaultBus: DomainEventBus | null = null;
 
 /**
- * per-isolate 惰性单例。首次创建时自动注册通用订阅（无 pool 依赖，主 Worker 与 QueueDO 共用）：
- * - DistRequestAccepted → getUsageStore(env).recordDistCall(apiKey, hourKey(at), outcome)
- * - QueueRejected → 显式 no-op（把「不计统计」从 by-omission 变显式；未来诊断在此挂读模型）
+ * per-isolate 惰性单例（无参）。不再注册通用订阅：上游结果订阅由 QueueDO 的
+ * ensureBus 在自身 isolate 注册（幂等单次，见 durable-object.ts），getEventBus 只负责取用单例。
  */
-export function getEventBus(env: Env): DomainEventBus {
+export function getEventBus(): DomainEventBus {
   if (!defaultBus) {
     defaultBus = createEventBus();
-    registerGeneralSubscribers(defaultBus, env);
   }
   return defaultBus;
-}
-
-function registerGeneralSubscribers(bus: DomainEventBus, env: Env): void {
-  bus.subscribe((ev) => {
-    if (ev.type !== "dist-request-accepted") return;
-    getUsageStore(env).recordDistCall(ev.apiKey, hourKey(ev.at), ev.outcome);
-  });
-  bus.subscribe((ev) => {
-    if (ev.type !== "queue-rejected") return;
-    // 拒入/超时的分发 key 不计统计（显式 no-op，见文件头）；仅作类型收纳，未来诊断挂读模型。
-  });
 }

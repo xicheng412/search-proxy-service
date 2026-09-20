@@ -40,7 +40,7 @@ describe("readDistCallsByScopes", () => {
     expect(before["key-a"]).toEqual({ success: 8, fail: 3 });
 
     const h = hourKey();
-    store.recordDistCall("key-a", h, "success"); // 新签名：无 provider 实参
+    store.recordDistCall("key-a", h); // 到达计数（无成败实参）
     store.recordUpstreamResult("up-1", "tavily", h, "success"); // 不应混入 dist
 
     const after = await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
@@ -254,7 +254,7 @@ describe("readUpstreamSeries", () => {
     store.recordUpstreamResult("up-9", "tavily", h, "success");
     store.recordUpstreamResult("up-9", "tavily", h, "fail");
     store.recordUpstreamResult("up-9", "exa", h, "success");
-    store.recordDistCall("key-x", h, "success"); // 不应混入 upstream
+    store.recordDistCall("key-x", h); // 不应混入 upstream
 
     const res = await store.readUpstreamSeries(seriesMinHour);
     expect(res).toHaveLength(12);
@@ -333,14 +333,14 @@ describe("readDistSeries", () => {
     const store = createUsageStore({ DB: db } as unknown as Env);
     await store.readDistSeries(seriesMinHour); // 填缓存
     const h = "2026-09-01T10:00";
-    store.recordDistCall("key-x", h, "success");
-    store.recordDistCall("key-x", h, "success");
-    store.recordDistCall("key-x", h, "fail");
+    // dist 无成败维度：恒记 success（calls 纯 success 计数）
+    store.recordDistCall("key-x", h);
+    store.recordDistCall("key-x", h);
     store.recordUpstreamResult("up-9", "tavily", h, "success"); // 不应混入 dist
 
     const res = await store.readDistSeries(seriesMinHour);
     expect(res).toHaveLength(12);
-    expect(res[10]).toEqual({ hour: "2026-09-01T10:00", calls: 3 });
+    expect(res[10]).toEqual({ hour: "2026-09-01T10:00", calls: 2 });
     expect(allCalls()).toBe(1); // 仍在 TTL 窗口内，无新 D1 查询
   });
 

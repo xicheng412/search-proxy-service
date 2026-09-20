@@ -119,7 +119,7 @@ Authorization: Bearer <provider>-<key>
 ## 6. 管理后台结构
 
 - **Tavily Keys / Exa Keys**：列表（key 脱敏、备注可编辑、状态、冷却、当日成功/失败）、新增（可选 test call 分别打各自上游）、启用/停用、删除。
-- **分发 Keys**：生成（纯随机字符串，明文只在生成响应显示一次，带前缀用法提示）、启用/停用、删除；列表最近24h调用拆为 **Tavily(24H) / EXA(24H)** 两列；操作列 "复制" 下拉菜单含 **复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key**——复制组装好的调用凭据。
+- **分发 Keys**：生成（纯随机字符串，明文只在生成响应显示一次，带前缀用法提示）、启用/停用、删除；列表「最近24h请求」单列（跨 provider 合计，dist 无 provider 维度）；操作列 "复制" 下拉菜单含 **复制 tavily 调用 key / 复制 exa 调用 key / 复制 searxng-tavily 调用 key**——复制组装好的调用凭据。
 - **使用说明页 (`/help`，公开、无需登录，独立样式；admin 顶栏「使用说明」新标签打开)**：原理与概念区分、五种 curl 调用示例、端点与错误表、文档索引。
 - **Dashboard**：Tavily / Exa / 分发 Key 统计卡 + 今日调用（= 各分发 key 的 tavily+exa 之和）。
 

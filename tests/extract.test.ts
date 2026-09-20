@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, type Mock } from "vitest";
 import type { Hono } from "hono";
+import type { ExecutionContext } from "@cloudflare/workers-types";
 import { proxyApp } from "../src/routes/proxy";
 import type { AppVariables, Env } from "../src/types";
 import { makeConstantD1 } from "./helpers/fake-d1";
@@ -61,7 +62,8 @@ function callExtract(
       },
       body,
     },
-    env
+    env,
+    { waitUntil: () => {} } as unknown as ExecutionContext
   );
 }
 

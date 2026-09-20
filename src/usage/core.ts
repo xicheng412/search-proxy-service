@@ -42,8 +42,8 @@ export interface CoreOpts {
 export interface UsageCore {
   /** 记一次上游结果（成功/失败）——纯内存累加，0 IO。 */
   recordUpstreamResult(id: string, provider: Provider, hour: string, result: Result): void;
-  /** 记一次分发 key 请求（success/fail 二元，不区分后端/协议）——纯内存累加，0 IO。 */
-  recordDistCall(apiKey: string, hour: string, outcome: Result): void;
+  /** 记一次分发 key 请求到达（无成败维度，仅计数）——纯内存累加，0 IO。 */
+  recordDistCall(apiKey: string, hour: string): void;
   /** 节流调度 flush：距上次 ≥interval 且未达条数上限才排入 waitUntil，不阻塞请求。 */
   flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void;
   /** 立即落库缓冲中全部增量（队列清空兜底用）：复用 flush 的防重入与批量合并，不改节流时钟。 */
@@ -126,12 +126,12 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     pending.set(key, cur);
   }
 
-  function recordDistCall(apiKey: string, hour: string, outcome: Result): void {
+  function recordDistCall(apiKey: string, hour: string): void {
     // dist 无 provider 维度：provider 恒 null（0004 起不落哨兵值）。
+    // 到达即 +1：恒记 success（fail 恒 0；calls = success + fail 派生，不变）。
     const key = bufKey({ kind: "dist", scope: apiKey, provider: null, hour });
     const cur = pending.get(key) ?? { success: 0, fail: 0 };
-    if (outcome === "success") cur.success += 1;
-    else cur.fail += 1;
+    cur.success += 1;
     pending.set(key, cur);
   }
 

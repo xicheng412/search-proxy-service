@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env, AppVariables } from "../types";
 import { authenticate } from "../proxy/authenticate";
+import { countDist } from "../proxy/count-dist";
 import { handleSearch } from "../proxy/handlers/search";
 import { handleExtract } from "../proxy/handlers/extract";
 import { handleReader } from "../proxy/handlers/reader";
@@ -17,7 +18,8 @@ export const proxyApp = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 // - /search 承载 Search 能力（POST native 透传 Bearer <tavily|exa>-<key>；GET|POST searxng Bearer searxng-tavily-<key>）。
 // - /extract 承载 Extract 能力（POST native 透传 Bearer tavily-<key>）；无 searxng 语义、exa 无此能力。
 // - /reader 承载 Extract 能力（GET reader 协议 Bearer reader-tavily-<key>，URL→文本）。
-// 中间件顺序：cors（浏览器跨域，鉴权靠请求头里的分发 key）→ authenticate（数据面准入）→ handler。
-proxyApp.all("/search", cors(), authenticate, handleSearch);
-proxyApp.post("/extract", cors(), authenticate, handleExtract);
-proxyApp.get("/reader/*", cors(), authenticate, handleReader);
+// 中间件顺序：cors（浏览器跨域，鉴权靠请求头里的分发 key）→ authenticate（数据面准入）→
+// countDist（dist 请求到达 +1，主 Worker 直记）→ handler。401 在 authenticate 短路，不达 countDist。
+proxyApp.all("/search", cors(), authenticate, countDist, handleSearch);
+proxyApp.post("/extract", cors(), authenticate, countDist, handleExtract);
+proxyApp.get("/reader/*", cors(), authenticate, countDist, handleReader);

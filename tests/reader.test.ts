@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, type Mock } from "vitest";
 import type { Hono } from "hono";
+import type { ExecutionContext } from "@cloudflare/workers-types";
 import { proxyApp } from "../src/routes/proxy";
 import type { AppVariables, Env } from "../src/types";
 import { makeConstantD1 } from "./helpers/fake-d1";
@@ -45,7 +46,12 @@ function callReader(
   bearer: string,
   path: string
 ) {
-  return app.request(path, { headers: { authorization: `Bearer ${bearer}` } }, env);
+  return app.request(
+    path,
+    { headers: { authorization: `Bearer ${bearer}` } },
+    env,
+    { waitUntil: () => {} } as unknown as ExecutionContext
+  );
 }
 
 const enabledRow = (apiKey: string, status: string = "enabled") => ({

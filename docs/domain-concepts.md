@@ -5,10 +5,9 @@
 > 领域词汇的准确术语以 CONTEXT.md 为准，本文件只引用不重复词条。
 >
 > **限界上下文**：单上下文（CONTEXT.md / docs/agents/domain.md），无跨上下文防腐层。
-> 上下文内两个组合根：`getEventBus` 在每个调用它的 isolate 上注册**通用订阅**
-> （dist 记账 / queue-rejected 显式 no-op）；QueueDO 的 `ensureBus` 在自身 isolate 额外注册
-> **上游订阅**（UpstreamAttemptSettled，幂等单次）。事件只在同 isolate 内同步分发，
-> 不跨 isolate、不入队列。
+> 事件轴只剩 **UpstreamAttemptSettled**（QueueDO 的 `ensureBus` 在自身 isolate 注册一次，幂等）；
+> dist 改为主 Worker `countDist` 中间件直接记（请求到达量），不产生领域事件。事件只在同 isolate
+> 内同步分发，不跨 isolate、不入队列。
 
 ## 1. 命令盘点（用户/系统触发）
 
@@ -27,7 +26,7 @@
 | DeleteUpstreamKey | 用户(admin) | POST /admin/{tavily\|exa}/:id/delete → deleteUpstreamKey + notifyKeyPoolSync |
 | UpdateQueueConfig / UpdateBreakerConfig / UpdateDistCacheConfig | 用户(admin) | admin POST /admin/queue-config / breaker-config / dist-cache-config → KV 写 + 缓存失效 |
 | AuthenticateRequest | 调用方 | authenticate middleware → getDistributedKey（含复合前缀解析 + Cache API 读穿） |
-| ExecuteProxyRequest（search/extract/reader → QueueDO） | 调用方 | handlers → forwardToQueue → QueueDO → executor → searchWithRetry |
+| ExecuteProxyRequest（search/extract/reader → QueueDO） | 调用方 | handlers → countDist（dist 到达计数在主 Worker 转发前完成）→ forwardToQueue → QueueDO → executor → searchWithRetry |
 | ScheduledPurgeUsage | cron（scheduled 事件） | index.ts scheduled → DELETE FROM usage_counts WHERE hour < cutoff |
 
 ## 2. 领域事件（命令产物）
@@ -37,8 +36,6 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 | 事件 | 产生者 | 订阅者 | 是否进 D1 |
 |---|---|---|---|
 | UpstreamAttemptSettled | retry FSM 在飞环节（searchWithRetry 迁移 action） | QueueDO 专属订阅：按 cls 路由冷却（recordUpstreamOutcome 写 KeyPool 内存）+ usage 记账（recordUpstreamResult 内存 pending） | 冷却经 checkpoint 低频落库；usage 经 flush 节流落库 |
-| DistRequestAccepted | 「受理」三处 raise：retry prologue success、searxng 参数错 fail、searxng pageno>1 success | 通用订阅（getEventBus 注册）：getUsageStore.recordDistCall(apiKey, hourKey(at), outcome) | 经 flush 节流落库 |
-| QueueRejected | QueueDO 的 429（拒入 / waitBudget 超时，各 publish 一次） | 通用订阅：显式 no-op（不计统计；未来诊断在此挂读模型） | 否 |
 | UpstreamKeyChanged（语义名） | admin 写 D1 命令（Save/DeleteUpstreamKey，见 §1） | KeyPool.reload（经 notifyKeyPoolSync → `/_internal/sync-keys` 全量重读合并） | 命令本身写 D1 |
 
 ## 3. 命令 × 事件追溯
@@ -47,24 +44,25 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 
 | 命令 | 产物事件 | 订阅者最终落点 |
 |---|---|---|
-| ExecuteProxyRequest | 恰好 1 × DistRequestAccepted（受理即记）；每尝试 ≤1 × UpstreamAttemptSettled（client-error 不产） | usage_counts（dist 受理）+ KeyPool 冷却 + usage_counts（upstream 按 cls） |
+| ExecuteProxyRequest | dist = 主 Worker 直达 +1（非事件）；每尝试 ≤1 × UpstreamAttemptSettled（client-error 不产） | usage_counts（dist 到达量）+ KeyPool 冷却 + usage_counts（upstream 按 cls） |
 | Generate/Toggle/DeleteDistributedKey | 无 | 纯 D1 写（+ Cache 失效） |
 | Add/Rename/Toggle/DeleteUpstreamKey | UpstreamKeyChanged（语义名） | notifyKeyPoolSync → KeyPool.reload 全量重读合并 |
 | Update*Config | 无 | 纯 KV 写 + TTL 缓存失效 |
-| QueueRejected（DO 内部 429 引发） | 1 × QueueRejected | no-op（诊断挂点） |
 | ScheduledPurgeUsage | 无 | 纯 D1 DELETE |
 
 ## 4. 领域不变量与业务规则
 
 跨模块领域规则；每条语义见 CONTEXT 对应词目，此处只列简式。
 
-- **受理单条**：每次调用恰记一条 dist；`success` = 受理而非结果成败（最终 503/502 亦算）。
+- **dist 单条**：每次调用恰记一条 dist（请求到达量，主 Worker `countDist` 转发前 +1，非事件）；
+  与请求最终结果成败无关（队列 429 / 断连均计入）。
 - **attempt 口径**：upstream 每「计入 success/fail 的发送」一条；rate-limit / client-error 不计。
 - **冷却分层**：post-use / 熔断（指数退避 + 10min 空窗复位）/ 疑似失效三层共用 `cooldown_until`；
   server-error 才驱动连续计数，auth / rate-limit 不碰。
 - **选 key 硬闸门**：`enabled ∧ 未冷却` 才入候选；权重 1/(fail+1) 只调分布不判健康。
 - **内存权威 + D1 投影**：冷却/熔断写 KeyPool 内存，D1 低频 checkpoint；丢失方向安全（放宽非锁死）。
-- **队列背压**：一次在途 1 任务；maxDepth 拒入 / waitBudget 超时双路 429，均不计统计。
+- **队列背压**：一次在途 1 任务；maxDepth 拒入 / waitBudget 超时双路 429，不计 upstream 执行；
+  dist 请求到达已在主 Worker 计入。
 - **单点写者**：per-provider KeyPool 仅其 QueueDO 写冷却（权威在内存）；
   D1 只承载投影 / checkpoint 备份 / usage_counts，不参与冷却决策。
 
@@ -87,7 +85,7 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 | ClassifyService | status→RetryClass | RetryStateMachine.emit | src/domain-services/classify.ts |
 | BreakerPolicy | 三层冷却纯策略（computeBreakerOutcome） | circuit-breaker 副作用绑定 | src/domain-services/breaker-policy.ts |
 | UpstreamTransport（端口） | 上游 fetch（30s 超时） | QueueDO.drain（注入 CoreDeps.transport） | src/transport.ts |
-| 事件分发（基础设施） | 同步轻量分发器 + getEventBus 单例组合根 | 全部命令（组合根装配） | src/events.ts |
+| 事件分发（基础设施） | 同步轻量分发器 + getEventBus 单例组合根（仅服务 UpstreamAttemptSettled，QueueDO 侧注册一次） | RetryStateMachine → UpstreamAttemptSettled → QueueDO 订阅 | src/events.ts |
 
 ## 7. 端口与仓储（基础设施边界）
 

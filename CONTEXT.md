@@ -74,13 +74,7 @@ _Avoid_: retry loop、重试循环
 一次上游尝试结束（成功 / 按重试分类族归类失败）分解出的领域事件，由重试 FSM 的在飞环节发布，经同步事件轴驱动冷却与记账——订阅者按 `cls` 路由：success / server-error / auth-error 记 usage（success/fail），rate-limit 只冷却不记账；client-error 不入此事件（不换 key 不记账）。语义与旧 mark* 四胞胎完全一致，只是把「手焊副作用」改为「事件发布 + 订阅者解耦」。
 _Avoid_: 重试结果、markSuccess / markFail
 
-**DistRequestAccepted**:
-一次分发 key 请求被「受理」分解出的领域事件（success = 受理成功、fail = 调用方过错被拒），由三处受理点发布——重试核 prologue、searxng 参数错、searxng pageno>1 空结果。订阅者按 `at` 落小时桶记 dist 统计；「受理」语义与请求最终成败无关（最终 503/502 亦算 success）。
-_Avoid_: dist 请求记录、调用计数
-
-**QueueRejected**:
-队列拒入 / 排队超时（QueueDO 的 429）分解出的领域事件。订阅者显式忽略（不计统计）——与旧「未受理不计」的 by-omission 语义一致，只是把「不计」从省略变成显式声明，留作未来诊断归因的挂点。
-_Avoid_: 丢弃记录、拒绝事件
+> 事件轴只服务 UpstreamAttemptSettled：dist 已迁主 Worker 计数（countDist 中间件直记，不经事件总线）。
 
 ### 统计概念
 
@@ -97,11 +91,11 @@ _Avoid_: 日桶、time bucket
 _Avoid_: 上游调用统计、接口统计
 
 **dist 统计（dist stats, `kind='dist'`）**:
-按「分发 key 请求**受理量**」记账的消费线：每单一条、success/fail 二元。**`success` 的语义是「受理」——请求被本服务受理、进入重试核即记 success，与上游成败无关**（最终 503/502 亦算 success；重试放大只出现在 upstream 线，dist 恒一单一条）；`fail` 仅指「受理后因调用方过错被拒」（searxng 参数错误）；未受理不计（鉴权失败、队列拒入 429、连接断开）。「受理」的实现是三处互斥的 `recordDistCall` 入口——重试核 prologue（`retry.ts` `searchWithRetry`）、searxng 参数错记 fail（`proxy/handlers/search.ts`）、searxng `pageno>1` 空结果记 success（同文件）——一条请求恰命中其一，保证每单一条；「进入重试核即记 success」不是唯一记账点。**不要把 dist 的 success/fail 读成请求结果成败——上游真实成败见 upstream 线。** 不区分后端/协议（provider 列写哨兵 `'*'`），`scope` = 分发 api_key。消费方只取 `calls = success + fail` 总量（逐 key「最近24h调用」、Dashboard「最近24小时/昨日」卡）。**与 upstream 统计是不同维度，不要求一致。**
+按「分发 key 请求**到达量**」记账的消费线：每笔通过鉴权的数据面请求在**主 Worker** 由 `countDist` 中间件（`proxy/count-dist.ts`）转发前 +1，不区分成败、不耦合上游执行（重试/熔断仍静止在 QueueDO，dist 只有这一笔）。`success` 恒为 1（无 `fail` 维度；`calls = success + fail` 派生不变，现仅 success 为值）。队列拒入（429）与客户端断连发生在请求转发之后——请求确已到达 → **计入**；鉴权失败（401）在 `authenticate` 短路、不达 countDist → 不计。**不要把 dist 的计数读成请求结果成败——上游真实成败见 upstream 线。** 不区分后端/协议（provider 恒 NULL），`scope` = 分发 api_key。消费方只取 `calls = success + fail` 总量（逐 key「最近24h请求」、Dashboard「最近24小时/昨日」卡）。**与 upstream 统计是不同维度，不要求一致。**
 _Avoid_: 调用统计、请求统计
 
 **统计选数（stat source）**:
-用哪条统计线先定问题：问官方 key 的消耗/健康 → `upstream`；问分发 key 的用量/账单 → `dist`。两线记账粒度和分类不同——一次请求可放大成多条 upstream 记录（重试）、只一条 dist 记录；dist 记「**受理**」而非结果成败（最终 503/502 亦算 success）；鉴权失败与队列拒入（429）的请求两线都不记。**不要拿它们对账。** dist 只到次数粒度、不含后端维度；后端真实调用见 upstream 统计。
+用哪条统计线先定问题：问官方 key 的消耗/健康 → `upstream`；问分发 key 的用量/账单 → `dist`。两线记账粒度和分类不同——一次请求可放大成多条 upstream 记录（重试）、只一条 dist 记录；dist 记「**请求到达量**」（主 Worker +1，不经事件总线、不耦合上游执行）；队列拒入 429 计入（请求确已到达）、鉴权失败 401 不计。**不要拿它们对账。** dist 只到次数粒度、不含后端维度；后端真实调用见 upstream 统计。
 _Avoid_: 直接对比 upstream/dist 数字
 
 **写回式近似统计（write-back approximate stats）**:
@@ -109,5 +103,5 @@ _Avoid_: 直接对比 upstream/dist 数字
 _Avoid_: 精确统计、real-time stats
 
 **队列任务（queue task）**:
-主 Worker 鉴权后把"一次相对上游的请求"打装成的可序列化任务（`NativeTask` / `SearxngTask` / `ReaderTask`）。一个任务 = 一次对上游的**完整处理**（内部重试最多换 3 把 key，重试永远不入队），经所属 provider 的队列 DO 串行放行：一次只在途 1 个任务，任务结束后隔 `intervalMs`（默认 3s，`queue_config` 运行时可调）再放下一个——`intervalMs` 是**任务间最小间隔**，真实放行率 = 1 / max(任务耗时, intervalMs)。排队请求**持连接等待自己的时间片**，等待时延 ≈ 排在前面所有任务的耗时之和；排队数达 `maxDepth`（默认 10）时新请求直接 429 拒入（不计统计），入队后等待超过 `waitBudgetMs`（默认 30s，`queue_config` 运行时可调）也直接 429 + Retry-After（与拒入同语义、不计统计）——`maxDepth` 与 `waitBudgetMs` 构成「深度 + 时间」两种背压；客户端断开未轮到则丢弃（不烧上游配额）。
+主 Worker 鉴权后把"一次相对上游的请求"打装成的可序列化任务（`NativeTask` / `SearxngTask` / `ReaderTask`）。一个任务 = 一次对上游的**完整处理**（内部重试最多换 3 把 key，重试永远不入队），经所属 provider 的队列 DO 串行放行：一次只在途 1 个任务，任务结束后隔 `intervalMs`（默认 3s，`queue_config` 运行时可调）再放下一个——`intervalMs` 是**任务间最小间隔**，真实放行率 = 1 / max(任务耗时, intervalMs)。排队请求**持连接等待自己的时间片**，等待时延 ≈ 排在前面所有任务的耗时之和；排队数达 `maxDepth`（默认 10）时新请求直接 429 拒入（不计 upstream 执行、但计入 dist 请求到达数），入队后等待超过 `waitBudgetMs`（默认 30s，`queue_config` 运行时可调）也直接 429 + Retry-After（与拒入同语义、不计 upstream 执行、但计入 dist 请求到达数）——`maxDepth` 与 `waitBudgetMs` 构成「深度 + 时间」两种背压；客户端断开未轮到则丢弃（不烧上游配额；dist 请求到达已在主 Worker 计入）。
 _Avoid_: job、请求任务

@@ -5,8 +5,6 @@
 import { Context } from "hono";
 import { Env, AppVariables } from "../../types";
 import { PROVIDERS } from "../../providers";
-import { getEventBus } from "../../events";
-import { getUsageStore } from "../../usage";
 import { forwardToQueue, runNative } from "../forward";
 import {
   parseSearxngParams,
@@ -47,30 +45,15 @@ export async function handleSearch(c: Ctx): Promise<Response> {
       const params = await collectSearxngParams(c);
       const { params: parsed, error } = parseSearxngParams(params);
       if (error) {
-        // 参数错误也记一次调用（结果记 fail）——发布领域事件，统计由订阅者同步记账
-        const store = getUsageStore(c.env);
-        getEventBus(c.env).publish({
-          type: "dist-request-accepted",
-          apiKey,
-          at: Date.now(),
-          outcome: "fail",
-        });
-        store.flushSoon(c.executionCtx);
+        // 参数错误：请求已到达（countDist 已 +1），仅返回协议错误，不再单独记账
         return searxngError(error.status, error.message);
       }
       if (!parsed) {
         return searxngError(400, "invalid search parameters");
       }
-      // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额
+      // D3：Tavily 无分页，pageno>1 返回合法的空结果响应（诚实、防重复），不耗上游配额。
+      // 请求已由 countDist +1（到达即计数），此处不再单独记账。
       if (parsed.pageno && parsed.pageno > 1) {
-        const store = getUsageStore(c.env);
-        getEventBus(c.env).publish({
-          type: "dist-request-accepted",
-          apiKey,
-          at: Date.now(),
-          outcome: "success",
-        });
-        store.flushSoon(c.executionCtx);
         const empty = toSearxngResponse(
           { results: [] },
           parsed.query,

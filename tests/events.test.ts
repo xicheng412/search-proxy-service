@@ -10,7 +10,7 @@ import type { DomainEvent } from "../src/domain";
 describe("createEventBus 同步分发", () => {
   it("无订阅者发布 → no-op 不抛错", () => {
     const bus = createEventBus();
-    const ev: DomainEvent = { type: "dist-request-accepted", apiKey: "k", at: 1, outcome: "success" };
+    const ev: DomainEvent = { type: "upstream-attempt-settled", keyId: "k", provider: "tavily", cls: "success", at: 1 };
     expect(() => bus.publish(ev)).not.toThrow();
   });
 
@@ -24,7 +24,7 @@ describe("createEventBus 同步分发", () => {
     bus.subscribe(() => {
       order.push("b");
     });
-    bus.publish({ type: "queue-rejected", apiKey: "k" });
+    bus.publish({ type: "upstream-attempt-settled", keyId: "k", provider: "tavily", cls: "success", at: 1 });
     expect(order).toEqual(["a", "b"]);
   });
 
@@ -33,7 +33,7 @@ describe("createEventBus 同步分发", () => {
     const spy = vi.fn();
     bus.subscribe(spy);
     bus.subscribe(spy);
-    bus.publish({ type: "queue-rejected", apiKey: "k" });
+    bus.publish({ type: "upstream-attempt-settled", keyId: "k", provider: "tavily", cls: "success", at: 1 });
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
@@ -41,7 +41,7 @@ describe("createEventBus 同步分发", () => {
     const bus = createEventBus();
     const seen: DomainEvent[] = [];
     bus.subscribe((ev) => seen.push(ev));
-    const ev: DomainEvent = { type: "dist-request-accepted", apiKey: "k", at: 42, outcome: "fail" };
+    const ev: DomainEvent = { type: "upstream-attempt-settled", keyId: "k", provider: "tavily", cls: "success", at: 42 };
     bus.publish(ev);
     expect(seen).toEqual([ev]);
   });

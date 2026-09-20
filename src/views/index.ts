@@ -208,7 +208,7 @@ export function distListFragment(
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th title="该分发 key 最近24小时（含当前小时）的请求数">最近24h调用</th><th>操作</th></tr>
+      <th title="该分发 key 最近24小时（含当前小时）的请求数">最近24h请求</th><th>操作</th></tr>
     <tbody>${rows}</tbody>
   </table>`;
 }

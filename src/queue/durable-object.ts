@@ -98,7 +98,7 @@ export class QueueDO extends DurableObject<Env> {
    */
   private ensureBus(): DomainEventBus {
     if (!this.events) {
-      this.events = getEventBus(this.env);
+      this.events = getEventBus();
       if (!upstreamSubscribed) {
         upstreamSubscribed = true;
         this.events.subscribe(makeUpstreamSubscriber(this.env, (p) => activePools.get(p) ?? null));
@@ -145,9 +145,8 @@ export class QueueDO extends DurableObject<Env> {
     return new Promise<Response>((resolve, reject) => {
       if (this.pending.length >= cfg.maxDepth) {
         // 拒入：等待中已满。错误体按线协议渲染（searxng→{error}；native→provider 官方格式），
-        // Retry-After 按当前间隔给调用方退避提示。发布 QueueRejected（订阅者显式不计统计，
-        // 仅作诊断挂点）。ensureBus 会顺带注册上游订阅——惰性、幂等，无副作用。
-        this.ensureBus().publish({ type: "queue-rejected", apiKey: payload.apiKey });
+        // Retry-After 按当前间隔给调用方退避提示。dist 请求到达已在主 Worker 由 countDist
+        // 计数，此处只回 429，不发布任何事件。
         resolve(rateLimitResponse(def, payload.task, cfg,
           `too many queued requests (max ${cfg.maxDepth}); retry later`));
         return;
@@ -171,8 +170,8 @@ export class QueueDO extends DurableObject<Env> {
       item.timer = setTimeout(() => {
         if (item.settled) return;
         item.settled = true;
-        // 排队超时（等待过长）：与拒入同语义——不计统计，经 QueueRejected 留诊断挂点。
-        this.ensureBus().publish({ type: "queue-rejected", apiKey: item.apiKey });
+        // 排队超时（等待过长）：与拒入同语义——dist 请求到达已由主 Worker countDist 计数，
+        // 此处只回 429，不发布任何事件。
         resolve(
           rateLimitResponse(def, payload.task, cfg,
             `request waited too long (max ${cfg.waitBudgetMs}ms); retry later`)

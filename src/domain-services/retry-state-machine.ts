@@ -292,15 +292,8 @@ export async function searchWithRetry(
 ): Promise<Response> {
   const store = deps.usage;
 
-  // prologue：分发 key 请求被受理（成功）——发布领域事件，dist 统计由事件订阅者
-  // 同步记账（等价旧 recordDistCall(apiKey, hour, "success")，小时桶由订阅者换算）。
-  deps.events.publish({
-    type: "dist-request-accepted",
-    apiKey,
-    at: Date.now(),
-    outcome: "success",
-  });
-  // 节流触发统计 flush（退避到 waitUntil，双阈值 ≥30min/256 条；不阻塞本请求）
+  // 节流触发 upstream 统计 flush（退避到 waitUntil，双阈值 ≥30min/256 条；不阻塞本请求）。
+  // dist 到达计数已在主 Worker 由 countDist 中间件完成，此处不再发布 dist 事件。
   store.flushSoon(deps.executionCtx);
 
   const ctx: RetryContext = {

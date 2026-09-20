@@ -3,8 +3,8 @@
 // 关键约束——订阅者不得持有任何 DO 实例：
 //   事件总线 getEventBus 是模块级单例，跨 DO 实例回收/重建存活。若按 DO 实例注册
 //   （闭包捕获 this），实例重建后总线残留旧闭包，同一 UpstreamAttemptSettled 会被
-//   N 个旧闭包各消费一次 → usage / 冷却记账翻 N 倍（dist 订阅注册在 events.ts 仅一次，
-//   不受影响）。故池经 poolOf 惰性解析（durable-object 的模块级 activePools），
+//   N 个旧闭包各消费一次 → usage / 冷却记账翻 N 倍（dist 已迁主 Worker 计数，不经
+//   事件总线，不受影响）。故池经 poolOf 惰性解析（durable-object 的模块级 activePools），
 //   始终指向当前活跃实例的 KeyPool。
 //
 // 记账语义（与旧 mark* 表一致）：auth/server-error→fail、success→success、rate-limit→不记。

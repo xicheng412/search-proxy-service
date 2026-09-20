@@ -21,8 +21,8 @@ type Result = "success" | "fail";
 export interface UsageStore {
   /** 记一次上游结果（成功/失败）——纯内存累加，0 IO。 */
   recordUpstreamResult(id: string, provider: Provider, hour: string, result: Result): void;
-  /** 记一次分发 key 请求（success/fail 二元，不区分后端/协议）——纯内存累加，0 IO。 */
-  recordDistCall(apiKey: string, hour: string, outcome: Result): void;
+  /** 记一次分发 key 请求到达（无成败维度，仅计数）——纯内存累加，0 IO。 */
+  recordDistCall(apiKey: string, hour: string): void;
   /** 批量读上游 key 某 UTC 日（minHour 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
   readUpstreamTodayStats(
     ids: string[],
