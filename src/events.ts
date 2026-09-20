@@ -11,7 +11,7 @@ import type { DomainEvent, DomainEventSink } from "./domain";
 import { hourKey } from "./domain";
 import { getUsageStore } from "./usage";
 
-export type EventSubscriber = (ev: DomainEvent) => void;
+export type EventSubscriber = (ev: DomainEvent) => void | Promise<void>;
 
 export interface DomainEventBus extends DomainEventSink {
   subscribe(sub: EventSubscriber): void;

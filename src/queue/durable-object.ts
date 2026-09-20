@@ -17,7 +17,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { Env } from "../types";
-import { Provider, hourKey } from "../domain";
+import { Provider } from "../domain";
 import { PROVIDERS } from "../providers";
 import type { ProviderConfig } from "../providers";
 import { runNativeTask } from "../proxy/executors/native";
@@ -25,8 +25,8 @@ import { runSearxngTask } from "../proxy/executors/searxng";
 import { runReaderTask } from "../proxy/executors/reader";
 import { getUsageStore } from "../usage";
 import { getEventBus, type DomainEventBus } from "../events";
-import { recordUpstreamOutcome } from "../circuit-breaker";
 import { upstreamFetch } from "../transport";
+import { makeUpstreamSubscriber } from "./upstream-subscriber";
 import { QueueTask } from "./task";
 import { searxngError } from "../adapters/searxng";
 import { readerError } from "../adapters/reader";
@@ -63,47 +63,46 @@ function rateLimitResponse(
   return new Response(res.body, { status: 429, statusText: res.statusText, headers });
 }
 
+// 模块级：上游结果订阅每 isolate 只注册一次，池经 activePools 惰性解析。
+// 事件总线是模块级单例，跨 DO 实例回收/重建存活；若按实例订阅（闭包持有 this），
+// 每次重建都会向总线追加一个旧闭包，同一 UpstreamAttemptSettled 被 N 个订阅者各消费一次
+// → usage/冷却记账翻 N 倍（详述见 upstream-subscriber.ts）。activePools 在 ensurePool
+// 写入，订阅者始终解析到当前活跃实例的池。
+const activePools = new Map<Provider, KeyPool>();
+let upstreamSubscribed = false;
+
 export class QueueDO extends DurableObject<Env> {
   private pending: QueuedRequest[] = [];
   private draining = false;
   private config = cachedQueueConfig();
   // 本 provider 的上游 key 池内存权威态（冷却/熔断）。同一 DO 实例恒同 provider，仍按 provider 防御。
   private pool: { provider: Provider; pool: KeyPool } | null = null;
-  // 本 isolate 的事件总线（getEventBus 单例）；首次取用即注册本 DO 的上游结果订阅（幂等）。
+  // 本 isolate 的事件总线（getEventBus 单例）。上游结果订阅在模块级注册一次，见 ensureBus。
   private events: DomainEventBus | null = null;
 
   private ensurePool(provider: Provider): KeyPool {
     if (!this.pool || this.pool.provider !== provider) {
-      this.pool = { provider, pool: createKeyPool(this.env, PROVIDERS[provider].upstream) };
+      const created = createKeyPool(this.env, PROVIDERS[provider].upstream);
+      this.pool = { provider, pool: created };
+      // 注册到模块级 activePools：跨 DO 重建的上游订阅始终解析到当前活跃实例的池。
+      activePools.set(provider, created);
     }
     return this.pool.pool;
   }
 
   /**
-   * 事件总线惰性取用（drain 每任务都构造 deps，但订阅只注册一次，防记账叠加）。
-   * UpstreamAttemptSettled 订阅是 DO 专属——主 Worker 永不发布该事件（FSM 只在 DO 跑）；
-   * 订阅者按 cls 路由旧 mark* 四胞胎的等价副作用：冷却写 KeyPool（内存）+ usage 记账。
+   * 事件总线惰性取用（drain 每任务都构造 deps）。UpstreamAttemptSettled 订阅只注册一次
+   * （模块级 upstreamSubscribed guard）——总线是模块级单例，若按实例注册，DO 重建会叠加
+   * 旧闭包导致同一事件被 N 次消费、usage/冷却翻倍。订阅经 makeUpstreamSubscriber 解析
+   * activePools（始终指向当前实例），见 upstream-subscriber.ts。
    */
   private ensureBus(): DomainEventBus {
     if (!this.events) {
       this.events = getEventBus(this.env);
-      this.events.subscribe((ev) => {
-        if (ev.type !== "upstream-attempt-settled") return;
-        // 惰性取池：注册时 this.pool 尚为 null，不能在闭包里直接捕获 this.pool 值。
-        const pool = this.ensurePool(ev.provider);
-        const store = getUsageStore(this.env);
-        // 冷却：按 cls 走同一策略（client-error 不会被发事件，见 retry FSM）。
-        void recordUpstreamOutcome(this.env, pool, ev.keyId, ev.cls, ev.at).catch(() => {});
-        // usage 记账（与旧 mark* 表一致）：auth/server-error→fail、success→success、rate-limit→不记。
-        if (ev.cls !== "rate-limit") {
-          store.recordUpstreamResult(
-            ev.keyId,
-            ev.provider,
-            hourKey(ev.at),
-            ev.cls === "success" ? "success" : "fail"
-          );
-        }
-      });
+      if (!upstreamSubscribed) {
+        upstreamSubscribed = true;
+        this.events.subscribe(makeUpstreamSubscriber(this.env, (p) => activePools.get(p) ?? null));
+      }
     }
     return this.events;
   }
