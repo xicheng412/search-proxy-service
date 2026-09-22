@@ -26,7 +26,7 @@ export async function recordUpstreamOutcome(
   now: number = Date.now()
 ): Promise<void> {
   const { postUseCooldownSec, breakerBaseSec, invalidCooldownSec } = await config.get(env.KV);
-  const { consecutive, cooldownUntil } = computeBreakerOutcome(
+  const { consecutive, cooldownUntil, cause } = computeBreakerOutcome(
     pool.getBreakerState(id),
     result,
     postUseCooldownSec,
@@ -34,5 +34,5 @@ export async function recordUpstreamOutcome(
     invalidCooldownSec,
     now
   );
-  pool.applyBreakerOutcome(id, cooldownUntil, consecutive, now);
+  pool.applyBreakerOutcome(id, cooldownUntil, cause, consecutive, now);
 }

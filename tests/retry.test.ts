@@ -45,6 +45,7 @@ function keyRow(id: string, overrides: Record<string, unknown> = {}) {
     name: "",
     status: "enabled",
     cooldown_until: null,
+    suspended_cause: null,
     created_at: Date.now(),
     ...overrides,
   };

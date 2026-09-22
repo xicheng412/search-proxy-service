@@ -90,8 +90,17 @@ export async function getDistributedKey(
 export async function generateDistributedKey(
   env: Env,
   note: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  nonce?: string
 ): Promise<DistributedKey> {
+  // nonce 幂等：同一 nonce 在 TTL 内重复调用 → 返回同一把已存在 key（双击防重）。
+  if (nonce) {
+    const stored = await env.KV.get("keygen_nonce:" + nonce);
+    if (stored) {
+      const existing = await getDistributedKey(env, stored);
+      if (existing) return existing;
+    }
+  }
   const apiKey = newDistApiKey();
   // 极低概率碰撞，重试一次
   const final =
@@ -103,6 +112,10 @@ export async function generateDistributedKey(
     .bind(item.api_key, item.note, item.status, item.created_at)
     .run();
   await caches.default.delete(distCacheKey(final)).catch(() => {});
+  // 落 nonce → key 映射（TTL 300s）。失败静默：最多失去一次幂等窗口，不阻塞主流程。
+  if (nonce) {
+    await env.KV.put("keygen_nonce:" + nonce, final, { expirationTtl: 300 }).catch(() => {});
+  }
   return item;
 }
 

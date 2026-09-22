@@ -118,6 +118,17 @@ export class QueueDO extends DurableObject<Env> {
       return new Response("ok");
     }
 
+    // admin 启用单 key：清掉该 key 的内存冷却（cooldown 与 suspended_cause），令其立即可选。
+    // 因 reload 刻意保留内存冷却，启用必须先经此处清内存，再依赖 sync-keys 采纳 D1 的 status。
+    if (new URL(request.url).pathname === "/_internal/activate") {
+      const body = (await request.json().catch(() => null)) as { provider?: string; id?: string } | null;
+      if (!body?.provider || !PROVIDERS[body.provider as Provider] || !body.id) {
+        return Response.json({ detail: { error: "bad activate payload" } }, { status: 400 });
+      }
+      this.ensurePool(body.provider as Provider).activate(body.id);
+      return new Response("ok");
+    }
+
     let payload: { provider: Provider; apiKey: string; task: QueueTask };
     try {
       payload = (await request.json()) as typeof payload;

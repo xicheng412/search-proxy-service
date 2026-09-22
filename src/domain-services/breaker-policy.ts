@@ -8,7 +8,7 @@
 // 决策与 I/O 分离：本文件只算结局，写入 KeyPool / 读 KV 配置是 circuit-breaker.ts 的
 // 副作用绑定职责（10min 空窗用内存 updated_at 判定，由本策略按 now 计算）。
 
-import type { RetryClass } from "../domain";
+import type { CooldownCause, RetryClass } from "../domain";
 
 /** 熔断连续计数（KeyPool 内存态）：仅内存权威，不落库（重启用 0，安全方向）。 */
 export interface BreakerState {
@@ -21,6 +21,7 @@ export interface BreakerState {
 export interface BreakerOutcome {
   consecutive: number | null;
   cooldownUntil: number;
+  cause: CooldownCause;
 }
 
 /** 连续失败计数空窗 10 分钟后自动归零（窗口外失败视为已恢复，从 1 重计）。 */
@@ -47,19 +48,27 @@ export function computeBreakerOutcome(
   switch (result) {
     case "success":
       // 成功：连续失败归零，冷却仅保留 post-use 时长。
-      return { consecutive: 0, cooldownUntil: now + postUseSec * 1000 };
+      return { consecutive: 0, cooldownUntil: now + postUseSec * 1000, cause: "post-use" };
     case "rate-limit":
       // 仅 post-use 冷却，不碰连续失败计数（null = 沿用现有计数）。
-      return { consecutive: null, cooldownUntil: now + postUseSec * 1000 };
+      return { consecutive: null, cooldownUntil: now + postUseSec * 1000, cause: "post-use" };
     case "auth-error":
       // 疑似失效固定长冷却，以 post-use 为地板（较长者胜）；不碰连续失败计数。
-      return { consecutive: null, cooldownUntil: now + Math.max(postUseSec, invalidSec) * 1000 };
+      return {
+        consecutive: null,
+        cooldownUntil: now + Math.max(postUseSec, invalidSec) * 1000,
+        cause: "invalid",
+      };
     case "server-error": {
       // 窗口外（距上次 > BREAKER_TTL_MS）视为已恢复，重新从 1 计。
       const consecutive =
         cur && now - cur.updated_at < BREAKER_TTL_MS ? cur.consecutive + 1 : 1;
       const cooldownMs = baseSec * 1000 * Math.pow(2, consecutive);
-      return { consecutive, cooldownUntil: now + Math.max(postUseSec * 1000, cooldownMs) };
+      return {
+        consecutive,
+        cooldownUntil: now + Math.max(postUseSec * 1000, cooldownMs),
+        cause: "breaker",
+      };
     }
     default:
       // client-error：确定性客户端错误，不换 key、不需冷却、不记账——进熔断策略是接线错误。

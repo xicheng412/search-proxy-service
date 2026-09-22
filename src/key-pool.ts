@@ -10,7 +10,7 @@
 // checkpoint 失败静默（保留 dirty 下轮重试），复用 usage-store 的静默风格，不阻塞主流程。
 
 import type { Env } from "./types";
-import type { UpstreamDef, CoreKey } from "./domain";
+import type { UpstreamDef, CoreKey, CooldownCause } from "./domain";
 import { listUpstreamKeys, checkpointCooldowns } from "./storage/upstream-keys";
 
 /** 熔断连续计数：仅内存权威，不落库（重启用 0，安全方向）。 */
@@ -24,8 +24,10 @@ export interface KeyPool {
   /** 返回当前内部数组；元素对象被 applyBreakerOutcome 原地改（选 key 即刻可见最新冷却）。 */
   getKeys(): CoreKey[];
   getBreakerState(id: string): BreakerMem | null;
-  /** 原地写某次上游结果的 cooldown + 可选熔断计数，并标记 dirty（待 checkpoint）。 */
-  applyBreakerOutcome(id: string, cooldownUntil: number, consecutive: number | null, now: number): void;
+  /** 原地写某次上游结果的 cooldown + cause + 可选熔断计数，并标记 dirty（待 checkpoint）。 */
+  applyBreakerOutcome(id: string, cooldownUntil: number, cause: CooldownCause, consecutive: number | null, now: number): void;
+  /** admin 启用：清掉机器冷却（cooldown_until 与 suspended_cause），该 key 立即可选。 */
+  activate(id: string): void;
   /** 未加载或超 RELOAD_FLOOR_MS 才拉 D1（冷启动 + 陈旧兜底）。 */
   maybeReload(): Promise<void>;
   /** 合并重读：采纳 D1 的 name/status、清理已删 id，保留内存 cooldown 与计数。 */
@@ -53,6 +55,7 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
   function applyBreakerOutcome(
     id: string,
     cooldownUntil: number,
+    cause: CooldownCause,
     consecutive: number | null,
     now: number
   ): void {
@@ -60,6 +63,7 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
     if (!key) return; // 已删 key 竞态：不建脏条目
     // 原地改：retry 的 ctx.keys 快照即刻可见最新冷却（强一致的关键）
     key.cooldown_until = cooldownUntil;
+    key.suspended_cause = cause;
     if (consecutive !== null) {
       breaker.set(id, {
         consecutive,
@@ -70,12 +74,21 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
     dirty.add(id);
   }
 
+  /** 清掉机器冷却（cooldown 与 cause），供 admin 启用时立即可选。不碰熔断计数。 */
+  function activate(id: string): void {
+    const key = keys.find((k) => k.id === id);
+    if (!key) return;
+    key.cooldown_until = null;
+    key.suspended_cause = null;
+    dirty.add(id);
+  }
+
   async function reload(): Promise<void> {
     const rows = await listUpstreamKeys(env, def);
     const byId = new Map(rows.map((r) => [r.id, r]));
     const old = new Map(keys.map((k) => [k.id, k]));
     // 合并重建：id 已在旧内存 → 复用同一对象，采纳 D1 的 name/status（admin 写后需生效），
-    // 保留内存 cooldown_until（内存永远更新）；id 不在 → 用 D1 行新建（cooldown 取自 D1，通常 null）。
+    // 保留内存 cooldown_until 与 suspended_cause（内存永远更新）；id 不在 → 用 D1 行新建（取自 D1，通常 null）。
     keys = rows.map((row) => {
       const existing = old.get(row.id);
       if (existing) {
@@ -116,7 +129,7 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
       const entries = [...dirty]
         .map((id) => keys.find((k) => k.id === id))
         .filter((k): k is CoreKey => Boolean(k))
-        .map((k) => ({ id: k.id, cooldown_until: k.cooldown_until }));
+        .map((k) => ({ id: k.id, cooldown_until: k.cooldown_until, suspended_cause: k.suspended_cause }));
       await checkpointCooldowns(env, def, entries);
       for (const e of entries) dirty.delete(e.id);
       lastCheckpointAt = Date.now();
@@ -139,6 +152,7 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
     getKeys: () => keys,
     getBreakerState: (id) => breaker.get(id) ?? null,
     applyBreakerOutcome,
+    activate,
     maybeReload,
     reload,
     maybeCheckpoint,
@@ -161,5 +175,20 @@ export async function notifyKeyPoolSync(env: Env, provider: string): Promise<voi
   await stub.fetch("https://queue.internal/_internal/sync-keys", {
     method: "POST",
     body: JSON.stringify({ provider }),
+  });
+}
+
+/**
+ * admin 启用某 key 后推送：经 DO `/_internal/activate` 清掉该 key 的内存冷却
+ * （cooldown 与 suspended_cause），令其立即可选。内存对 cooldown 是权威、reload 刻意保留
+ * 内存冷却，故启用必须先清内存，再由 notifyKeyPoolSync 全量合并采纳 D1 的 status。
+ * 尽力而为，调用方接 .catch(noop)；失败时内存冷却残留，由下次 applyBreakerOutcome / reload 兜底。
+ */
+export async function notifyKeyPoolActivate(env: Env, provider: string, id: string): Promise<void> {
+  const doId = env.QUEUE.idFromName(provider);
+  const stub = env.QUEUE.get(doId);
+  await stub.fetch("https://queue.internal/_internal/activate", {
+    method: "POST",
+    body: JSON.stringify({ provider, id }),
   });
 }

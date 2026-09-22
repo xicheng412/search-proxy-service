@@ -20,7 +20,7 @@ const BASE_MS = 600_000;
 function fresh(): { env: Env; pool: KeyPool } {
   const env = { KV: fakeKV } as unknown as Env;
   const pool = createKeyPool(env, def, [
-    { id: "k1", key: "tvly-k1", name: "", status: "enabled", cooldown_until: null, created_at: T0 },
+    { id: "k1", key: "tvly-k1", name: "", status: "enabled", cooldown_until: null, suspended_cause: null, created_at: T0 },
   ]);
   return { env, pool };
 }
@@ -34,6 +34,7 @@ describe("recordUpstreamOutcome server-error 指数退避", () => {
     const { env, pool } = fresh();
     await recordUpstreamOutcome(env, pool, "k1", "server-error", T0);
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 1, updated_at: T0, created_at: T0 });
+    expect(pool.getKeys()[0].suspended_cause).toBe("breaker");
     expect(cool(pool)).toBe(T0 + Math.max(POST_USE_MS, BASE_MS * 2)); // + 1_200_000
   });
 
@@ -60,7 +61,7 @@ describe("recordUpstreamOutcome server-error 指数退避", () => {
 describe("recordUpstreamOutcome success", () => {
   it("归零计数，冷却回缩为 post-use", async () => {
     const { env, pool } = fresh();
-    pool.applyBreakerOutcome("k1", 9_999_999, 2, T0); // 预置连续失败 2 次
+    pool.applyBreakerOutcome("k1", 9_999_999, "breaker", 2, T0); // 预置连续失败 2 次
     await recordUpstreamOutcome(env, pool, "k1", "success", T0 + 5_000);
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 0, updated_at: T0 + 5_000, created_at: T0 });
     expect(cool(pool)).toBe(T0 + 5_000 + POST_USE_MS);
@@ -70,7 +71,7 @@ describe("recordUpstreamOutcome success", () => {
 describe("recordUpstreamOutcome rate-limit", () => {
   it("仅 post-use 冷却，不碰连续失败计数", async () => {
     const { env, pool } = fresh();
-    pool.applyBreakerOutcome("k1", 0, 3, T0); // 预置连续失败 3 次
+    pool.applyBreakerOutcome("k1", 0, "breaker", 3, T0); // 预置连续失败 3 次
     await recordUpstreamOutcome(env, pool, "k1", "rate-limit", T0 + 1_000);
     expect(cool(pool)).toBe(T0 + 1_000 + POST_USE_MS);
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 3, updated_at: T0, created_at: T0 });
@@ -80,7 +81,7 @@ describe("recordUpstreamOutcome rate-limit", () => {
 describe("recordUpstreamOutcome auth-error", () => {
   it("固定长冷却（默认 12h，以 post-use 为地板），不碰连续失败计数", async () => {
     const { env, pool } = fresh();
-    pool.applyBreakerOutcome("k1", 0, 3, T0); // 预置连续失败 3 次
+    pool.applyBreakerOutcome("k1", 0, "breaker", 3, T0); // 预置连续失败 3 次
     await recordUpstreamOutcome(env, pool, "k1", "auth-error", T0 + 1_000);
     expect(cool(pool)).toBe(T0 + 1_000 + 43_200_000); // 12h = 43_200s * 1000
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 3, updated_at: T0, created_at: T0 });

@@ -7,14 +7,16 @@ import { getCsrfToken } from "../auth";
 import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
+  addUpstreamKeysBatch,
   deleteUpstreamKey,
   getUpstreamKey,
+  keyValueExists,
   listUpstreamKeysPage,
   UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage";
-import { notifyKeyPoolSync } from "../key-pool";
+import { notifyKeyPoolActivate, notifyKeyPoolSync } from "../key-pool";
 import { EXA } from "../providers";
 import { errorFragment } from "../views";
 import {
@@ -55,8 +57,9 @@ exaAdmin.get("/", async (c) => {
     utcTodayStart()
   );
   const pagination = buildUpstreamPagination("/admin/exa", pageNumber, page);
+  const flash = c.req.query("flash") ?? undefined;
   return c.html(
-    exaPage(csrf, exaListFragment(page.keys, statsMap, csrf, Date.now(), pagination))
+    exaPage(csrf, exaListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash))
   );
 });
 
@@ -70,7 +73,8 @@ exaAdmin.get("/list", async (c) => {
     utcTodayStart()
   );
   const pagination = buildUpstreamPagination("/admin/exa", pageNumber, page);
-  return c.html(exaListFragment(page.keys, statsMap, csrf, Date.now(), pagination));
+  const flash = c.req.query("flash") ?? undefined;
+  return c.html(exaListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash));
 });
 
 // 新增 Exa key（可附带 test call；name 可选，未填则自动生成）
@@ -103,6 +107,10 @@ exaAdmin.post("/add", async (c) => {
     }
   }
 
+  if (await keyValueExists(env, EXA.upstream, key)) {
+    return c.html(errorFragment("该 key 已存在，未添加"));
+  }
+
   await addUpstreamKey(env, EXA.upstream, key, name);
   await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
@@ -120,16 +128,19 @@ exaAdmin.post("/add/batch", async (c) => {
 
   const env = c.env;
   const pad = String(rawKeys.length).length;
-  for (let i = 0; i < rawKeys.length; i++) {
-    const key = rawKeys[i];
-    const name = namePrefix
-      ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}`
-      : autoKeyName();
-    await addUpstreamKey(env, EXA.upstream, key, name);
-  }
-
+  const res = await addUpstreamKeysBatch(
+    env,
+    EXA.upstream,
+    rawKeys.map((key, i) => ({
+      key,
+      name: namePrefix ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}` : autoKeyName(),
+    }))
+  );
+  let msg = `添加 ${res.added.length} 个`;
+  if (res.duplicates.length)
+    msg += `，跳过 ${res.duplicates.length} 个重复：第 ${res.duplicates.map((d) => d.index).join("、")} 行（${res.duplicates[0].maskedKey} 等已存在）`;
   await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
-  return c.redirect("/admin/exa/list", 303);
+  return c.redirect(`/admin/exa/list?flash=${encodeURIComponent(msg)}`, 303);
 });
 
 exaAdmin.post("/:id/name", async (c) => {
@@ -147,9 +158,13 @@ exaAdmin.post("/:id/toggle", async (c) => {
   const id = c.req.param("id");
   const cur = await getUpstreamKey(c.env, EXA.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateUpstreamKey(c.env, EXA.upstream, id, {
-    status: cur.status === "enabled" ? "disabled" : "enabled",
-  });
+  const disabling = cur.status === "enabled";
+  await updateUpstreamKey(c.env, EXA.upstream, id,
+    disabling
+      ? { status: "disabled" }
+      : { status: "enabled", cooldown_until: null, suspended_cause: null });
+  // 启用：先清内存冷却（reload 刻意保留内存冷却，故须显式 activate），再全量合并采纳 status。
+  if (!disabling) await notifyKeyPoolActivate(c.env, EXA.name, id).catch(() => {});
   await notifyKeyPoolSync(c.env, EXA.name).catch(() => {});
   return c.redirect("/admin/exa/list", 303);
 });

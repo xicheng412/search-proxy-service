@@ -2,11 +2,11 @@
 // 从重试 FSM 拆出，供 retry-state-machine 的 emit(init / pick) 使用；
 // 权重语义见 CONTEXT.md「权重」——软负载分布调节，健康判断由冷却（硬闸门）负责。
 
-import type { CoreKey } from "../domain";
+import { availabilityOf, isSelectableAt, type CoreKey } from "../domain";
 
-/** 单个 key 当前是否可用：status=enabled 且未过 cooldown_until。 */
+/** 单个 key 当前是否可用：值语义=可用（enabled 且未在冷却，冷却到期亦可用）。 */
 export function isCandidate(k: CoreKey, now: number): boolean {
-  return k.status === "enabled" && (k.cooldown_until == null || k.cooldown_until <= now);
+  return isSelectableAt(availabilityOf(k, now), now);
 }
 
 /**

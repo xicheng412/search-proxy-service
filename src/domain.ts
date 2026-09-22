@@ -12,8 +12,30 @@ export type WireProtocol = "native" | "searxng" | "reader";
 
 export type KeyStatus = "enabled" | "disabled";
 
+/** 冷却因由：谁触发机器冷却（suspend）。post-use=每次使用后固定冷却；breaker=熔断退避；invalid=疑似失效（401/403）。 */
+export type CooldownCause = "post-use" | "breaker" | "invalid";
+
+/** 统一「冷却/停用」的领域值对象：可用 / 人工停用 / 机器冷却（定时解除的停用）。由 CoreKey 的 status+cooldown_until+suspended_cause 派生。 */
+export type Availability =
+  | { kind: "available" }
+  | { kind: "disabled" }
+  | { kind: "suspended"; until: number; cause: CooldownCause | null };
+
 /** 上游响应按故障可归因性分类的家族（驱动重试/冷却/记账的族）；编号→族映射在 provider 描述符。 */
 export type RetryClass = "rate-limit" | "client-error" | "auth-error" | "server-error";
+
+/** 由 CoreKey 原始字段派生 Availability（人工停用优先；冷却中=定时解除的停用；否则可用）。 */
+export function availabilityOf(k: CoreKey, now: number): Availability {
+  if (k.status === "disabled") return { kind: "disabled" };
+  if (k.cooldown_until != null && k.cooldown_until > now)
+    return { kind: "suspended", until: k.cooldown_until, cause: k.suspended_cause };
+  return { kind: "available" };
+}
+
+/** Availability 在给定时刻是否可被选为上游 key（冷却到期的 suspended 亦可用）。 */
+export function isSelectableAt(av: Availability, now: number): boolean {
+  return av.kind === "available" || (av.kind === "suspended" && av.until <= now);
+}
 
 /** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 provider 维度。 */
 export interface UpstreamDef {
@@ -29,6 +51,7 @@ export interface CoreKey {
   name: string;                    // 备注
   status: KeyStatus;
   cooldown_until: number | null;   // 熔断冷却截止时间戳(ms)，默认 null
+  suspended_cause: CooldownCause | null;   // 冷却因由；null=未冷却/未知
   created_at: number;
 }
 export type TavilyKey = CoreKey;

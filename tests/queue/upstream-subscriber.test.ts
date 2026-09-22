@@ -21,7 +21,7 @@ function envOf(): Env {
 
 function poolOf(env: Env, id = "k1"): KeyPool {
   return createKeyPool(env, TAVILY.upstream, [
-    { id, key: "tvly-" + id, name: "", status: "enabled", cooldown_until: null, created_at: 1 },
+    { id, key: "tvly-" + id, name: "", status: "enabled", cooldown_until: null, suspended_cause: null, created_at: 1 },
   ]);
 }
 
@@ -37,6 +37,7 @@ describe("makeUpstreamSubscriber", () => {
 
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 0, updated_at: at, created_at: at });
     expect(pool.getKeys()[0].cooldown_until).toBe(at + 10_000); // post-use 10s
+    expect(pool.getKeys()[0].suspended_cause).toBe("post-use");
     await expect(store.readUpstreamTodayStats(["k1"], hourKey(at))).resolves.toEqual({
       k1: { success: 1, fail: 0 },
     });

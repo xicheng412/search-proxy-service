@@ -13,7 +13,9 @@ import {
   CoreKey,
   KeyStatus,
   UpstreamDef,
+  CooldownCause,
   newUpstreamId,
+  maskKey,
 } from "../domain";
 import { buildSetClause } from "./patch";
 
@@ -24,6 +26,7 @@ function toCoreKey(r: Record<string, unknown>): CoreKey {
     name: r.name as string,
     status: r.status as KeyStatus,
     cooldown_until: r.cooldown_until as number | null,
+    suspended_cause: r.suspended_cause as CooldownCause | null,
     created_at: r.created_at as number,
   };
 }
@@ -52,7 +55,7 @@ export async function listUpstreamKeys(
   def: UpstreamDef
 ): Promise<CoreKey[]> {
   const { results } = await env.DB.prepare(
-    "SELECT id, key, name, status, cooldown_until, created_at FROM upstream_keys WHERE provider = ?1 ORDER BY created_at"
+    "SELECT id, key, name, status, cooldown_until, suspended_cause, created_at FROM upstream_keys WHERE provider = ?1 ORDER BY created_at"
   ).bind(def.provider).all();
   return (results as Record<string, unknown>[]).map(toCoreKey);
 }
@@ -77,7 +80,7 @@ export async function getUpstreamKey(
   id: string
 ): Promise<CoreKey | null> {
   const row = await env.DB.prepare(
-    "SELECT id, key, name, status, cooldown_until, created_at FROM upstream_keys WHERE provider = ?1 AND id = ?2"
+    "SELECT id, key, name, status, cooldown_until, suspended_cause, created_at FROM upstream_keys WHERE provider = ?1 AND id = ?2"
   )
     .bind(def.provider, id)
     .first();
@@ -111,18 +114,18 @@ export async function listUpstreamKeysPage(
   // before：逆序取上游行，内存反转回升序；after/首页：升序取。
   const goingBack = before !== null;
   const sql = goingBack
-    ? `SELECT id, key, name, status, cooldown_until, created_at
+    ? `SELECT id, key, name, status, cooldown_until, suspended_cause, created_at
        FROM upstream_keys
        WHERE provider = ?1 AND (created_at, id) < (?2, ?3)
        ORDER BY created_at DESC, id DESC
        LIMIT ?4`
     : after !== null
-      ? `SELECT id, key, name, status, cooldown_until, created_at
+      ? `SELECT id, key, name, status, cooldown_until, suspended_cause, created_at
          FROM upstream_keys
          WHERE provider = ?1 AND (created_at, id) > (?2, ?3)
          ORDER BY created_at ASC, id ASC
          LIMIT ?4`
-      : `SELECT id, key, name, status, cooldown_until, created_at
+      : `SELECT id, key, name, status, cooldown_until, suspended_cause, created_at
          FROM upstream_keys
          WHERE provider = ?1
          ORDER BY created_at ASC, id ASC
@@ -161,6 +164,19 @@ export async function listUpstreamKeysPage(
   };
 }
 
+/** 构造新增上游 key 的 CoreKey 领域实体（单加与批量共用）。状态恒 enabled、无冷却。 */
+function newUpstreamItem(def: UpstreamDef, key: string, name: string, now: number): CoreKey {
+  return {
+    id: newUpstreamId(def),
+    key,
+    name: name || "未命名",
+    status: "enabled",
+    cooldown_until: null,
+    suspended_cause: null,
+    created_at: now,
+  };
+}
+
 export async function addUpstreamKey(
   env: Env,
   def: UpstreamDef,
@@ -168,18 +184,11 @@ export async function addUpstreamKey(
   name: string,
   now: number = Date.now()
 ): Promise<CoreKey> {
-  const item: CoreKey = {
-    id: newUpstreamId(def),
-    key,
-    name: name || "未命名",
-    status: "enabled",
-    cooldown_until: null,
-    created_at: now,
-  };
+  const item = newUpstreamItem(def, key, name, now);
   await env.DB.prepare(
-    "INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)"
+    "INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,suspended_cause,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)"
   )
-    .bind(def.provider, item.id, item.key, item.name, item.status, null, item.created_at)
+    .bind(def.provider, item.id, item.key, item.name, item.status, item.cooldown_until, item.suspended_cause, item.created_at)
     .run();
   return item;
 }
@@ -188,13 +197,13 @@ export async function updateUpstreamKey(
   env: Env,
   def: UpstreamDef,
   id: string,
-  patch: Partial<Pick<CoreKey, "name" | "status">>
+  patch: Partial<Pick<CoreKey, "name" | "status" | "cooldown_until" | "suspended_cause">>
 ): Promise<CoreKey | null> {
-  const { sets, binds } = buildSetClause(patch, ["name", "status"], 1);
+  const { sets, binds } = buildSetClause(patch, ["name", "status", "cooldown_until", "suspended_cause"], 1);
   if (sets.length === 0) return getUpstreamKey(env, def, id);
   const whereIdx = binds.length + 1;
   const sql =
-    `UPDATE upstream_keys SET ${sets.join(", ")} WHERE provider = ?${whereIdx} AND id = ?${whereIdx + 1} RETURNING id, key, name, status, cooldown_until, created_at`;
+    `UPDATE upstream_keys SET ${sets.join(", ")} WHERE provider = ?${whereIdx} AND id = ?${whereIdx + 1} RETURNING id, key, name, status, cooldown_until, suspended_cause, created_at`;
   const row = await env.DB.prepare(sql).bind(...binds, def.provider, id).first();
   return row ? toCoreKey(row as Record<string, unknown>) : null;
 }
@@ -219,9 +228,10 @@ export async function deleteUpstreamKey(
 export interface CooldownEntry {
   id: string;
   cooldown_until: number | null;
+  suspended_cause: CooldownCause | null;
 }
 
-/** 批量写回冷却（checkpoint 用）：一次 DB.batch，只写 cooldown_until。 */
+/** 批量写回冷却（checkpoint 用）：一次 DB.batch，写 cooldown_until + suspended_cause 两列。 */
 export async function checkpointCooldowns(
   env: Env,
   def: UpstreamDef,
@@ -229,8 +239,62 @@ export async function checkpointCooldowns(
 ): Promise<void> {
   if (entries.length === 0) return;
   const stmts = entries.map((e) =>
-    env.DB.prepare("UPDATE upstream_keys SET cooldown_until = ?1 WHERE provider = ?2 AND id = ?3")
-      .bind(e.cooldown_until, def.provider, e.id)
+    env.DB.prepare(
+      "UPDATE upstream_keys SET cooldown_until = ?1, suspended_cause = ?2 WHERE provider = ?3 AND id = ?4"
+    ).bind(e.cooldown_until, e.suspended_cause, def.provider, e.id)
   );
   await env.DB.batch(stmts);
+}
+
+// ---------------------------------------------------------------
+// 防重/批量添加——写入期软去重（不建唯一索引，key 天然唯一）
+// ---------------------------------------------------------------
+
+/** 该 provider 下 key 是否已存在（写期软去重用；key 列天然唯一，无需唯一索引）。 */
+export async function keyValueExists(
+  env: Env,
+  def: UpstreamDef,
+  key: string
+): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT 1 FROM upstream_keys WHERE provider = ?1 AND key = ?2 LIMIT 1"
+  ).bind(def.provider, key).first();
+  return !!row;
+}
+
+/** 批量添加的逐行反馈：added=成功新增；duplicates=因已在库而跳过（index 为 1 起始输入行号）。 */
+export interface UpstreamBatchResult {
+  added: CoreKey[];
+  duplicates: { index: number; key: string; maskedKey: string; name: string }[];
+}
+
+/**
+ * 批量添加上游 keys（写入期软去重）：逐行查重，重复行跳过并反馈行号；非重复行批量 INSERT。
+ * 空 entries 直接返回空结果（不执行 batch）。name 生成逻辑由调用方（admin 路由）预置。
+ */
+export async function addUpstreamKeysBatch(
+  env: Env,
+  def: UpstreamDef,
+  entries: { key: string; name: string }[],
+  now: number = Date.now()
+): Promise<UpstreamBatchResult> {
+  const added: CoreKey[] = [];
+  const duplicates: UpstreamBatchResult["duplicates"] = [];
+  const insertStmts: D1PreparedStatement[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (await keyValueExists(env, def, e.key)) {
+      duplicates.push({ index: i + 1, key: e.key, maskedKey: maskKey(e.key), name: e.name });
+    } else {
+      const item = newUpstreamItem(def, e.key, e.name, now);
+      added.push(item);
+      insertStmts.push(
+        env.DB.prepare(
+          "INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,suspended_cause,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)"
+        ).bind(def.provider, item.id, item.key, item.name, item.status, item.cooldown_until, item.suspended_cause, item.created_at)
+      );
+    }
+  }
+  if (insertStmts.length > 0) await env.DB.batch(insertStmts);
+  return { added, duplicates };
 }

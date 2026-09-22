@@ -7,14 +7,16 @@ import { getCsrfToken } from "../auth";
 import { autoKeyName, utcTodayStart } from "../domain";
 import {
   addUpstreamKey,
+  addUpstreamKeysBatch,
   deleteUpstreamKey,
   getUpstreamKey,
+  keyValueExists,
   listUpstreamKeysPage,
   UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage";
-import { notifyKeyPoolSync } from "../key-pool";
+import { notifyKeyPoolActivate, notifyKeyPoolSync } from "../key-pool";
 import { TAVILY } from "../providers";
 import { errorFragment } from "../views";
 import {
@@ -55,8 +57,9 @@ tavilyAdmin.get("/", async (c) => {
     utcTodayStart()
   );
   const pagination = buildUpstreamPagination("/admin/tavily", pageNumber, page);
+  const flash = c.req.query("flash") ?? undefined;
   return c.html(
-    tavilyPage(csrf, tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination))
+    tavilyPage(csrf, tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash))
   );
 });
 
@@ -70,7 +73,8 @@ tavilyAdmin.get("/list", async (c) => {
     utcTodayStart()
   );
   const pagination = buildUpstreamPagination("/admin/tavily", pageNumber, page);
-  return c.html(tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination));
+  const flash = c.req.query("flash") ?? undefined;
+  return c.html(tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash));
 });
 
 // 新增 Tavily key（可附带 test call；name 可选，未填则自动生成）
@@ -103,6 +107,10 @@ tavilyAdmin.post("/add", async (c) => {
     }
   }
 
+  if (await keyValueExists(env, TAVILY.upstream, key)) {
+    return c.html(errorFragment("该 key 已存在，未添加"));
+  }
+
   await addUpstreamKey(env, TAVILY.upstream, key, name);
   await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
@@ -120,16 +128,19 @@ tavilyAdmin.post("/add/batch", async (c) => {
 
   const env = c.env;
   const pad = String(rawKeys.length).length;
-  for (let i = 0; i < rawKeys.length; i++) {
-    const key = rawKeys[i];
-    const name = namePrefix
-      ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}`
-      : autoKeyName();
-    await addUpstreamKey(env, TAVILY.upstream, key, name);
-  }
-
+  const res = await addUpstreamKeysBatch(
+    env,
+    TAVILY.upstream,
+    rawKeys.map((key, i) => ({
+      key,
+      name: namePrefix ? `${namePrefix}-${String(i + 1).padStart(pad, "0")}` : autoKeyName(),
+    }))
+  );
+  let msg = `添加 ${res.added.length} 个`;
+  if (res.duplicates.length)
+    msg += `，跳过 ${res.duplicates.length} 个重复：第 ${res.duplicates.map((d) => d.index).join("、")} 行（${res.duplicates[0].maskedKey} 等已存在）`;
   await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
-  return c.redirect("/admin/tavily/list", 303);
+  return c.redirect(`/admin/tavily/list?flash=${encodeURIComponent(msg)}`, 303);
 });
 
 tavilyAdmin.post("/:id/name", async (c) => {
@@ -147,9 +158,13 @@ tavilyAdmin.post("/:id/toggle", async (c) => {
   const id = c.req.param("id");
   const cur = await getUpstreamKey(c.env, TAVILY.upstream, id);
   if (!cur) return c.html(errorFragment("未找到该 key"));
-  await updateUpstreamKey(c.env, TAVILY.upstream, id, {
-    status: cur.status === "enabled" ? "disabled" : "enabled",
-  });
+  const disabling = cur.status === "enabled";
+  await updateUpstreamKey(c.env, TAVILY.upstream, id,
+    disabling
+      ? { status: "disabled" }
+      : { status: "enabled", cooldown_until: null, suspended_cause: null });
+  // 启用：先清内存冷却（reload 刻意保留内存冷却，故须显式 activate），再全量合并采纳 status。
+  if (!disabling) await notifyKeyPoolActivate(c.env, TAVILY.name, id).catch(() => {});
   await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });

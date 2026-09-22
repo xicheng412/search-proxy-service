@@ -9,6 +9,8 @@ import {
   listUpstreamKeysPage,
   updateUpstreamKey,
   addUpstreamKey,
+  keyValueExists,
+  addUpstreamKeysBatch,
 } from "../src/storage/upstream-keys";
 import { makeScriptedD1 } from "./helpers/fake-d1";
 
@@ -20,6 +22,7 @@ const keyRow = (id: string, created_at: number) => ({
   name: `n-${id}`,
   status: "enabled",
   cooldown_until: null,
+  suspended_cause: null,
   created_at,
 });
 
@@ -186,7 +189,80 @@ describe("addUpstreamKey 落库", () => {
     const [call] = log();
     expect(call.op).toBe("run");
     expect(call.sql).toContain("INSERT INTO upstream_keys");
-    // provider,id,key,name,status,cooldown_until(null),created_at
-    expect(call.binds).toEqual([def.provider, r.id, "tvly-1", "备注", "enabled", null, now]);
+    // provider,id,key,name,status,cooldown_until(null),suspended_cause(null),created_at
+    expect(call.binds).toEqual([def.provider, r.id, "tvly-1", "备注", "enabled", null, null, now]);
+  });
+});
+
+describe("keyValueExists 写期软去重查重", () => {
+  it("已存在 → true（SELECT 1 ... LIMIT 1 first 命中）", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ "1": 1 }] }]);
+    await expect(keyValueExists({ DB: db } as unknown as Env, def, "tvly-x")).resolves.toBe(true);
+    const [call] = log();
+    expect(call.op).toBe("first");
+    expect(call.sql).toContain("FROM upstream_keys WHERE provider = ?1 AND key = ?2");
+    expect(call.sql).toContain("LIMIT 1");
+    expect(call.binds).toEqual([def.provider, "tvly-x"]);
+  });
+
+  it("不存在 → false（空结果）", async () => {
+    const { db } = makeScriptedD1([{ results: [] }]);
+    await expect(keyValueExists({ DB: db } as unknown as Env, def, "tvly-y")).resolves.toBe(false);
+  });
+});
+
+describe("addUpstreamKeysBatch 批量软去重", () => {
+  it("含重复行：重复跳过并反馈行号，非重复批量 INSERT，batch 只含新增", async () => {
+    const now = 123456789;
+    // 步骤按执行顺序：keyValueExists(a)→命中, keyValueExists(b)→未命中, batch 内 1 条 INSERT
+    const { db, log } = makeScriptedD1([
+      { results: [{ "1": 1 }] },
+      { results: [] },
+      { changes: 1 },
+    ]);
+    const res = await addUpstreamKeysBatch(
+      { DB: db } as unknown as Env,
+      def,
+      [
+        { key: "a", name: "n-a" },
+        { key: "b", name: "n-b" },
+      ],
+      now
+    );
+    expect(res.added.map((k) => k.key)).toEqual(["b"]);
+    expect(res.duplicates).toEqual([{ index: 1, key: "a", maskedKey: "****", name: "n-a" }]);
+
+    // batch 一次，只含 b 的 INSERT
+    const batchCall = log().find((c) => c.op === "batch");
+    expect(batchCall).toBeDefined();
+    const insertCalls = log().filter((c) => c.op === "run");
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].sql).toContain("INSERT INTO upstream_keys");
+    expect(insertCalls[0].binds).toEqual([def.provider, res.added[0].id, "b", "n-b", "enabled", null, null, now]);
+  });
+
+  it("全部重复：added 空、套件含全部、不执行任何 INSERT", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [{ "1": 1 }] },
+      { results: [{ "1": 1 }] },
+    ]);
+    const res = await addUpstreamKeysBatch(
+      { DB: db } as unknown as Env,
+      def,
+      [
+        { key: "a", name: "n-a" },
+        { key: "b", name: "n-b" },
+      ]
+    );
+    expect(res.added).toEqual([]);
+    expect(res.duplicates.map((d) => d.index)).toEqual([1, 2]);
+    expect(log().filter((c) => c.op === "batch")).toHaveLength(0); // 无 insert 不调 batch
+  });
+
+  it("空 entries：直接返回空结果，不执行任何 DB 调用", async () => {
+    const { db, log } = makeScriptedD1([]);
+    const res = await addUpstreamKeysBatch({ DB: db } as unknown as Env, def, []);
+    expect(res).toEqual({ added: [], duplicates: [] });
+    expect(log()).toHaveLength(0);
   });
 });

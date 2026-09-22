@@ -37,9 +37,15 @@ export function exaListFragment(
     ? keys
         .map((k) => {
           const s = statsMap[k.id] ?? { success: 0, fail: 0 };
+          const causeMap: Record<string, string> = {
+            "post-use": "post-use 冷却",
+            breaker: "熔断冷却",
+            invalid: "疑似失效冷却",
+          };
+          const causeTitle = k.suspended_cause ? (causeMap[k.suspended_cause] ?? "冷却中") : "冷却中";
           const cooling =
             k.cooldown_until != null && k.cooldown_until > now
-              ? `<span class="badge warn" data-cooldown-until="${k.cooldown_until}">${formatRemaining(k.cooldown_until - now)}</span>`
+              ? `<span class="badge warn" data-cooldown-until="${k.cooldown_until}" title="${causeTitle}">${formatRemaining(k.cooldown_until - now)}</span>`
               : `<span class="muted">-</span>`;
           const st =
             k.status === "enabled"

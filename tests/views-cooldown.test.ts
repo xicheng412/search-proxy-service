@@ -36,6 +36,7 @@ describe("Tavily/Exa 列表冷却徽章 SSR", () => {
     name: "",
     status: "enabled",
     cooldown_until: now + 150_000, // → 冷却：3min
+    suspended_cause: "breaker",
     created_at: 1,
   };
   const idleKey: TavilyKey = {
@@ -44,6 +45,7 @@ describe("Tavily/Exa 列表冷却徽章 SSR", () => {
     name: "",
     status: "enabled",
     cooldown_until: null,
+    suspended_cause: null,
     created_at: 2,
   };
   const keys = [coolingKey, idleKey];
@@ -55,6 +57,7 @@ describe("Tavily/Exa 列表冷却徽章 SSR", () => {
     ]) {
       expect(fragment).toContain(`data-cooldown-until="${now + 150_000}"`);
       expect(fragment).toContain("冷却：3min");
+      expect(fragment).toContain('title="熔断冷却"'); // 冷却徽章带因由 tooltip
     }
   });
 

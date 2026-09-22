@@ -57,8 +57,9 @@ keysAdmin.post("/generate", async (c) => {
   const body = await c.req.parseBody();
   const note = ((body["note"] as string) ?? "").trim();
   if (!note) return c.html(errorFragment("备注必填"));
+  const nonce = ((body["nonce"] as string) ?? "").trim() || undefined;
   const env = c.env;
-  const generated = await generateDistributedKey(env, note);
+  const generated = await generateDistributedKey(env, note, undefined, nonce);
   const dkeys = await listDistributedKeys(env);
   const callsMap = await buildCallsMap(env, dkeys, hourKey(Date.now() - 24 * 3600 * 1000));
   const csrf = (await getCsrfToken(c)) ?? "";
