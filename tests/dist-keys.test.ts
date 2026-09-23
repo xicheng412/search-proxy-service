@@ -2,12 +2,15 @@
 // generate/update/delete 的"写操作失效缓存"关键路径。
 // caches 为全局单例，测试前用 installFakeCaches 注入并记录调用，afterEach 还原。
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import type { Env } from "../src/types";
 import {
+  cachedDistributedKeyCount,
+  clearDistributedKeyCountCache,
   countDistributedKeys,
   getDistributedKey,
   generateDistributedKey,
+  listDistributedKeysPage,
   updateDistributedKey,
   deleteDistributedKey,
 } from "../src/storage/dist-keys";
@@ -38,6 +41,11 @@ afterEach(() => {
   ctl = null;
 });
 const install = (seed: Record<string, unknown> = {}) => (ctl = installFakeCaches(seed));
+
+// 惰性总数缓存是模块级单例，跨用例共享 → 每例前清空，避免用例间串扰。
+beforeEach(() => {
+  clearDistributedKeyCountCache();
+});
 
 describe("getDistributedKey 读穿缓存", () => {
   it("冷读：cache miss → DB first 命中 → 写回 cache，返回 key", async () => {
@@ -198,5 +206,139 @@ describe("generateDistributedKey nonce 幂等", () => {
     await generateDistributedKey(env, "note-1", 1, "n1");
     await generateDistributedKey(env, "note-1", 2, "n1");
     expect(gets).toBeGreaterThanOrEqual(2); // 每次调用都查 nonce 映射
+  });
+});
+
+const dRow = (apiKey: string, created_at: number) => ({
+  api_key: apiKey,
+  note: `n-${apiKey}`,
+  status: "enabled",
+  created_at,
+});
+
+describe("listDistributedKeysPage keyset 分页", () => {
+  const LIMIT = 2;
+
+  it("首页（无游标）：多取一行判 hasNext；keys 只含 2 条，游标取页尾", async () => {
+    const rows = [dRow("k1", 1), dRow("k2", 2), dRow("k3", 3)];
+    const { db, log } = makeScriptedD1([{ results: rows }]);
+    const page = await listDistributedKeysPage({ DB: db } as unknown as Env, {
+      after: null,
+      before: null,
+      limit: LIMIT,
+    });
+    expect(page.keys.map((k) => k.api_key)).toEqual(["k1", "k2"]);
+    expect(page.hasNext).toBe(true);
+    expect(page.hasPrevious).toBe(false);
+    expect(page.nextCursor).toEqual({ createdAt: 2, apiKey: "k2" });
+    expect(page.previousCursor).toBeNull();
+    expect(log()[0].sql).toContain("ORDER BY created_at ASC, api_key ASC");
+    expect(log()[0].binds).toEqual([LIMIT + 1]); // fetchLimit
+  });
+
+  it("after 游标：WHERE (created_at, api_key) >；绑定含 after 与 fetchLimit；hasPrevious=true", async () => {
+    const rows = [dRow("k1", 1), dRow("k2", 2), dRow("k3", 3)];
+    const { db, log } = makeScriptedD1([{ results: rows }]);
+    const page = await listDistributedKeysPage({ DB: db } as unknown as Env, {
+      after: { createdAt: 10, apiKey: "k" },
+      before: null,
+      limit: LIMIT,
+    });
+    expect(page.keys.map((k) => k.api_key)).toEqual(["k1", "k2"]);
+    expect(page.hasPrevious).toBe(true);
+    expect(page.hasNext).toBe(true);
+    expect(log()[0].sql).toContain("(created_at, api_key) > (?1, ?2)");
+    expect(log()[0].binds).toEqual([10, "k", LIMIT + 1]);
+  });
+
+  it("before 游标：逆序读回、内存反转升序；hasNext 恒 true、hasPrevious 由溢出行判", async () => {
+    const rows = [dRow("k3", 20), dRow("k2", 15), dRow("k1", 10)];
+    const { db, log } = makeScriptedD1([{ results: rows }]);
+    const page = await listDistributedKeysPage({ DB: db } as unknown as Env, {
+      after: null,
+      before: { createdAt: 30, apiKey: "m" },
+      limit: LIMIT,
+    });
+    expect(page.keys.map((k) => k.api_key)).toEqual(["k2", "k3"]);
+    expect(page.hasPrevious).toBe(true);
+    expect(page.hasNext).toBe(true);
+    expect(page.previousCursor).toEqual({ createdAt: 15, apiKey: "k2" });
+    expect(page.nextCursor).toEqual({ createdAt: 20, apiKey: "k3" });
+    expect(log()[0].sql).toContain("(created_at, api_key) < (?1, ?2)");
+    expect(log()[0].sql).toContain("ORDER BY created_at DESC, api_key DESC");
+    expect(log()[0].binds).toEqual([30, "m", LIMIT + 1]);
+  });
+
+  it("空结果：双方向 false、游标 null（不抛错）", async () => {
+    const { db } = makeScriptedD1([{ results: [] }]);
+    const page = await listDistributedKeysPage({ DB: db } as unknown as Env, {
+      after: { createdAt: 5, apiKey: "k5" },
+      before: null,
+      limit: LIMIT,
+    });
+    expect(page).toEqual({
+      keys: [],
+      hasPrevious: false,
+      hasNext: false,
+      previousCursor: null,
+      nextCursor: null,
+    });
+  });
+
+  it("参数非法：after/before 互斥或 limit 非正 → 拒绝", async () => {
+    const { db } = makeScriptedD1([]);
+    await expect(
+      listDistributedKeysPage({ DB: db } as unknown as Env, {
+        after: { createdAt: 1, apiKey: "a" },
+        before: { createdAt: 1, apiKey: "b" },
+        limit: LIMIT,
+      })
+    ).rejects.toThrow("互斥");
+    await expect(
+      listDistributedKeysPage({ DB: db } as unknown as Env, {
+        after: null,
+        before: null,
+        limit: 0,
+      })
+    ).rejects.toThrow("正整数");
+  });
+});
+
+describe("cachedDistributedKeyCount 惰性总数缓存", () => {
+  it("冷读经 countDistributedKeys 一次 first；TTL 内二次命中不查 D1", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ total: 7, enabled: 6 }] }]);
+    const env = makeEnv(db);
+    expect(await cachedDistributedKeyCount(env)).toBe(7);
+    expect(await cachedDistributedKeyCount(env)).toBe(7);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(1); // 未再查 D1
+  });
+
+  it("失效：clear 后再次取 → 重新查 D1，返回新值", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [{ total: 7, enabled: 6 }] },
+      { results: [{ total: 9, enabled: 8 }] },
+    ]);
+    const env = makeEnv(db);
+    expect(await cachedDistributedKeyCount(env)).toBe(7);
+    clearDistributedKeyCountCache();
+    expect(await cachedDistributedKeyCount(env)).toBe(9);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(2);
+  });
+
+  it("generateDistributedKey 写操作失效：generate 后计数失效、再取重新查", async () => {
+    install();
+    const { db, log } = makeScriptedD1([
+      { results: [{ total: 5, enabled: 4 }] }, // 预读计数
+      { results: [] }, // generate 碰撞查 first
+      { changes: 1 }, // INSERT
+      { results: [{ total: 6, enabled: 5 }] }, // generate 后重新计数
+    ]);
+    const env = makeEnv(db);
+    expect(await cachedDistributedKeyCount(env)).toBe(5);
+    await generateDistributedKey(env, "note-clear");
+    // generate 内 clearDistributedKeyCountCache → 再取必须重新查 D1
+    expect(await cachedDistributedKeyCount(env)).toBe(6);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(3); // 预读 + 碰撞 + 重取
+    expect(log().filter((c) => c.op === "run")).toHaveLength(1); // 一次 INSERT
   });
 });

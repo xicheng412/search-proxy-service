@@ -88,3 +88,35 @@ describe("admin /:id/toggle 冷却统一", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("admin GET /list 分页 + 共 N 条", () => {
+  it("GET /list：list.all → count.first → usage.all；渲染共 N 条与下一页链接", async () => {
+    // 21 行 > PAGE_SIZE(20) → 首页有下一页
+    const pageRows = Array.from({ length: 21 }, (_, i) => ({
+      id: `k${i + 1}`,
+      key: `tvly-k${i + 1}`,
+      name: "",
+      status: "enabled",
+      cooldown_until: null,
+      suspended_cause: null,
+      created_at: i + 1,
+    }));
+    const { db, log } = makeScriptedD1([
+      { results: pageRows }, // list.all（keyset 首页，多取一行）
+      { results: [{ total: 5, enabled: 4 }] }, // count.first（惰性总数）
+      { results: [] }, // usage.all（当日统计）
+    ]);
+    const env = { DB: db, QUEUE: { idFromName: () => "0" } } as unknown as Env;
+    const res = await tavilyAdmin.request(
+      "/list",
+      { method: "GET" },
+      env as Env,
+      { waitUntil: () => {} } as ExecutionContext
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("共 5 条");
+    expect(html).toContain("下一页");
+    expect(log().map((c) => c.op)).toEqual(["all", "first", "all"]);
+  });
+});

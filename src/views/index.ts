@@ -33,37 +33,40 @@ export function formatRemaining(ms: number): string {
 }
 
 // ---------------------------------------------------------------
-// 上游 Key 管理页分页（Tavily/Exa 共享）
+// Key 管理页分页（Tavily/Exa 上游与分发 Keys 共享）
 // ---------------------------------------------------------------
 
-export interface UpstreamPaginationLink {
+export interface PaginationLink {
   href: string;
   hxGet: string;
 }
 
-export interface UpstreamPagination {
+export interface Pagination {
   page: number;
-  first: UpstreamPaginationLink | null;
-  previous: UpstreamPaginationLink | null;
-  next: UpstreamPaginationLink | null;
+  first: PaginationLink | null;
+  previous: PaginationLink | null;
+  next: PaginationLink | null;
 }
 
 /**
  * 渲染列表下方的分页控件：
- * - 显示 `第 N 页 · 每页 20 条`。
+ * - 显示 `第 N 页 · 每页 20 条`（total 非空时追加 ` · 共 N 条`）。
  * - first/previous/next 为 null 时不渲染对应按钮；首页第一页不渲染"首页/上一页"。
  * - 空列表（hasRows=false）仍渲染唯一"首页"链接，恢复到无 cursor 的第一页。
  * - 每个链接同时带 href（完整页）与 hx-get（HTMX fragment），hx-target 指向对应列表容器。
  */
-export function upstreamPaginationHtml(
-  pagination: UpstreamPagination,
+export function paginationHtml(
+  pagination: Pagination,
   hasRows: boolean,
-  targetId: string
+  targetId: string,
+  total: number | null = null
 ): string {
-  const btn = (link: UpstreamPaginationLink, label: string): string =>
+  const btn = (link: PaginationLink, label: string): string =>
     `<a class="page-btn" href="${esc(link.href)}" hx-get="${esc(link.hxGet)}" hx-target="${targetId}" hx-swap="innerHTML">${label}</a>`;
+  const countText =
+    total === null ? "" : ` · 共 ${total} 条`;
   const parts: string[] = [
-    `<span class="muted">第 ${pagination.page} 页 · 每页 20 条</span>`,
+    `<span class="muted">第 ${pagination.page} 页 · 每页 20 条${countText}</span>`,
   ];
   if (pagination.first && (pagination.page > 1 || !hasRows)) {
     parts.push(btn(pagination.first, "首页"));
@@ -149,8 +152,11 @@ export function distListFragment(
   keys: DistributedKey[],
   callsMap: Record<string, DistStats>,
   csrf: string,
+  pagination: Pagination,
   flash?: string,
-  publicBaseUrl: string = ""
+  publicBaseUrl: string = "",
+  total: number | null = null,
+  selfQuery: string = "?page=1"
 ): string {
   const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
   const rows = keys.length
@@ -181,11 +187,13 @@ export function distListFragment(
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
                       hx-swap="innerHTML" style="display:inline-block;">
                   ${csrfField(csrf)}
+                  <input type="hidden" name="back" value="${esc(selfQuery)}">
                   <button class="ghost btn-sm" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
                 </form>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/delete" hx-target="#keys-list"
                       hx-swap="innerHTML" hx-confirm="确认删除该分发 key？" style="display:inline-block;">
                   ${csrfField(csrf)}
+                  <input type="hidden" name="back" value="${esc(selfQuery)}">
                   <button class="danger btn-sm" type="submit">删除</button>
                 </form>
               </div>
@@ -210,7 +218,8 @@ export function distListFragment(
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
       <th title="该分发 key 最近24小时（含当前小时）的请求数">最近24h请求</th><th>操作</th></tr>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table>
+  ${paginationHtml(pagination, keys.length > 0, "#keys-list", total)}`;
 }
 
 /** 生成成功：明文只显示这一次。返回的片段带明文框（含前缀用法提示）与刷新后的列表。 */
@@ -219,11 +228,14 @@ export function distGenerateResult(
   keys: DistributedKey[],
   callsMap: Record<string, DistStats>,
   csrf: string,
-  publicBaseUrl: string = ""
+  pagination: Pagination,
+  publicBaseUrl: string = "",
+  total: number | null = null,
+  selfQuery: string = "?page=1"
 ): string {
   const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
 <div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）、<code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）、<code>Bearer searxng-tavily-${esc(plainApiKey)}</code>（SearXNG 协议，走 Tavily），或 <code>Bearer reader-tavily-${esc(plainApiKey)}</code>（reader 协议：GET /reader/&lt;url&gt; 拿页面文本，走 Tavily Extract）。</div>`;
-  return box + distListFragment(keys, callsMap, csrf, undefined, publicBaseUrl);
+  return box + distListFragment(keys, callsMap, csrf, pagination, undefined, publicBaseUrl, total, selfQuery);
 }
 
 /** 二次密码确认查看明文已随复制按钮移除（明文已注入行内，无需再查）。 */

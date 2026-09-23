@@ -2,12 +2,12 @@
 
 import { TavilyKey, TavilyStats, maskKey } from "../domain";
 import {
-  UpstreamPagination,
+  Pagination,
   esc,
   csrfField,
   formatRemaining,
   layout,
-  upstreamPaginationHtml,
+  paginationHtml,
 } from "./index";
 
 export function tavilyPage(csrf: string, fragment: string): string {
@@ -29,8 +29,9 @@ export function tavilyListFragment(
   statsMap: Record<string, TavilyStats>,
   csrf: string,
   now: number,
-  pagination: UpstreamPagination,
-  flash?: string
+  pagination: Pagination,
+  flash?: string,
+  total: number | null = null
 ): string {
   const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
   const rows = keys.length
@@ -93,7 +94,7 @@ export function tavilyListFragment(
       <th title="当日（UTC 00:00 起）该官方 key 的上游调用失败尝试数">当日失败</th><th>操作</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  ${upstreamPaginationHtml(pagination, keys.length > 0, "#tavily-list")}`;
+  ${paginationHtml(pagination, keys.length > 0, "#tavily-list", total)}`;
 }
 
 export function tavilyEditFragment(csrf: string): string {

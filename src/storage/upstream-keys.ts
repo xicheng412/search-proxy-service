@@ -73,6 +73,25 @@ export async function countUpstreamKeys(
   return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
 }
 
+// 惰性总数缓存：总量基本不变，低频读「共 N 条」，随 add/delete（总量变动）时同 isolate 立即失效，
+// 跨 isolate 由 TTL 兜底（最多 60s 陈旧，用户接受「大致统计」）。按 provider 分桶。
+const upstreamCountCache = new Map<string, { at: number; total: number }>();
+const UPSTREAM_COUNT_TTL_MS = 60_000;
+
+export function clearUpstreamKeyCountCache(provider?: string): void {
+  if (provider) upstreamCountCache.delete(provider);
+  else upstreamCountCache.clear();
+}
+
+export async function cachedUpstreamKeyCount(env: Env, def: UpstreamDef): Promise<number> {
+  const now = Date.now();
+  const hit = upstreamCountCache.get(def.provider);
+  if (hit && now - hit.at < UPSTREAM_COUNT_TTL_MS) return hit.total;
+  const r = await countUpstreamKeys(env, def);
+  upstreamCountCache.set(def.provider, { at: now, total: r.total });
+  return r.total;
+}
+
 /** 按 provider + id 单行读取（管理页 name/toggle 用，避免为一条 key 拉全量列表）。 */
 export async function getUpstreamKey(
   env: Env,
@@ -190,6 +209,7 @@ export async function addUpstreamKey(
   )
     .bind(def.provider, item.id, item.key, item.name, item.status, item.cooldown_until, item.suspended_cause, item.created_at)
     .run();
+  clearUpstreamKeyCountCache(def.provider);
   return item;
 }
 
@@ -218,6 +238,7 @@ export async function deleteUpstreamKey(
   )
     .bind(def.provider, id)
     .run();
+  clearUpstreamKeyCountCache(def.provider);
   return (res.meta.changes ?? 0) > 0;
 }
 
@@ -295,6 +316,9 @@ export async function addUpstreamKeysBatch(
       );
     }
   }
-  if (insertStmts.length > 0) await env.DB.batch(insertStmts);
+  if (insertStmts.length > 0) {
+    await env.DB.batch(insertStmts);
+    clearUpstreamKeyCountCache(def.provider);
+  }
   return { added, duplicates };
 }

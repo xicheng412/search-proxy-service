@@ -20,11 +20,12 @@ import { notifyKeyPoolActivate, notifyKeyPoolSync } from "../key-pool";
 import { TAVILY } from "../providers";
 import { errorFragment } from "../views";
 import {
-  UPSTREAM_PAGE_SIZE,
-  buildUpstreamPagination,
-  parseUpstreamPageQuery,
+  PAGE_SIZE,
+  buildPagination,
+  parsePageQuery,
 } from "./pagination";
 import { tavilyListFragment, tavilyPage } from "../views/tavily";
+import { cachedUpstreamKeyCount } from "../storage/upstream-keys";
 
 export const tavilyAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -32,14 +33,14 @@ export const tavilyAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>(
 async function loadUpstreamPage(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
 ): Promise<Response | { pageNumber: number; page: UpstreamKeyPage }> {
-  const query = parseUpstreamPageQuery(c);
+  const query = parsePageQuery(c);
   if (!query.ok) return c.html(errorFragment(query.message), 400);
   let page: UpstreamKeyPage;
   try {
     page = await listUpstreamKeysPage(c.env, TAVILY.upstream, {
       after: query.after,
       before: query.before,
-      limit: UPSTREAM_PAGE_SIZE,
+      limit: PAGE_SIZE,
     });
   } catch {
     return c.html(errorFragment("参数错误"), 400);
@@ -52,14 +53,15 @@ tavilyAdmin.get("/", async (c) => {
   if (loaded instanceof Response) return loaded;
   const { pageNumber, page } = loaded;
   const csrf = (await getCsrfToken(c)) ?? "";
+  const total = await cachedUpstreamKeyCount(c.env, TAVILY.upstream);
   const statsMap = await getUsageStore(c.env).readUpstreamTodayStats(
     page.keys.map((k) => k.id),
     utcTodayStart()
   );
-  const pagination = buildUpstreamPagination("/admin/tavily", pageNumber, page);
+  const pagination = buildPagination("/admin/tavily", pageNumber, page);
   const flash = c.req.query("flash") ?? undefined;
   return c.html(
-    tavilyPage(csrf, tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash))
+    tavilyPage(csrf, tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash, total))
   );
 });
 
@@ -68,13 +70,14 @@ tavilyAdmin.get("/list", async (c) => {
   if (loaded instanceof Response) return loaded;
   const { pageNumber, page } = loaded;
   const csrf = (await getCsrfToken(c)) ?? "";
+  const total = await cachedUpstreamKeyCount(c.env, TAVILY.upstream);
   const statsMap = await getUsageStore(c.env).readUpstreamTodayStats(
     page.keys.map((k) => k.id),
     utcTodayStart()
   );
-  const pagination = buildUpstreamPagination("/admin/tavily", pageNumber, page);
+  const pagination = buildPagination("/admin/tavily", pageNumber, page);
   const flash = c.req.query("flash") ?? undefined;
-  return c.html(tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash));
+  return c.html(tavilyListFragment(page.keys, statsMap, csrf, Date.now(), pagination, flash, total));
 });
 
 // 新增 Tavily key（可附带 test call；name 可选，未填则自动生成）

@@ -51,11 +51,94 @@ function toDistKey(r: Record<string, unknown>): DistributedKey {
   };
 }
 
-export async function listDistributedKeys(env: Env): Promise<DistributedKey[]> {
-  const { results } = await env.DB.prepare(
-    "SELECT api_key, note, status, created_at FROM distributed_keys ORDER BY created_at"
-  ).all();
-  return (results as Record<string, unknown>[]).map(toDistKey);
+/** 分发 Keys 管理页 keyset 分页游标：稳定排序/边界键 (created_at, api_key) 的镜像（created_at 相同由 api_key 决胜）。 */
+export interface DistributedKeyCursor {
+  createdAt: number;
+  apiKey: string;
+}
+
+/** 管理页单页结果：keys 为当前页（≤ limit），方向标记与游标给出可跳转的相邻页。 */
+export interface DistributedKeyPage {
+  keys: DistributedKey[];
+  hasPrevious: boolean;
+  hasNext: boolean;
+  previousCursor: DistributedKeyCursor | null;
+  nextCursor: DistributedKeyCursor | null;
+}
+
+/**
+ * 管理页 keyset 分页读取：只服务 /admin/keys GET；固定传入 20。
+ * 首页/after/before 三种 SQL 都走 (created_at, api_key) 复合索引；
+ * 排序始终为 created_at ASC, api_key ASC（before 页逆序读后在内存反转）。
+ * LIMIT 多取一行仅用于 hasNext/hasPrevious 判断，不返回给视图。
+ */
+export async function listDistributedKeysPage(
+  env: Env,
+  opts: {
+    after: DistributedKeyCursor | null;
+    before: DistributedKeyCursor | null;
+    limit: number;
+  }
+): Promise<DistributedKeyPage> {
+  const { after, before, limit } = opts;
+  if (after !== null && before !== null) {
+    throw new Error("listDistributedKeysPage: after 与 before 互斥");
+  }
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error("listDistributedKeysPage: limit 必须为正整数");
+  }
+  const fetchLimit = limit + 1;
+
+  // before：逆序取行，内存反转回升序；after/首页：升序取。
+  const goingBack = before !== null;
+  const sql = goingBack
+    ? `SELECT api_key, note, status, created_at
+       FROM distributed_keys
+       WHERE (created_at, api_key) < (?1, ?2)
+       ORDER BY created_at DESC, api_key DESC
+       LIMIT ?3`
+    : after !== null
+      ? `SELECT api_key, note, status, created_at
+         FROM distributed_keys
+         WHERE (created_at, api_key) > (?1, ?2)
+         ORDER BY created_at ASC, api_key ASC
+         LIMIT ?3`
+      : `SELECT api_key, note, status, created_at
+         FROM distributed_keys
+         ORDER BY created_at ASC, api_key ASC
+         LIMIT ?1`;
+  const binds: unknown[] = goingBack
+    ? [before.createdAt, before.apiKey, fetchLimit]
+    : after !== null
+      ? [after.createdAt, after.apiKey, fetchLimit]
+      : [fetchLimit];
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  const raw = results as Record<string, unknown>[];
+  const pageRows = goingBack ? raw.slice(0, limit).reverse() : raw.slice(0, limit);
+  const hasNextPage = goingBack ? true : raw.length > limit;
+  const hasPreviousPage = goingBack ? raw.length > limit : after !== null;
+
+  if (pageRows.length === 0) {
+    // 空表/游标无结果：不抛错，两个方向都标记为 false，视图保留"首页"恢复链接。
+    return {
+      keys: [],
+      hasPrevious: false,
+      hasNext: false,
+      previousCursor: null,
+      nextCursor: null,
+    };
+  }
+  const cursorOf = (r: Record<string, unknown>): DistributedKeyCursor => ({
+    createdAt: r.created_at as number,
+    apiKey: r.api_key as string,
+  });
+  return {
+    keys: pageRows.map(toDistKey),
+    hasPrevious: hasPreviousPage,
+    hasNext: hasNextPage,
+    previousCursor: hasPreviousPage ? cursorOf(pageRows[0]) : null,
+    nextCursor: hasNextPage ? cursorOf(pageRows[pageRows.length - 1]) : null,
+  };
 }
 
 /** dashboard 统计卡用：全局计数 total/enabled（dist 无 provider 维度）。 */
@@ -68,6 +151,23 @@ export async function countDistributedKeys(
      FROM distributed_keys`
   ).first();
   return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
+}
+
+// 惰性总数缓存：总量基本不变，低频读「共 N 条」，变动（generate/delete）时同 isolate 立即失效，
+// 跨 isolate 由 TTL 兜底（最多 60s 陈旧，用户接受「大致统计」）。
+let distCountCache: { at: number; total: number } | null = null;
+const DIST_COUNT_TTL_MS = 60_000;
+
+export function clearDistributedKeyCountCache(): void {
+  distCountCache = null;
+}
+
+export async function cachedDistributedKeyCount(env: Env): Promise<number> {
+  const now = Date.now();
+  if (distCountCache && now - distCountCache.at < DIST_COUNT_TTL_MS) return distCountCache.total;
+  const r = await countDistributedKeys(env);
+  distCountCache = { at: now, total: r.total };
+  return r.total;
 }
 
 export async function getDistributedKey(
@@ -112,6 +212,7 @@ export async function generateDistributedKey(
     .bind(item.api_key, item.note, item.status, item.created_at)
     .run();
   await caches.default.delete(distCacheKey(final)).catch(() => {});
+  clearDistributedKeyCountCache();
   // 落 nonce → key 映射（TTL 300s）。失败静默：最多失去一次幂等窗口，不阻塞主流程。
   if (nonce) {
     await env.KV.put("keygen_nonce:" + nonce, final, { expirationTtl: 300 }).catch(() => {});
@@ -144,5 +245,6 @@ export async function deleteDistributedKey(
     .bind(apiKey)
     .run();
   await caches.default.delete(distCacheKey(apiKey)).catch(() => {});
+  clearDistributedKeyCountCache();
   return (res.meta.changes ?? 0) > 0;
 }

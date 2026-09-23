@@ -1,10 +1,12 @@
 // upstream-keys 存储域测试：聚焦 keyset 分页的边界/游标语义与动态 SET 构建的 ?N 契约。
 // 用脚本式 fake D1 断言"发了什么 SQL/绑定"与"返回页的 hasNext/hasPrevious/游标推导"。
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import type { Env } from "../src/types";
-import { TAVILY } from "../src/providers";
+import { TAVILY, EXA } from "../src/providers";
 import {
+  cachedUpstreamKeyCount,
+  clearUpstreamKeyCountCache,
   countUpstreamKeys,
   listUpstreamKeysPage,
   updateUpstreamKey,
@@ -15,6 +17,11 @@ import {
 import { makeScriptedD1 } from "./helpers/fake-d1";
 
 const def = TAVILY.upstream;
+
+// 惰性总数缓存是模块级单例（per-provider 分桶），跨用例共享 → 每例前清空，避免串扰。
+beforeEach(() => {
+  clearUpstreamKeyCountCache();
+});
 
 const keyRow = (id: string, created_at: number) => ({
   id,
@@ -264,5 +271,41 @@ describe("addUpstreamKeysBatch 批量软去重", () => {
     const res = await addUpstreamKeysBatch({ DB: db } as unknown as Env, def, []);
     expect(res).toEqual({ added: [], duplicates: [] });
     expect(log()).toHaveLength(0);
+  });
+});
+
+describe("cachedUpstreamKeyCount 惰性总数缓存", () => {
+  it("冷读经 countUpstreamKeys 一次 first；TTL 内二次同 provider 命中不查 D1", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ total: 5, enabled: 4 }] }]);
+    const env = { DB: db } as unknown as Env;
+    expect(await cachedUpstreamKeyCount(env, def)).toBe(5);
+    expect(await cachedUpstreamKeyCount(env, def)).toBe(5);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(1); // 未再查 D1
+  });
+
+  it("per-provider 分桶：Tavily 与 Exa 各一次 first，互不串扰", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [{ total: 5, enabled: 4 }] },
+      { results: [{ total: 8, enabled: 7 }] },
+    ]);
+    const env = { DB: db } as unknown as Env;
+    expect(await cachedUpstreamKeyCount(env, TAVILY.upstream)).toBe(5);
+    expect(await cachedUpstreamKeyCount(env, EXA.upstream)).toBe(8);
+    // 重复取各仍命中，不再新增 D1 调用
+    expect(await cachedUpstreamKeyCount(env, TAVILY.upstream)).toBe(5);
+    expect(await cachedUpstreamKeyCount(env, EXA.upstream)).toBe(8);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(2);
+  });
+
+  it("失效：clear(provider) 后该 provider 再查 → 重新查 D1", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [{ total: 5, enabled: 4 }] },
+      { results: [{ total: 6, enabled: 5 }] },
+    ]);
+    const env = { DB: db } as unknown as Env;
+    expect(await cachedUpstreamKeyCount(env, def)).toBe(5);
+    clearUpstreamKeyCountCache(def.provider);
+    expect(await cachedUpstreamKeyCount(env, def)).toBe(6);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(2);
   });
 });

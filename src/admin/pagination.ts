@@ -1,20 +1,25 @@
-// 管理页上游 key 列表的 keyset 分页：仅处理 HTTP query 参数与 cursor 编解码，不访问 D1。
-// Tavily/Exa 两个上游 Key 管理页共享同一份参数规则、页大小、排序与游标语义。
+// 管理页 key 列表的 keyset 分页：仅处理 HTTP query 参数与 cursor 编解码，不访问 D1。
+// Tavily/Exa 两个上游 Key 管理页与分发 Keys 管理页共享同一份参数规则、页大小、排序与游标语义。
 
 import type { Context } from "hono";
 import type { Env, AppVariables } from "../types";
-import type { UpstreamKeyCursor } from "../storage/upstream-keys";
-import type { UpstreamPagination, UpstreamPaginationLink } from "../views";
+import type { Pagination, PaginationLink } from "../views";
 
 /** 固定页大小；不支持客户端自定义 limit，避免放大 D1 查询与 HTML 响应。 */
-export const UPSTREAM_PAGE_SIZE = 20;
+export const PAGE_SIZE = 20;
 
-export type UpstreamPageQuery =
+/** 通用 keyset 游标：稳定排序/边界键 (createdAt, id) 的镜像（createdAt 相同由 id 决胜）。 */
+export interface PageCursor {
+  createdAt: number;
+  id: string;
+}
+
+export type PageQuery =
   | {
       ok: true;
       page: number;
-      after: UpstreamKeyCursor | null;
-      before: UpstreamKeyCursor | null;
+      after: PageCursor | null;
+      before: PageCursor | null;
     }
   | { ok: false; message: string };
 
@@ -26,9 +31,9 @@ export type UpstreamPageQuery =
  * - cursor 必须能 base64url 解码为 {createdAt:<有限数>, id:<非空串>}。
  * 任一不满足返回 { ok:false }，由路由返回 400，不执行 D1。
  */
-export function parseUpstreamPageQuery(
+export function parsePageQuery(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
-): UpstreamPageQuery {
+): PageQuery {
   const q = c.req.query();
   const pageRaw = q["page"] ?? "1";
   const page = Number(pageRaw);
@@ -41,11 +46,11 @@ export function parseUpstreamPageQuery(
   if (afterPresent && beforePresent) {
     return { ok: false, message: "after 与 before 不能同时存在" };
   }
-  const after = afterPresent ? decodeUpstreamCursor(q["after"]!) : null;
+  const after = afterPresent ? decodeCursor(q["after"]!) : null;
   if (afterPresent && after === null) {
     return { ok: false, message: "无效的 after 游标" };
   }
-  const before = beforePresent ? decodeUpstreamCursor(q["before"]!) : null;
+  const before = beforePresent ? decodeCursor(q["before"]!) : null;
   if (beforePresent && before === null) {
     return { ok: false, message: "无效的 before 游标" };
   }
@@ -57,13 +62,13 @@ export function parseUpstreamPageQuery(
 }
 
 /** cursor -> base64url(JSON {createdAt,id})：去 =、+ -> -、/ -> _。只含排序键，不含真实 key。 */
-export function encodeUpstreamCursor(cursor: UpstreamKeyCursor): string {
+export function encodeCursor(cursor: PageCursor): string {
   const json = JSON.stringify({ createdAt: cursor.createdAt, id: cursor.id });
   return btoa(json).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 /** base64url -> cursor；解码失败/结构不符返回 null（由解析器转 400）。 */
-export function decodeUpstreamCursor(value: string): UpstreamKeyCursor | null {
+export function decodeCursor(value: string): PageCursor | null {
   try {
     const b64 = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
     const parsed = JSON.parse(atob(b64)) as unknown;
@@ -82,17 +87,17 @@ export function decodeUpstreamCursor(value: string): UpstreamKeyCursor | null {
  * 两者 query 参数（page/cursor）完全相同；首页 URL 不带 cursor。
  * basePath 为完整页路径（如 /admin/tavily），hxGet 即 basePath + "/list"。
  */
-export function buildUpstreamPagination(
+export function buildPagination(
   basePath: string,
   page: number,
-  res: UpstreamKeyPagePayload
-): UpstreamPagination {
+  res: PagePayload
+): Pagination {
   const cursorLink = (
     dir: "after" | "before",
     targetPage: number,
-    cursor: UpstreamKeyCursor
-  ): UpstreamPaginationLink => {
-    const encoded = encodeUpstreamCursor(cursor);
+    cursor: PageCursor
+  ): PaginationLink => {
+    const encoded = encodeCursor(cursor);
     const query = `?page=${targetPage}&${dir}=${encoded}`;
     return { href: `${basePath}${query}`, hxGet: `${basePath}/list${query}` };
   };
@@ -110,9 +115,21 @@ export function buildUpstreamPagination(
   };
 }
 
-type UpstreamKeyPagePayload = {
+export interface PagePayload {
   hasPrevious: boolean;
   hasNext: boolean;
-  previousCursor: UpstreamKeyCursor | null;
-  nextCursor: UpstreamKeyCursor | null;
-};
+  previousCursor: PageCursor | null;
+  nextCursor: PageCursor | null;
+}
+
+/** 构建当前页自引用 query（给行内 toggle/delete 表单的 `back` 隐藏字段，保持当前页）。 */
+export function buildSelfQuery(
+  page: number,
+  after: PageCursor | null,
+  before: PageCursor | null
+): string {
+  if (page === 1) return "?page=1";
+  const dir = after !== null ? "after" : "before";
+  const cursor = after ?? before;
+  return `?page=${page}&${dir}=${encodeCursor(cursor!)}`;
+}
