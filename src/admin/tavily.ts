@@ -9,9 +9,12 @@ import {
   addUpstreamKey,
   addUpstreamKeysBatch,
   deleteUpstreamKey,
+  deleteUpstreamKeysBatch,
   getUpstreamKey,
   keyValueExists,
   listUpstreamKeysPage,
+  missingUpstreamKeyIds,
+  toggleUpstreamKeysBatch,
   UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage/upstream-keys";
@@ -176,4 +179,54 @@ tavilyAdmin.post("/:id/delete", async (c) => {
   await deleteUpstreamKey(c.env, TAVILY.upstream, c.req.param("id"));
   await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
+});
+
+/** 归一化表单多值 ids（复选框同名多值；Hono parseBody 单值 string、多值数组，去空去重）。 */
+function normalizeBatchIds(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+  return [...new Set(list.map((v) => String(v)).filter((v) => v.length > 0))];
+}
+
+// 批量翻转（enabled↔disabled）：存在性预查，缺失即整批拒绝；单条 UPDATE 翻转+清冷却；
+// 翻成 enabled 的行须清内存冷却（对全部 activate 无害），再全量合并 status。
+tavilyAdmin.post("/batch-toggle", async (c) => {
+  const body = await c.req.parseBody();
+  const ids = normalizeBatchIds(body["ids[]"]);
+  if (ids.length === 0) return c.html(errorFragment("未选择任何 key"));
+  const env = c.env;
+  const missing = await missingUpstreamKeyIds(env, TAVILY.upstream, ids);
+  if (missing.length) {
+    return c.redirect(
+      `/admin/tavily?flash=${encodeURIComponent(`已选 ${ids.length} 个，其中 ${missing.length} 个不存在，未切换任何 key`)}`,
+      303
+    );
+  }
+  const changed = await toggleUpstreamKeysBatch(env, TAVILY.upstream, ids);
+  for (const id of ids) await notifyKeyPoolActivate(c.env, TAVILY.name, id).catch(() => {});
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
+  return c.redirect(
+    `/admin/tavily?flash=${encodeURIComponent(`已切换 ${changed} 个 key`)}`,
+    303
+  );
+});
+
+// 批量删除：存在性预查，缺失即整批拒绝；单条 DELETE；全量合并 status。
+tavilyAdmin.post("/batch-delete", async (c) => {
+  const body = await c.req.parseBody();
+  const ids = normalizeBatchIds(body["ids[]"]);
+  if (ids.length === 0) return c.html(errorFragment("未选择任何 key"));
+  const env = c.env;
+  const missing = await missingUpstreamKeyIds(env, TAVILY.upstream, ids);
+  if (missing.length) {
+    return c.redirect(
+      `/admin/tavily?flash=${encodeURIComponent(`已选 ${ids.length} 个，其中 ${missing.length} 个不存在，未删除任何 key`)}`,
+      303
+    );
+  }
+  const changed = await deleteUpstreamKeysBatch(env, TAVILY.upstream, ids);
+  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
+  return c.redirect(
+    `/admin/tavily?flash=${encodeURIComponent(`已删除 ${changed} 个 key`)}`,
+    303
+  );
 });

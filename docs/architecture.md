@@ -133,6 +133,7 @@ GET  /admin/{tavily|exa}     → 上游 Keys 分页列表（HTMX 局部刷新）
 GET  /admin/{tavily|exa}/list→ 列表片段（分页）
 POST /admin/{tavily|exa}/add / add/batch   → 新增单个/批量上游 key（可选 test call）
 POST /admin/{tavily|exa}/:id/name|toggle|delete → 改名/启停/删除
+POST /admin/{tavily|exa}/batch-toggle / batch-delete → 批量切换（翻转）/ 批量删除（存在性预查，缺失整批拒绝）
 GET  /admin/keys             → 分发 Keys 列表（含复制按钮）
 GET  /admin/keys/list        → 列表片段
 POST /admin/keys/generate    → 生成新分发 key, 明文只在响应里出现一次
@@ -141,6 +142,21 @@ POST /admin/breaker-config / queue-config / dist-cache-config → 写 KV 运行�
 ```
 所有写操作（POST）一律校验 CSRF；未经登录的页面 GET → 302 跳登录。
 公开门户：`GET /` 纯文本导航、`GET /help` 使用说明（独立于 admin 的样式，无需登录；admin 顶栏「使用说明」链接新标签打开）。
+
+> **Flash 消息约定（一次性瞬时通知，非弹窗）**：admin 的写操作完成/拒绝后向列表页传一条只显示一次的瞬时报文。契约：
+> - **性质**：one-shot（送一次、渲染一次、随即消失），**非 modal/popup** —— 内联渲染在列表页 DOM 流内的 `.toast` 块，不覆盖、不阻塞、无需用户关闭。
+> - **载体**：`POST` 处理完 → `303 redirect` 到列表 URL 拼 `?flash=<URL-encode 消息>` → 目标 handler `c.req.query("flash")` 读出 → 页首渲染 `.toast`。不落库、不存 session/KV。
+> - **寿命**：仅当前这次 reload 渲染；URL 里的 `?flash=` 随下次导航/刷新被丢弃（它只是查询参数，非状态）。
+> - **现状复用点**：`add/batch` 已是该模式（「添加 N 个，跳过 M 个重复…」）；成功与拒绝通吃（拒绝走红色 toast）。
+> 新写操作（含 `batch-toggle / batch-delete`）一律沿用此模式，勿另造提示机制。
+>
+> **「启/停」= 翻转（toggle）语义（固定概念）**：管理页的单行 `:id/toggle` 与批量 `batch-toggle` 都是**双向翻转**——目标状态按当前状态反推（`enabled→disabled`、`disabled→enabled`），**不是**"设为某个定向状态"。故「停用 / 启用」不是两个定向动作，而是同一翻转键的两个方向，操作者点一下即翻面。此语义对当前逻辑无行为影响（旨在固定意图与命名），但后续任何 key 状态操作都必须与之保持一致，不得另起"定向 SET"的语义。
+>
+> **管理页渲染契约（fragment vs 完整页 + 提交方式耦合）**：`GET /admin/{tavily|exa}` 与 `/admin/keys` 是**完整页**（`layout()` 含 CSS）；`GET /admin/{tavily|exa}/list` 与 `/admin/keys/list` 是**纯片段**（仅列表，供 HTMX `hx-target` swap）。**写操作的 redirect 目标必须与它的提交方式匹配**：HTMX 表单（`hx-post`，如单行 name/toggle/delete、add/batch）→ 片段端点 `/…/list`；普通 `<form method="post">` 整页 reload（如 batch-toggle/batch-delete）→ **完整页端点** `/admin/{tavily|exa}`。跟错会把裸片段当整页渲染、页面样式全丢（2026-09 实证 bug）。
+>
+> **Hono 多值表单字段**：`parseBody` 对重复同名 key 只保留**最后一个**值；要批量多值（如多个复选框）必须用 `name="ids[]"` 并以 `body["ids[]"]` 读取（或 `parseBody({ all: true })`），否则静默丢到只剩一行。
+>
+> **批量写操作范式（上游 key）**：存在性预查（一份 `SELECT … id IN(…)` 一并判缺失）→ 缺失整批拒绝（flash 报错）→ 单条原子语句（UPDATE/DELETE）→ 库外收尾（翻转成启用方向须逐 id `activate` + 一次 `sync` + 清 count cache）→ 完整页 reload + flash。新增批量操作沿用此形状，勿另造机制。
 
 ### 3.3 Extract 透传（`POST /extract`）
 

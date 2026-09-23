@@ -117,6 +117,112 @@ describe("admin GET /list 分页 + 共 N 条", () => {
     const html = await res.text();
     expect(html).toContain("共 5 条");
     expect(html).toContain("下一页");
+    // 批量操作条 + 复选框 + 全选本页（翻转/删除走整页 reload 的普通表单，非 hx-post）
+    expect(html).toContain('id="batch-form"');
+    expect(html).toContain('name="ids[]"');
+    expect(html).toContain('id="select-all"');
+    expect(html).toContain('formaction="/admin/tavily/batch-toggle"');
+    expect(html).toContain('formaction="/admin/tavily/batch-delete"');
     expect(log().map((c) => c.op)).toEqual(["all", "first", "all"]);
+  });
+});
+
+describe("admin upstream 批量切换/删除（batch-toggle / batch-delete）", () => {
+  const postBatch = (path: string, body: string, env: Env) =>
+    tavilyAdmin.request(
+      path,
+      { method: "POST", body, headers: { "content-type": "application/x-www-form-urlencoded" } },
+      env,
+      { waitUntil: () => {} } as ExecutionContext
+    );
+
+  it("batch-toggle happy path：预查 → 单条 CASE UPDATE → 全行 activate + sync", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [{ id: "k1" }, { id: "k2" }] }, // 存在性预查 .all()
+      { changes: 2 }, // UPDATE .run()
+    ]);
+    const { calls, queue } = makeQueue();
+    const env = { DB: db, QUEUE: queue } as unknown as Env;
+
+    const res = await postBatch("/batch-toggle", "ids[]=k1&ids[]=k2", env);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(
+      "/admin/tavily?flash=" + encodeURIComponent("已切换 2 个 key")
+    );
+
+    // 预查：SELECT id WHERE provider=? AND id IN(...,...)，binds = [provider, k1, k2]
+    expect(log()[0].op).toBe("all");
+    expect(log()[0].sql).toContain("SELECT id FROM upstream_keys WHERE provider = ?1 AND id IN");
+    expect(log()[0].binds).toEqual([TAVILY.name, "k1", "k2"]);
+
+    // 落盘：单条 UPDATE（翻转语义 + 条件清冷却），不再发其它写
+    const update = log()[1];
+    expect(update.op).toBe("run");
+    expect(update.sql).toContain("CASE WHEN status = 'enabled'");
+    expect(update.binds).toEqual([TAVILY.name, "k1", "k2"]);
+    expect(log().filter((c) => c.op === "run")).toHaveLength(1);
+
+    // 翻成 enabled 的行清内存冷却：每 id 一次 activate；随后一次全量 sync
+    const activates = calls.filter((c) => c.url.includes("/_internal/activate"));
+    expect(activates).toHaveLength(2);
+    expect(JSON.parse(activates[0].body)).toEqual({ provider: TAVILY.name, id: "k1" });
+    expect(JSON.parse(activates[1].body)).toEqual({ provider: TAVILY.name, id: "k2" });
+    expect(calls.some((c) => c.url.includes("/_internal/sync-keys"))).toBe(true);
+  });
+
+  it("batch-toggle 预查缺失：整批拒绝，不落任何 UPDATE、不发 activate/sync", async () => {
+    const { db, log } = makeScriptedD1([{ results: [] }]); // 全部缺失
+    const { calls, queue } = makeQueue();
+    const env = { DB: db, QUEUE: queue } as unknown as Env;
+
+    const res = await postBatch("/batch-toggle", "ids[]=k1&ids[]=k2", env);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain(encodeURIComponent("未切换"));
+    expect(log().filter((c) => c.op === "run")).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("batch-delete happy path：预查 → 单条 DELETE → sync，不 activate", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [{ id: "k1" }] },
+      { changes: 1 },
+    ]);
+    const { calls, queue } = makeQueue();
+    const env = { DB: db, QUEUE: queue } as unknown as Env;
+
+    const res = await postBatch("/batch-delete", "ids[]=k1", env);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(
+      "/admin/tavily?flash=" + encodeURIComponent("已删除 1 个 key")
+    );
+
+    const del = log().find((c) => c.op === "run");
+    expect(del!.sql).toContain("DELETE FROM upstream_keys WHERE provider = ?1 AND id IN");
+    expect(del!.binds).toEqual([TAVILY.name, "k1"]);
+    expect(calls.some((c) => c.url.includes("/_internal/sync-keys"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/_internal/activate"))).toBe(false);
+  });
+
+  it("batch-delete 预查缺失：整批拒绝，不落任何 DELETE、不发 sync", async () => {
+    const { db, log } = makeScriptedD1([{ results: [] }]);
+    const { calls, queue } = makeQueue();
+    const env = { DB: db, QUEUE: queue } as unknown as Env;
+
+    const res = await postBatch("/batch-delete", "ids[]=k1", env);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain(encodeURIComponent("未删除"));
+    expect(calls).toHaveLength(0);
+  });
+
+  it("未选择任何 key：返回错误片段，不发任何 D1/QUEUE 调用", async () => {
+    const { db, log } = makeScriptedD1([]);
+    const { calls, queue } = makeQueue();
+    const env = { DB: db, QUEUE: queue } as unknown as Env;
+
+    const res = await postBatch("/batch-toggle", "", env);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("未选择任何 key");
+    expect(log()).toHaveLength(0);
+    expect(calls).toHaveLength(0);
   });
 });

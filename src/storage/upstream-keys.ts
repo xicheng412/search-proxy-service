@@ -243,6 +243,72 @@ export async function deleteUpstreamKey(
 }
 
 // ---------------------------------------------------------------
+// 批量操作（batch-toggle / batch-delete 共用）
+//   存在性预查 = 一并查出缺失 id（"整批拒绝"唯一前置，状态不参与前提）。
+//   批量翻转/删除 = 各自单条 SQL 原子执行（SQLite 一条 statement 一个事务）。
+//   缺空数组一律无操作，不碰 D1。
+// ---------------------------------------------------------------
+
+/**
+ * 批量存在性预查：返回缺失的 id 列表（batch-toggle/delete 的整批拒绝前置）。
+ * 非空即视为提交的 id 已被并发删除/不存在，调用方应整批拒绝、不落任何写。
+ */
+export async function missingUpstreamKeyIds(
+  env: Env,
+  def: UpstreamDef,
+  ids: string[]
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map((_, i) => `?${i + 2}`).join(", ");
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM upstream_keys WHERE provider = ?1 AND id IN (${placeholders})`
+  )
+    .bind(def.provider, ...ids)
+    .all();
+  const found = new Set((results as Record<string, unknown>[]).map((r) => r.id as string));
+  return ids.filter((id) => !found.has(id));
+}
+
+/**
+ * 批量翻转 status（enabled↔disabled）+ 条件清冷却——单条 UPDATE。
+ * 翻转语义（勿当定向 SET）：目标状态按旧行 status 反推；旧 enabled→disabled 保留冷却，
+ * 旧 disabled→enabled 清 cooldown_until/suspended_cause（与单行启用路径一致）。
+ * 返回受影响行数；翻成 enabled 的行需调用方在库外 activate（清内存冷却），随后 sync。
+ */
+export async function toggleUpstreamKeysBatch(
+  env: Env,
+  def: UpstreamDef,
+  ids: string[]
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const placeholders = ids.map((_, i) => `?${i + 2}`).join(", ");
+  const sql =
+    `UPDATE upstream_keys
+     SET status = CASE WHEN status = 'enabled' THEN 'disabled' ELSE 'enabled' END,
+         cooldown_until  = CASE WHEN status = 'enabled' THEN cooldown_until  ELSE NULL END,
+         suspended_cause = CASE WHEN status = 'enabled' THEN suspended_cause ELSE NULL END
+     WHERE provider = ?1 AND id IN (${placeholders})`;
+  const res = await env.DB.prepare(sql).bind(def.provider, ...ids).run();
+  clearUpstreamKeyCountCache(def.provider);
+  return res.meta.changes ?? 0;
+}
+
+/** 批量删除——单条 DELETE。返回受影响行数；调用方负责 key-pool sync。 */
+export async function deleteUpstreamKeysBatch(
+  env: Env,
+  def: UpstreamDef,
+  ids: string[]
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const placeholders = ids.map((_, i) => `?${i + 2}`).join(", ");
+  const sql = `DELETE FROM upstream_keys WHERE provider = ?1 AND id IN (${placeholders})`;
+  const res = await env.DB.prepare(sql).bind(def.provider, ...ids).run();
+  clearUpstreamKeyCountCache(def.provider);
+  return res.meta.changes ?? 0;
+}
+
+
+// ---------------------------------------------------------------
 // 冷却批量 checkpoint——QueueDO 内存池低频写回 cooldown_until
 // ---------------------------------------------------------------
 

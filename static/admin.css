@@ -28,6 +28,8 @@ a{ color:var(--accent); }
 /* ---------- Composition（元素间布局关系；禁止在模板内联 flex/grid/gap/wrap 重复） ---------- */
 /* 横向按钮组 / 内联控件组：gap 4px、允许换行、垂直居中。 */
 .hstack { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+/* 批量操作条：水平控件组 + 下间距，挂列表上方。 */
+.batch-bar { display:flex; gap:8px; align-items:center; margin:0 0 10px; }
 .pagination { display:flex; gap:8px; align-items:center; margin-top:10px; }
 form.row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
 form.row input { flex:1; }

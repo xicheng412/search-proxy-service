@@ -72,3 +72,35 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 // 片段交换后 0ms 刷新，避免等下一拍（幂等：同一 tick 函数，不挂新实例）
 document.addEventListener('htmx:afterSwap', tickCooldowns);
+
+// 批量操作：本页复选框全选 + 计数 + 提交前守卫（批量切换须有选中；批量删除破坏性须确认数量）。
+function batchSelectedCount() {
+  return document.querySelectorAll('input[name="ids[]"]:checked').length;
+}
+function updateBatchCount() {
+  var el = document.getElementById('batch-count');
+  if (el) el.textContent = String(batchSelectedCount());
+}
+// 表头「全选本页」：勾选/取消本页全部行复选框（仅当前可见页，翻页即失）。
+document.addEventListener('change', function (e) {
+  var t = e.target;
+  if (t && t.id === 'select-all') {
+    var checked = t.checked;
+    var boxes = document.querySelectorAll('input[name="ids[]"]');
+    for (var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+  }
+  updateBatchCount();
+});
+document.addEventListener('DOMContentLoaded', updateBatchCount);
+document.addEventListener('htmx:afterSwap', updateBatchCount);
+
+// 提交守卫：切换须至少选中一个；删除为破坏性操作，确认数量后放行。
+window.requireSelection = function () {
+  if (batchSelectedCount() === 0) { alert('未选择任何 key'); return false; }
+  return true;
+};
+window.confirmDeleteBatch = function () {
+  var n = batchSelectedCount();
+  if (n === 0) { alert('未选择任何 key'); return false; }
+  return confirm('确认删除选中的 ' + n + ' 个 key？');
+};
