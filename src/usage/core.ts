@@ -50,6 +50,21 @@ export interface UsageCore {
   flushNow(): Promise<void>;
   /** 单遍扫 pending，按 filter 过滤后同步回调每个命中条目（复用单个 entry 对象，零分配）。 */
   visitPending(filter: PendingFilter, cb: (e: PendingEntry) => void): void;
+  /** 单遍聚合 pending：一次扫完、按 kind+scopes+minHour 过滤后对每个命中条目调 acc。
+   *  scopes 空集 = 不过滤 scope（命中全部）；minHour null = 不过滤 hour。热路径读产品
+   *  用它替代对每个 scope 各调一次 visitPending 的 O(ids × pending) 嵌套，降到 O(pending)。 */
+  collapsePending(
+    kind: UsageKind,
+    scopes: ReadonlySet<string>,
+    minHour: string | null,
+    acc: (
+      scope: string,
+      provider: string | null,
+      hour: string,
+      success: number,
+      fail: number
+    ) => void
+  ): void;
   /** 注册 flush 落库完成钩子（单订阅槽，重复注册覆盖）；失败由回调自身处理。 */
   onFlushed(cb: () => Promise<void>): void;
 }
@@ -161,6 +176,29 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     }
   }
 
+  /** 单遍聚合 pending：一次扫完，对每条命中 filter 的条目调 acc。与 visitPending 相同的
+   *  字符串键解析与归一（dist 空串 provider → null）；scopes 空集不过滤，minHour null 不过滤。 */
+  function collapsePending(
+    kind: UsageKind,
+    scopes: ReadonlySet<string>,
+    minHour: string | null,
+    acc: (
+      scope: string,
+      provider: string | null,
+      hour: string,
+      success: number,
+      fail: number
+    ) => void
+  ): void {
+    for (const [k, v] of pending) {
+      const [kKind, scope, provider, hour] = k.split("\u0000");
+      if (kKind !== kind) continue;
+      if (scopes.size !== 0 && !scopes.has(scope)) continue;
+      if (minHour !== null && hour < minHour) continue;
+      acc(scope, provider === "" ? null : provider, hour, v.success, v.fail);
+    }
+  }
+
   function onFlushed(cb: () => Promise<void>): void {
     flushedCb = cb;
   }
@@ -171,6 +209,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     flushSoon,
     flushNow,
     visitPending,
+    collapsePending,
     onFlushed,
   };
 }

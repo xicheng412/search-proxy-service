@@ -61,17 +61,20 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
       }
       upstreamCache = { ids: idsKey, minHour, at: now, base };
     }
+    // 近似口径：pending 中该 scope 的全部小时增量并入（scope 不含 \u0000，与
+    // 原 `k.startsWith("upstream\u0000" + id + "\u0000")` 等价）。一次扫完、按键累加。
+    const approx: Record<string, { success: number; fail: number }> = {};
+    core.collapsePending("upstream", new Set(ids), null, (scope, _p, _h, s, f) => {
+      const a = approx[scope] ?? { success: 0, fail: 0 };
+      a.success += s;
+      a.fail += f;
+      approx[scope] = a;
+    });
     const result: Record<string, { success: number; fail: number }> = {};
     for (const id of ids) {
       const b = upstreamCache.base[id] ?? { success: 0, fail: 0 };
-      // 近似口径：pending 中该 scope 的全部小时增量并入（scope 不含 \u0000，与
-      // 原 `k.startsWith("upstream\u0000" + id + "\u0000")` 等价）。
-      const approx = { success: 0, fail: 0 };
-      core.visitPending({ kind: "upstream", scope: id }, (e) => {
-        approx.success += e.success;
-        approx.fail += e.fail;
-      });
-      result[id] = { success: b.success + approx.success, fail: b.fail + approx.fail };
+      const ap = approx[id] ?? { success: 0, fail: 0 };
+      result[id] = { success: b.success + ap.success, fail: b.fail + ap.fail };
     }
     return result;
   }
@@ -104,16 +107,19 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
       }
       distCache = { ids: idsKey, minHour, at: now, base };
     }
-    // 近似口径：pending 中该 scope 的全部小时增量并入（无视 provider 值）。
+    // 近似口径：pending 中该 scope 的全部小时增量并入（无视 provider 值）。一次扫完、按键累加。
+    const approx: Record<string, DistStats> = {};
+    core.collapsePending("dist", new Set(apiKeys), null, (scope, _p, _h, s, f) => {
+      const a = approx[scope] ?? { success: 0, fail: 0 };
+      a.success += s;
+      a.fail += f;
+      approx[scope] = a;
+    });
     const result: Record<string, DistStats> = {};
     for (const key of apiKeys) {
       const b = distCache.base[key] ?? { success: 0, fail: 0 };
-      const approx = { success: 0, fail: 0 };
-      core.visitPending({ kind: "dist", scope: key }, (e) => {
-        approx.success += e.success;
-        approx.fail += e.fail;
-      });
-      result[key] = { success: b.success + approx.success, fail: b.fail + approx.fail };
+      const ap = approx[key] ?? { success: 0, fail: 0 };
+      result[key] = { success: b.success + ap.success, fail: b.fail + ap.fail };
     }
     return result;
   }

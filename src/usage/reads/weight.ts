@@ -46,17 +46,11 @@ export function makeWeightSignal(env: Env, core: UsageCore, opts: WeightOpts = {
     const minHour = hourKey(Date.now() - weightWindowMs);
     const out: Record<string, number> = {};
     for (const id of ids) {
-      let f = signalBase && signalBase.minHour === minHour ? (signalBase.fail[id] ?? 0) : 0;
-      core.visitPending(
-        { kind: "upstream", scope: id, minHour },
-        (e) => {
-          // 只累加落在滑动窗口内的小时桶；flush 拉长后 pending 可能横跨多个小时桶，
-          // 越窗失败不计入权重（口径与 signalBase 的 D1 窗口 SUM 一致）。
-          f += e.fail;
-        }
-      );
-      out[id] = f;
+      out[id] = signalBase && signalBase.minHour === minHour ? (signalBase.fail[id] ?? 0) : 0;
     }
+    core.collapsePending("upstream", new Set(ids), minHour, (scope, _p, _h, _s, fail) => {
+      out[scope] += fail;
+    });
     return out;
   }
 
