@@ -42,6 +42,7 @@ export function exaListFragment(
             "post-use": "post-use 冷却",
             breaker: "熔断冷却",
             invalid: "疑似失效冷却",
+            "rate-limit": "限流冷却",
           };
           const causeTitle = k.suspended_cause ? (causeMap[k.suspended_cause] ?? "冷却中") : "冷却中";
           const cooling =

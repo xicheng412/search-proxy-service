@@ -109,7 +109,7 @@ Authorization: Bearer <proto?-><provider>-<key>
 │  ⑦ fetch 上游（30s 超时, 每次换 key, 最多 3 次）       │
 │  ⑧ 分类处理：                                          │
 │     - 2xx   → 记 success, 重置连续失败, 协议响应       │
-│     - 429   → 仅 post-use 冷却, 换 key 重试            │
+│     - 429/432 → 记 fail + 疑似失效长冷却, 换 key 重试  │
 │     - 400/404/422 → 立即返回, 不记失败不烧 key        │
 │     - 401/403 → 记 fail + 疑似失效长冷却, 换 key      │
 │     - 5xx/网络 → 记 fail + 指数退避, 换 key 重试      │
@@ -168,7 +168,7 @@ POST /admin/breaker-config / queue-config / dist-cache-config → 写 KV 运行�
 - 分发 key 缺失/禁用 → 401（与 /search 同一 authenticate）。
 
 与 /search 的差异只有一处：**上游响应码分类新增两条 Tavily Extract 专属规则**（落在 tavily 描述符 `statusClassMap` 的 432/433 项，经重试核消费，对 /search 同样生效）：
-- `432`（key/plan limit exceeded）→ 按限流处理：换 key 试一把、仅 post-use 冷却，**不记败不熔断**。key 粒度限额外换 key 可能成功；plan 粒度也只多一次无害尝试。
+- `432`（key/plan limit exceeded）→ 视为 key 级不可用：换 key 试一把、记失败 + 疑似失效长冷却（同 429）。额度耗尽的 key 由此进入长冷却，不再被反复选中打真实请求。
 - `433`（PayGo limit exceeded）→ 客户端确定性错误（同 400/404/422）：**立即返回、不重试、不记败不冷却**。PayGo 余额耗尽重试必再失败；且上游 key 与 search 共用，若按 server-error 记败+熔断会把健康 key 误伤冷却、连带 /search 一起 503。
 
 ### 3.4 reader 透传（`GET /reader/<url>`）
@@ -380,7 +380,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 - **熔断冷却**：仅 server-error 族失败（5xx / 网络 / 2xx-不可用）→ 连续失败 +1，指数退避冷却 = max(post-use, base × 2^consecutive)，base 默认 10min。
 - **疑似失效冷却**：401/403（key 级鉴权错误）→ 固定 `invalidCooldownSec`（默认 12h），不碰连续失败计数；到点重试一次，成功由 post-use 自动回缩。
 - 成功 → 连续失败归零，仅保留 post-use 冷却。
-- 429 → 仅 post-use 冷却，不碰连续失败计数。
+- 429/432 → 疑似失效长冷却 + 记失败，不碰连续失败计数。
 - breaker 计数有 10 分钟空窗——10 分钟内无新失败（`updated_at` 落后超窗）则视为"该 key 已恢复"。
 - **post-use / base / invalid 三个时长存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（≤3s 生效），无需重新部署**（见 `src/breaker-config.ts`）。
 - **权威态落点**：冷却与熔断计数的唯一写者是持有该 key 池的单点进程（per-provider `QueueDO` 内存，`key-pool.ts`），选 key 读到的即最新值；D1 仅为低频 checkpoint（`CHECKPOINT_INTERVAL_MS` 30s / `CHECKPOINT_MIN_DIRTY` 16 条双阈值）。冷启动/60s 兜底从 D1 重读并**合并**（保留内存冷却）；管理页「冷却」徽章读 D1 快照，最多滞后 30s（展示路径，非放行判据）。
@@ -390,7 +390,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 - 单次请求最多尝试 3 个不同的上游 key（`MAX_ATTEMPTS`）。
 - 每次尝试换 key；网络异常/超时（30s）视为失败并换 key。
 - **分类语义**（编号→族映射见各 provider 描述符 `statusClassMap` / `statusClassFallback`，兜底族保证未知码确定性；动作仍按族——事件 kind 驱动）：
-  - `rate-limit`（429，tavily 另有 432）→ 仅 post-use 冷却，换 key 重试（不计熔断）。
+  - `rate-limit`（429，tavily 另有 432）→ 记失败 + 疑似失效长冷却，换 key 重试（不碰熔断连续计数）。
   - `client-error`（400/404/422，tavily 另有 433）→ 客户端确定性错误：立即返回，**不重试、不记失败、不烧 key**。
   - `auth-error`（401/403）→ 记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调，不熔断），换 key。
   - `server-error`（其余 / 网络 / 2xx-不可用）→ 记录失败 + 指数退避冷却，换 key。
@@ -398,7 +398,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
   | 分类族 | 触发码（映射在描述符） | 换 key 重试 | 冷却 | 熔断连续计数 | 上游统计 |
   |---|---|---|---|---|---|
-  | rate-limit | 429（tavily 另有 432） | ✓ | 仅 post-use | 不计 | 不记 |
+  | rate-limit | 429（tavily 另有 432） | ✓ | 疑似失效 12h（cause=rate-limit） | 不碰连续计数 | 记 fail |
   | client-error | 400/404/422（tavily 另有 433） | ✗ 立即返回 | 无 | 不计 | 不记 |
   | auth-error | 401/403 | ✓ | 疑似失效 12h | 不碰连续计数 | 记 fail |
   | server-error | 其余 / 网络 / 2xx-不可用 | ✓ | 指数退避 | ✓ | 记 fail |
@@ -419,7 +419,7 @@ pick ──picked(key)──────────► in-flight
 in-flight ──success──[markSuccess]──────► success    (终态, 直接返回 res)
   │        ──unusable──[markFail]───────► pick       (2xx 但 onSuccess→null)
   │        ──network──[markFail]────────► pick       (fetch 异常/超时)
-  │        ──rate-limit──[markRateLimit]► pick       (仅 post-use 冷却, 不记 usage)
+  │        ──rate-limit──[markRateLimit]► pick       (记 fail + 疑似失效长冷却)
   │        ──client-error───────────────► client-error (终态, 无副作用)
   │        ──auth-error──[markInvalid]──► pick       (记 fail + 疑似失效长冷却)
   │        ──server-error──[markFail]───► pick       (记 fail + 指数退避)

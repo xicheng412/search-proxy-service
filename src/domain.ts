@@ -12,8 +12,8 @@ export type WireProtocol = "native" | "searxng" | "reader";
 
 export type KeyStatus = "enabled" | "disabled";
 
-/** 冷却因由：谁触发机器冷却（suspend）。post-use=每次使用后固定冷却；breaker=熔断退避；invalid=疑似失效（401/403）。 */
-export type CooldownCause = "post-use" | "breaker" | "invalid";
+/** 冷却因由：谁触发机器冷却（suspend）。post-use=每次使用后固定冷却；breaker=熔断退避；invalid=疑似失效（401/403）；rate-limit=限流/额度耗尽（429/432）。 */
+export type CooldownCause = "post-use" | "breaker" | "invalid" | "rate-limit";
 
 /** 统一「冷却/停用」的领域值对象：可用 / 人工停用 / 机器冷却（定时解除的停用）。由 CoreKey 的 status+cooldown_until+suspended_cause 派生。 */
 export type Availability =

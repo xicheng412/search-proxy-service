@@ -69,11 +69,12 @@ describe("recordUpstreamOutcome success", () => {
 });
 
 describe("recordUpstreamOutcome rate-limit", () => {
-  it("仅 post-use 冷却，不碰连续失败计数", async () => {
+  it("疑似失效长冷却（默认 12h，以 post-use 为地板），不碰连续失败计数", async () => {
     const { env, pool } = fresh();
     pool.applyBreakerOutcome("k1", 0, "breaker", 3, T0); // 预置连续失败 3 次
     await recordUpstreamOutcome(env, pool, "k1", "rate-limit", T0 + 1_000);
-    expect(cool(pool)).toBe(T0 + 1_000 + POST_USE_MS);
+    expect(cool(pool)).toBe(T0 + 1_000 + 43_200_000); // 12h = 43_200s * 1000
+    expect(pool.getKeys()[0].suspended_cause).toBe("rate-limit");
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 3, updated_at: T0, created_at: T0 });
   });
 });

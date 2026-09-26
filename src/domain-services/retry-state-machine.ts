@@ -7,7 +7,7 @@
 // 一次请求最多尝试 MAX_ATTEMPTS 个不同上游 key，每次失败按分类走冷却/统计/换 key：
 //   分类族枚举见 domain.ts RetryClass；编号→族映射见各 provider 描述符 statusClassMap /
 //   statusClassFallback（tavily 含 432/433 专属码）；FSM 动作仍按族（事件 kind）驱动。
-//   - rate-limit  → 换 key 重试，仅 post-use 冷却，不计熔断、不记 usage
+//   - rate-limit  → 换 key 重试，记失败 + 疑似失效长冷却（默认12h，可调），不碰熔断连续计数
 //   - client-error→ 客户端确定性错误：立即返回该响应，不重试、不记失败、不烧 key
 //   - auth-error  → key 级错误：记统计失败（权重惩罚）+ 疑似失效长冷却（默认12h，可调），换 key
 //   - server-error→ 其余/网络：记录失败 + 指数退避冷却，换 key 重试
@@ -159,7 +159,7 @@ export const TRANSITIONS: Record<string, Transition> = {
   "in-flight:unusable": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
   // 网络异常/超时：同 server-error 族
   "in-flight:network": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
-  // 限流：仅冷却不记账——订阅者按 cls 不记 usage
+  // 限流：记失败 + 疑似失效长冷却（订阅者按 cls 落账）
   "in-flight:rate-limit": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "rate-limit") },
   "in-flight:client-error": { to: "client-error" },
   "in-flight:auth-error": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "auth-error") },

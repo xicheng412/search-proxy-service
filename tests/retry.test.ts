@@ -143,9 +143,9 @@ describe("searchWithRetry 重试矩阵", () => {
     expect(bearerSet(fetchMock).size).toBe(2);
   });
 
-  it("3b. 432 (Tavily key/plan limit) 类 429：换 key 重试，不客户端终止、不记失败熔断", async () => {
-    // 432 是配额条件而非 key 故障：按限流处理（换 key 试一把、仅 post-use 冷却），
-    // 而非 server-error 的"记败 + 指数退避冷却"——否则打爆 plan 会把共用 key 误伤冷却。
+  it("3b. 432 (Tavily key/plan limit) 类 429：换 key 重试，不客户端终止", async () => {
+    // 432 是额度/计划耗尽：按 rate-limit 处理（换 key 试一把 + 记失败 + 疑似失效长冷却），
+    // 而非 server-error 的"熔断指数退避"（不碰熔断连续计数，避免误伤共用 plan 的健康 key）。
     const fetchMock = fetchMockWith(432, 432);
     vi.stubGlobal("fetch", fetchMock);
     const onSuccess = vi.fn(async () => new Response("ok"));

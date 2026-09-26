@@ -20,13 +20,14 @@ describe("computeBreakerOutcome cause 归类", () => {
     expect(o.consecutive).toBe(0);
   });
 
-  it("rate-limit → cause=post-use，不碰连续失败计数", () => {
+  it("rate-limit → cause=rate-limit（疑似失效长冷却），不碰连续失败计数", () => {
     const o = computeBreakerOutcome(
       { consecutive: 2, updated_at: now, created_at: now },
       "rate-limit",
       POST_USE, BASE, INVALID, now
     );
-    expect(o.cause).toBe("post-use");
+    expect(o.cause).toBe("rate-limit");
+    expect(o.cooldownUntil).toBe(now + Math.max(POST_USE, INVALID) * 1000);
     expect(o.consecutive).toBeNull();
   });
 

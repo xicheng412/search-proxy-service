@@ -42,7 +42,7 @@ _Avoid_: 可用 key、healthy key
 
 **重试分类族（failure class）**:
 上游响应按**故障可归因性**分成四族，决定"换 key / 冷却 / 记账"的归属——所有冷却与统计行为都以本分类为准，**不要按状态码数字手工推导**。族枚举 = `domain.ts` 的 `RetryClass`；编号→族映射在 provider 描述符（`statusClassMap` + 兜底 `statusClassFallback`）；处理动作与记账策略矩阵见 architecture §6.3：
-- `rate-limit`（429/432）：仅 post-use 冷却，换 key 重试；不记失败、不熔断。
+- `rate-limit`（429/432）：视为 **key 级不可用**——记一次失败 + 疑似失效长冷却（默认 12h，`invalidCooldownSec` 可调，cause=`rate-limit`），换 key 重试；不碰熔断连续计数。额度耗尽的 key 由此进入长冷却，不再被反复选中打真实请求。
 - `client-error`（400/404/422/433）：客户端/计划确定性错误，立即返回；不重试、不记失败、不需冷却——不是 key 的错。
 - `auth-error`（401/403）：key 级鉴权错误，疑似失效长冷却 + 记当日失败；不碰熔断连续计数。
 - `server-error`（其余 5xx / 网络 / **2xx 但响应内容不可用**）：记失败 + 熔断指数退避，换 key。注意 **2xx 而内容不可用也算失败**（上游坏了），与 dist 线"503 也算成功"互为镜像——两条线的 success/fail 都不跟状态码字面走。未列出的任何状态码一律归描述符声明的兜底族 `statusClassFallback`（当前 Tavily/Exa 均为 server-error）——保证未知码确定性，不落入 client-error。
@@ -53,7 +53,7 @@ _Avoid_: 状态码、错误类型
 _Avoid_: score、评分、健康度
 
 **冷却（cooldown）**:
-某上游 key 在一段时间内不参与挑选的状态（以 `cooldown_until` 表达）。分三层：**post-use**（每次使用后固定短时，防止打穿）、**熔断**（连续失败指数退避）、**疑似失效**（401/403 固定长冷却）。
+某上游 key 在一段时间内不参与挑选的状态（以 `cooldown_until` 表达）。分三层：**post-use**（每次使用后固定短时，防止打穿）、**熔断**（连续失败指数退避）、**疑似失效**（401/403 与 429/432 的 key 级不可用固定长冷却）。
 _Avoid_: 退避、backoff、冻结
 
 **熔断（circuit breaker）**:
@@ -61,7 +61,7 @@ _Avoid_: 退避、backoff、冻结
 _Avoid_: breaker
 
 **疑似失效冷却（invalid cooldown）**:
-401/403（key 级鉴权错误，分类族 `auth-error`）触发的固定长冷却（默认 12h），到期重试一次。**不碰熔断连续失败计数**，但**记统计失败**——管理页「当日失败」可见；权重惩罚不随成功卸下、只随滑动窗口流出消退（见**权重**）。
+key 级不可用（分类族 `auth-error` 的 401/403，与 `rate-limit` 的 429/432）触发的固定长冷却（默认 12h，`invalidCooldownSec` 可调），到期重试一次；限流以独立 cause=`rate-limit` 标注（UI「限流冷却」）。**不碰熔断连续失败计数**，但**记统计失败**——管理页「当日失败」可见；权重惩罚不随成功卸下、只随滑动窗口流出消退（见**权重**）。
 _Avoid_: 失效冷却、死 key 冷却
 
 **重试状态机（retry FSM）**:
@@ -71,7 +71,7 @@ _Avoid_: retry loop、重试循环
 ### 领域事件（分解的命令结果）
 
 **UpstreamAttemptSettled**:
-一次上游尝试结束（成功 / 按重试分类族归类失败）分解出的领域事件，由重试 FSM 的在飞环节发布，经同步事件轴驱动冷却与记账——订阅者按 `cls` 路由：success / server-error / auth-error 记 usage（success/fail），rate-limit 只冷却不记账；client-error 不入此事件（不换 key 不记账）。语义与旧 mark* 四胞胎完全一致，只是把「手焊副作用」改为「事件发布 + 订阅者解耦」。
+一次上游尝试结束（成功 / 按重试分类族归类失败）分解出的领域事件，由重试 FSM 的在飞环节发布，经同步事件轴驱动冷却与记账——订阅者按 `cls` 路由：success 记 success；server-error / auth-error / rate-limit 记 fail（及各自冷却）；client-error 不入此事件（不换 key 不记账）。语义与旧 mark* 四胞胎完全一致，只是把「手焊副作用」改为「事件发布 + 订阅者解耦」。
 _Avoid_: 重试结果、markSuccess / markFail
 
 > 事件轴只服务 UpstreamAttemptSettled：dist 已迁主 Worker 计数（countDist 中间件直记，不经事件总线）。
@@ -87,7 +87,7 @@ _Avoid_: 今天、每日
 _Avoid_: 日桶、time bucket
 
 **upstream 统计（upstream stats, `kind='upstream'`）**:
-按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条，`scope` = 上游 key id。成败按**重试分类族**归属：`server-error`（5xx/网络/2xx-不可用）与 `auth-error`（401/403）记失败；`rate-limit`（429/432）与 `client-error`（400/404/422/433）不计。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。** 429/432（`rate-limit`）不计成功/失败、当前不单列成本；`attempt` 口径 = **计入 success/fail 的发送次数**（即 `calls = success + fail` 的加数）：`rate-limit`（429/432）与 `client-error`（400/404/422/433）不产生 attempt（前者仅冷却、后者直接返回不重试）。真实发出但未记统计的发送（限流、中途中止）单列，不入 `calls`。
+按「上游 key 尝试」记账：一次向上游官方 key 的请求尝试记一条，`scope` = 上游 key id。成败按**重试分类族**归属：`server-error`（5xx/网络/2xx-不可用）、`auth-error`（401/403）与 `rate-limit`（429/432）记失败；`client-error`（400/404/422/433）不计。回答「每把官方 key 被真实调用了几次、成败如何」——成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号消费。**与 dist 统计是不同维度，不要求一致。** 当前不单列成本；`attempt` 口径 = **计入 success/fail 的发送次数**（即 `calls = success + fail` 的加数）：`rate-limit`（429/432）与 `server-error` / `auth-error` 一样计入 fail（记失败），`client-error`（400/404/422/433）不产生 attempt（直接返回不重试）。真实发出但未记统计的发送（中途中止等）单列，不入 `calls`。
 _Avoid_: 上游调用统计、接口统计
 
 **dist 统计（dist stats, `kind='dist'`）**:

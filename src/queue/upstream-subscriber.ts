@@ -7,7 +7,7 @@
 //   事件总线，不受影响）。故池经 poolOf 惰性解析（durable-object 的模块级 activePools），
 //   始终指向当前活跃实例的 KeyPool。
 //
-// 记账语义（与旧 mark* 表一致）：auth/server-error→fail、success→success、rate-limit→不记。
+// 记账语义：成功 success；auth-error / server-error / rate-limit → fail；client-error 不入事件。
 
 import type { Env } from "../types";
 import type { Provider } from "../domain";
@@ -30,11 +30,11 @@ export function makeUpstreamSubscriber(env: Env, poolOf: PoolResolver): EventSub
     // 冷却：按 cls 走同一策略（client-error 不会被发事件，见 retry FSM）。
     // 返回 promise 供测试确定性 await（总线 publish 忽略返回值，不逃逸错误：内部已 .catch）。
     const cooldown = recordUpstreamOutcome(env, pool, ev.keyId, ev.cls, ev.at).catch(() => {});
-    // usage 记账：success→success、auth/server-error→fail；rate-limit 与 client-error 不记
-    // （client-error 理论上不入事件，防御性忽略，避免误记 fail）。
+    // usage 记账：success→success；auth/server-error 与 rate-limit→fail（rate-limit 视为 key 级
+    // 不可用，借失败会计入权重惩罚与当日失败）；client-error 不记（理论上不入事件，防御性忽略）。
     if (ev.cls === "success") {
       store.recordUpstreamResult(ev.keyId, ev.provider, hourKey(ev.at), "success");
-    } else if (ev.cls === "auth-error" || ev.cls === "server-error") {
+    } else if (ev.cls === "auth-error" || ev.cls === "server-error" || ev.cls === "rate-limit") {
       store.recordUpstreamResult(ev.keyId, ev.provider, hourKey(ev.at), "fail");
     }
     return cooldown;
