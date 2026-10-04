@@ -34,7 +34,7 @@ export function makeUpstreamSubscriber(env: Env, poolOf: PoolResolver): EventSub
     // 不可用，借失败会计入权重惩罚与当日失败）；client-error 不记（理论上不入事件，防御性忽略）。
     if (ev.cls === "success") {
       store.recordUpstreamResult(ev.keyId, ev.provider, hourKey(ev.at), "success");
-    } else if (ev.cls === "auth-error" || ev.cls === "server-error" || ev.cls === "rate-limit") {
+    } else if (ev.cls !== "client-error") {
       store.recordUpstreamResult(ev.keyId, ev.provider, hourKey(ev.at), "fail");
     }
     return cooldown;
