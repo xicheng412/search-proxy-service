@@ -12,15 +12,15 @@
 
 | 计划原文 | 当前实现 | 出处 |
 |---|---|---|
-| 目录结构建议 `kv.ts` 作为数据层 | 实际为 `storage.ts` + `usage-store.ts` + `circuit-breaker.ts` 三层分立 | `src/` 目录 |
+| 目录结构建议 `kv.ts` 作为数据层 | 实际为 `storage/`（D1）+ `usage/`（写回统计）等模块分立 | `src/` 目录 |
 | 单 provider：仅代理 Tavily | 多 provider：Tavily + Exa，对称结构 | `src/providers/` |
 | 后台"区块 A / 区块 B"两页 | Dashboard + Tavily / Exa / 分发 Keys 三页 + Help 页 | `src/admin/`, `src/views/` |
 | 分发 Key 形如 `sk-<随机串>` | 纯 hex 字符串，**无 `sk-` 前缀**；调用时拼 `tavily-` / `exa-` | `src/domain.ts` |
 | "明文 key 只显示一次 / 二次密码重新查看明文" | **未实现**。明文按需注入列表行内供一键复制（操作列「复制」下拉菜单：tavily / exa / searxng-tavily 调用 key） | `src/admin/keys.ts`, `src/views/` |
 | `DistributedKey` 含 `plain_viewed` 字段 | **未实现**。当前字段：`api_key / note / status / created_at` | `src/domain.ts` |
-| KV 统计"单次 PUT 合并 success/fail" | 用 `usage-store.ts` 写回式：内存累积 + 节流 flush + 读叠加 | `src/usage-store.ts` |
-|||| 熔断"连续失败 ≥ 5 次冷却 60 秒" | **已升级**：三层冷却（post-use / 指数退避 / 401-403 疑似失效），默认 `base=10min`,`post-use=10s`,`invalid=12h`，存 KV `breaker_config` 可在 admin dashboard"冷却参数"卡片调整 | `src/breaker-config.ts`, `src/circuit-breaker.ts` |
-| 单一入口 `POST /search` 代理 Tavily | 同一入口按 Bearer 前缀路由到 Tavily 或 Exa | `src/proxy.ts` |
+| KV 统计"单次 PUT 合并 success/fail" | 用 `usage/` 写回式：内存累积 + 节流 flush + 读叠加 | `src/usage/` |
+| 熔断"连续失败 ≥ 5 次冷却 60 秒" | **已升级**：三层冷却（post-use / 指数退避 / 401-403 疑似失效），默认 `base=10min`,`post-use=10s`,`invalid=12h`，存 KV `breaker_config` 可在 admin dashboard"冷却参数"卡片调整 | `src/breaker-config.ts`, `src/domain-services/breaker-policy.ts` |
+| 单一入口 `POST /search` 代理 Tavily | `GET\|POST /search`（native/searxng）+ `POST /extract` + `GET /reader/<url>`，按 Bearer 复合前缀路由 | `src/proxy/handlers/`, `src/routes/proxy.ts` |
 | 错误体按 Tavily 格式 | 按 provider 区分：Tavily `{detail:{error}}`，Exa `{error}` | `src/providers/` |
 | 管理员认证："HttpOnly + SameSite=Lax + 24h + CSRF" | **已实现**，外加 `secure: true`；CSRF 用恒定时间比较 | `src/auth.ts` |
 
@@ -142,7 +142,7 @@ dist_stats:{distKeyId}:{YYYY-MM-DD}      → JSON { calls }
 ## 7. 交付要求
 
 1. **A. 项目脚手架**：Hono + TypeScript + Wrangler + KV binding + `/` 健康检查 → ✅
-2. **B. KV 数据层**：Keys 增删改查 + 状态切换 + 脱敏 + 每日统计（跨天重置、近似值） → ✅（实际由 `storage.ts` + `usage-store.ts` 共同承担）
+2. **B. 数据层**：Keys 增删改查 + 状态切换 + 脱敏 + 每日统计（跨天重置、近似值） → ✅（实际由 `storage/` + `usage/` 共同承担）
 3. **C. 管理员认证**：密码登录 + 24h 会话 Cookie + CSRF + 登出 → ✅
 4. **D. 管理后台页面**：HTMX 实现 Tavily / 分发 Key 管理 + 明文只显示一次 + 二次密码确认 → ⚠️ 明文只显示一次已部分实现（行内注入 + 复制按钮）；二次密码确认**未实现**
 5. **E. 代理层**：`POST /search` + 鉴权 + 加权 + 熔断 + 分类 + 503 → ✅（**额外**支持按 Bearer 前缀路由到 Tavily / Exa）
@@ -155,5 +155,5 @@ Exa 是后来加的。完整设计与决策见 [`exa-key-support.md`](./exa-key-
 - 分发 Key 改为"纯字符串 + 前缀路由"，旧 `tvly-xxx` 形式作废。
 - 错误体格式按 provider 区分（Tavily `{detail:{error}}`，Exa `{error}`）。
 - 当日调用按 provider 拆分。
-- 新增 `usage-store.ts` 写回式统计层（替代原计划"单次 PUT 合并"思路），把日内 IO 降一档。
+- 新增 `usage/` 写回式统计层（替代原计划"单次 PUT 合并"思路），把日内 IO 降一档。
 - 新增 `circuit-breaker.ts` 独立模块（breaker 计数带 10 分钟 TTL）。

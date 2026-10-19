@@ -20,10 +20,12 @@
 | ToggleDistributedKey | 用户(admin) | POST /admin/keys/:apiKey/toggle → updateDistributedKey |
 | DeleteDistributedKey | 用户(admin) | POST /admin/keys/:apiKey/delete → deleteDistributedKey |
 | AddUpstreamKey(+test) | 用户(admin) | POST /admin/{tavily\|exa}/add → addUpstreamKey + notifyKeyPoolSync |
-| AddUpstreamKeysBatch | 用户(admin) | POST /admin/{tavily\|exa}/add/batch → N×addUpstreamKey + notifyKeyPoolSync |
+| AddUpstreamKeysBatch | 用户(admin) | POST /admin/{tavily\|exa}/add/batch → addUpstreamKeysBatch（单次批量写） + notifyKeyPoolSync |
 | RenameUpstreamKey | 用户(admin) | POST /admin/{tavily\|exa}/:id/name → updateUpstreamKey + notifyKeyPoolSync |
 | ToggleUpstreamKey | 用户(admin) | POST /admin/{tavily\|exa}/:id/toggle → updateUpstreamKey + notifyKeyPoolSync |
+| ToggleUpstreamKeysBatch | 用户(admin) | POST /admin/{tavily\|exa}/batch-toggle → toggleUpstreamKeysBatch（单条 UPDATE）+ activate/notifyKeyPoolSync |
 | DeleteUpstreamKey | 用户(admin) | POST /admin/{tavily\|exa}/:id/delete → deleteUpstreamKey + notifyKeyPoolSync |
+| DeleteUpstreamKeysBatch | 用户(admin) | POST /admin/{tavily\|exa}/batch-delete → deleteUpstreamKeysBatch（单条 DELETE）+ notifyKeyPoolSync |
 | UpdateQueueConfig / UpdateBreakerConfig / UpdateDistCacheConfig | 用户(admin) | admin POST /admin/queue-config / breaker-config / dist-cache-config → KV 写 + 缓存失效 |
 | AuthenticateRequest | 调用方 | authenticate middleware → getDistributedKey（含复合前缀解析 + Cache API 读穿） |
 | ExecuteProxyRequest（search/extract/reader → QueueDO） | 调用方 | handlers → countDist（dist 到达计数在主 Worker 转发前完成）→ forwardToQueue → QueueDO → executor → searchWithRetry |
@@ -36,7 +38,8 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 | 事件 | 产生者 | 订阅者 | 是否进 D1 |
 |---|---|---|---|
 | UpstreamAttemptSettled | retry FSM 在飞环节（searchWithRetry 迁移 action） | QueueDO 专属订阅：按 cls 路由冷却（recordUpstreamOutcome 写 KeyPool 内存）+ usage 记账（recordUpstreamResult 内存 pending） | 冷却经 checkpoint 低频落库；usage 经 flush 节流落库 |
-| UpstreamKeyChanged（语义名） | admin 写 D1 命令（Save/DeleteUpstreamKey，见 §1） | KeyPool.reload（经 notifyKeyPoolSync → `/_internal/sync-keys` 全量重读合并） | 命令本身写 D1 |
+
+> `UpstreamKeyChanged` 只是语义标签，**不是**代码中的事件类型（无对应 symbol）：admin 的 14 处写命令（`tavily.ts` / `exa.ts` 各 7）在 D1 落库后调用 `notifyKeyPoolSync` → `/_internal/sync-keys` → `KeyPool.reload`。本文件 §2/§3 保留该名字仅用于描述"写后同步内存池"的意图。
 
 ## 3. 命令 × 事件追溯
 
@@ -46,7 +49,7 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 |---|---|---|
 | ExecuteProxyRequest | dist = 主 Worker 直达 +1（非事件）；每尝试 ≤1 × UpstreamAttemptSettled（client-error 不产） | usage_counts（dist 到达量）+ KeyPool 冷却 + usage_counts（upstream 按 cls） |
 | Generate/Toggle/DeleteDistributedKey | 无 | 纯 D1 写（+ Cache 失效） |
-| Add/Rename/Toggle/DeleteUpstreamKey | UpstreamKeyChanged（语义名） | notifyKeyPoolSync → KeyPool.reload 全量重读合并 |
+| Add/Rename/Toggle/DeleteUpstreamKey（含批量） | 语义标签 UpstreamKeyChanged（无事件类型） | notifyKeyPoolSync → KeyPool.reload 全量重读合并 |
 | Update*Config | 无 | 纯 KV 写 + TTL 缓存失效 |
 | ScheduledPurgeUsage | 无 | 纯 D1 DELETE |
 
@@ -56,7 +59,9 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 
 - **dist 单条**：每次调用恰记一条 dist（请求到达量，主 Worker `countDist` 转发前 +1，非事件）；
   与请求最终结果成败无关（队列 429 / 断连均计入）。
-- **attempt 口径**：upstream 每「计入 success/fail 的发送」一条；rate-limit / client-error 不计。
+- **attempt 口径**：每"选中并发出一次上游请求"计一次（含 rate-limit / auth-error / server-error 后换 key 的重试），
+  受 `MAX_ATTEMPTS` 上限约束；只有 `client-error`（确定性 4xx）与 success 不进入下一轮。
+  统计口径（`calls = success + fail`）只计入 success/fail 的发送——`client-error` 不产生记录。
 - **冷却分层**：post-use / 熔断（指数退避 + 10min 空窗复位）/ 疑似失效三层共用 `cooldown_until`；
   server-error 才驱动连续计数，auth / rate-limit 不碰。
 - **选 key 硬闸门**：`enabled ∧ 未冷却` 才入候选；权重 1/(fail+1) 只调分布不判健康。
@@ -68,13 +73,20 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 
 ## 5. 聚合与实体
 
-- **聚合 UpstreamKey（根 = KeyPool）**：per-provider 内存权威 + 单点写者；实体 CoreKey（身份 `id`）。
-  不变式：仅候选闸门可用（见 §4）；`cooldown_until` 单字段承载三层冷却；熔断连续计数仅内存。
-  D1 为投影（name/status 权威、cooldown 备份；ADR-0001）。
+- **聚合 UpstreamKey**：一致性边界 = 某 provider 的全部上游 key 及其可用性状态。实体 CoreKey（身份 `id`）；
+  可用性状态（冷却 / 冷却因由 / 熔断连续计数）由该 provider 的**可用性状态持有者**（`src/key-pool.ts` 的 KeyPool，
+  应用层对象，非 domain 类型）在单点进程内维护。不变式：仅"可用性 = 可用"的 key 入候选（见 §4）；
+  三层冷却共用同一截止时刻字段；熔断连续计数仅存内存。D1 为投影（name/status 权威、冷却备份；ADR-0001）。
 - **聚合 DistributedKey（根 = DistributedKey 行）**：实体 DistributedKey（身份 `api_key`）；
   行为 generate / toggle / delete / validateCredential（authenticate）；Cache API 读穿快路径。
-- **值对象**：CompositeCredential（=DistAuth，见 CONTEXT「复合前缀」）、BreakerOutcome、
-  HourBucket、QueueTask、Surface / ProviderConfig（参考数据）。
+- **值对象（domain 层，`src/domain.ts`）**：Availability（可用性）、CooldownCause（冷却因由）、
+  RetryClass（重试分类族）、DistAuth（复合前缀解析结果）、HourBucket（小时桶键，以字符串表示）、
+  UpstreamAttemptSettled（领域事件）。
+- **值对象/DTO（domain 层之外，按所在层归位）**：
+  `BreakerState` / `BreakerOutcome` → `src/domain-services/breaker-policy.ts`（领域服务侧值对象）；
+  `Surface` / `ProviderConfig` → `src/providers/index.ts`（provider 参考数据）；
+  `QueueTask`（`NativeTask` / `SearxngTask` / `ReaderTask`）→ `src/queue/task.ts`（队列 DTO）；
+  `AuthContext` → `src/types.ts`（Hono 上下文变量，内嵌 domain 的 DistAuth）。
 
 ## 6. 领域服务
 

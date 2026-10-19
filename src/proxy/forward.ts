@@ -1,6 +1,6 @@
 // 入口侧打装/转发：入口管道把鉴权通过的请求打成可序列化任务，转发给所属 provider 的队列 DO。
 // 原 src/proxy.ts 的 forwardToQueue / runNative 原样搬迁；runNative 的 auth 参数收口为 AuthContext
-//（auth.protocol / auth.provider 用于门禁，auth.distKey.api_key 传给 forwardToQueue）。
+//（auth.credential.protocol / auth.credential.provider 用于门禁，auth.distKey.api_key 传给 forwardToQueue）。
 
 import { Context } from "hono";
 import { Env, AppVariables } from "../types";
@@ -42,10 +42,10 @@ export async function runNative(
   if (!surface) {
     return def.errorBody(404, `${def.name} does not expose a /${capability} endpoint.`);
   }
-  if (!surface.protocols.includes("native") || auth.protocol !== "native") {
+  if (!surface.protocols.includes("native") || auth.credential.protocol !== "native") {
     return def.errorBody(
       405,
-      `"${capability}" is only supported with native credentials (Bearer ${auth.provider}-<key>).`
+      `"${capability}" is only supported with native credentials (Bearer ${auth.credential.provider}-<key>).`
     );
   }
   const task: NativeTask = {

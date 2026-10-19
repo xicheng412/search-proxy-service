@@ -25,7 +25,7 @@ export async function handleReader(c: Ctx): Promise<Response> {
   const auth = c.var.auth; // 中间件保证存在；错误响应已由 authenticate 短路
   try {
     // /reader 只服务 reader 协议；native / searxng 打此端点 → 405
-    if (auth.protocol !== "reader") {
+    if (auth.credential.protocol !== "reader") {
       return readerError(
         405,
         `"/reader" is only available with reader credentials (Bearer reader-tavily-<key>).`
@@ -43,7 +43,7 @@ export async function handleReader(c: Ctx): Promise<Response> {
       return readerError(400, `invalid "depth": expected "basic" or "advanced"`);
     }
 
-    const def = PROVIDERS[auth.provider]; // reader 前缀固定路由到 tavily
+    const def = PROVIDERS[auth.credential.provider]; // reader 前缀固定路由到 tavily
     const task: ReaderTask = { kind: "reader", url: target, depth };
     return await forwardToQueue(c, def, auth.distKey.api_key, task);
   } catch (err) {

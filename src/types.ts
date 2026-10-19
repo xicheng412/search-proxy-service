@@ -1,6 +1,6 @@
 // 共享类型：Worker 绑定与上下文变量。
 
-import type { DistributedKey, Provider, WireProtocol } from "./domain";
+import type { DistributedKey, DistAuth } from "./domain";
 
 export type Env = {
   KV: KVNamespace;
@@ -13,11 +13,11 @@ export type Env = {
   PUBLIC_BASE_URL: string;
 };
 
-/** 数据面鉴权结果：由 authenticate 中间件注入 c.var.auth，供各 handler 直接消费。 */
+/** 数据面鉴权结果：由 authenticate 中间件注入 c.var.auth，供各 handler 直接消费。
+ *  credential 是 domain 层的复合前缀解析结果（DistAuth）；distKey 是查库得到的实体。
+ *  protocol/provider/apiKey 一律从 credential 读取，避免与 DistAuth 平行复制字段。 */
 export interface AuthContext {
-  protocol: WireProtocol;
-  provider: Provider;
-  apiKey: string;
+  credential: DistAuth;
   distKey: DistributedKey;
 }
 

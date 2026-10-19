@@ -10,7 +10,7 @@
 // checkpoint 失败静默（保留 dirty 下轮重试），复用 usage-store 的静默风格，不阻塞主流程。
 
 import type { Env } from "./types";
-import type { UpstreamDef, CoreKey, CooldownCause } from "./domain";
+import type { UpstreamDef, CoreKey, CooldownCause, Provider } from "./domain";
 import { listUpstreamKeys, checkpointCooldowns } from "./storage/upstream-keys";
 
 /** 熔断连续计数：仅内存权威，不落库（重启用 0，安全方向）。 */
@@ -162,14 +162,14 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
 
 /**
  * 领域语义词典（命令 → 领域事件 → 订阅者）：
- *   SaveUpstreamKey / DeleteUpstreamKey（admin 写 D1，tavily.ts / exa.ts 的
- *   5 种写命令末尾，共 10 处调用点）
+ *   Add / AddBatch / Rename / Toggle / ToggleBatch / Delete / DeleteBatch
+ *   （admin 写 D1，tavily.ts / exa.ts 各 7 处、共 14 处调用点）
  *     → UpstreamKeyChanged（领域事件，语义名；未显式建模，经本函数推送到 DO）
  *     → 订阅者 KeyPool.reload（QueueDO `/_internal/sync-keys` 全量重读合并）
  * 本函数即该语义的收口辅助：任何 upstream key 写操作在持久化（D1）后经它同步内存池。
  * 尽力而为，调用方接 .catch(noop)，失败由 RELOAD_FLOOR_MS（60s）陈旧兜底重读覆盖。
  */
-export async function notifyKeyPoolSync(env: Env, provider: string): Promise<void> {
+export async function notifyKeyPoolSync(env: Env, provider: Provider): Promise<void> {
   const id = env.QUEUE.idFromName(provider);
   const stub = env.QUEUE.get(id);
   await stub.fetch("https://queue.internal/_internal/sync-keys", {
@@ -184,7 +184,7 @@ export async function notifyKeyPoolSync(env: Env, provider: string): Promise<voi
  * 内存冷却，故启用必须先清内存，再由 notifyKeyPoolSync 全量合并采纳 D1 的 status。
  * 尽力而为，调用方接 .catch(noop)；失败时内存冷却残留，由下次 applyBreakerOutcome / reload 兜底。
  */
-export async function notifyKeyPoolActivate(env: Env, provider: string, id: string): Promise<void> {
+export async function notifyKeyPoolActivate(env: Env, provider: Provider, id: string): Promise<void> {
   const doId = env.QUEUE.idFromName(provider);
   const stub = env.QUEUE.get(doId);
   await stub.fetch("https://queue.internal/_internal/activate", {

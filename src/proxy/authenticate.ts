@@ -59,9 +59,7 @@ async function loadAuth(c: Ctx): Promise<AuthContext | null> {
     return null;
   }
   return {
-    protocol: parsed.protocol,
-    provider: parsed.provider,
-    apiKey: parsed.apiKey,
+    credential: parsed,
     distKey,
   };
 }

@@ -27,7 +27,7 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 - **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`); `GET /reader/<url>` serves **Tavily Extract as plain text** (`Bearer reader-tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider or capability with a descriptor file.
 - **Tavily Extract passthrough.** `POST /extract` with `Bearer tavily-…` transparently forwards to Tavily Extract, sharing the exact same retry/breaker/usage-accounting pipeline as `/search` (native-only by design).
 - **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed. Cooldown/breaker state is authoritative in the per-provider Durable Object's memory (D1 is a low-frequency checkpoint).
-- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification: `429` retries with post-use cooldown only; `400/404/422` client errors return immediately (no key burn); `401/403` park the key with a 12h suspected-invalid cooldown then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
+- **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification (by descriptor-mapped family, not by raw status digit): `429` (rate-limit) → records a failure + a 12h suspected-invalid cooldown, then switches key; `400/404/422` client errors return immediately (no key burn, no failure record); `401/403` park the key with a 12h suspected-invalid cooldown (failure recorded) then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped — across both capability endpoints (`/search`, `/extract`).
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily Search request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
 - **Reader-style protocol adapter.** `reader-tavily-<key>` + `GET /reader/<url>` returns the target page's text (`text/plain`) via Tavily Extract — a URL→text gateway like Jina Reader, reusing the same retry/circuit-breaker/usage pipeline. Returns Tavily-extracted raw text (not Jina's polished Markdown); target URLs that carry their own query string must be percent-encoded; an optional `?depth=basic|advanced` (default `basic`) passes through Tavily's `extract_depth` (whitelisted — `advanced` is the paid tier).
@@ -42,19 +42,20 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
                     ┌───────────────────────────────────────────────┐
 Caller ──────────►  │  /search  (Cloudflare Worker · Hono)          │
                     │                                               │
-  Bearer tavily-…   │  1. parseDistKey → protocol (native|searxng)  │
-  Bearer exa-…      │     + provider (tavily|exa)                   │
-  Bearer searxng-…  │  2. lookup dist key in KV → 401 if missing    │
-  Bearer reader-…   │  3. +1 today's call  (in-mem buffered)        │
+  Bearer tavily-…   │  1. parseDistKey → protocol (native|searxng|  │
+  Bearer exa-…      │     reader) + provider (tavily|exa)           │
+  Bearer searxng-…  │  2. lookup dist key (D1 + cache) → 401 if bad │
+  Bearer reader-…   │  3. +1 dist arrival count (main Worker)       │
                     │  4. searxng/reader? translate → Tavily request│
                     │  5. pick upstream key (weighted, excludes     │
                     │     cooldown/disabled/tried keys)             │
                     │  6. proxy request (up to 3 attempts):         │
-                    │     • 2xx      →  success + 10s post-use cool │
-                    │     • 429      →  10s cool, switch key, retry │
-                    │     • 400/404/422 → return now, no key burn   │
-                    │     • 401/403   →  park key 12h, switch, retry│
-                    │     • other 4xx/5xx/network → exp. cool, retry│
+                    │     • 2xx      →  success, reset breaker count│
+                    │     • 429/432  →  fail + 12h invalid cool,    │
+                    │                   switch key, retry           │
+                    │     • 400/404/422/433 → return now, no burn   │
+                    │     • 401/403  →  fail + park key 12h, retry  │
+                    │     • other 5xx/network → exp. cool, retry    │
                     │  7. native: passthrough / searxng: → JSON /   │
                     │     reader: → text                            │
                     │                                               │
@@ -152,16 +153,21 @@ Full step-by-step (new Cloudflare account, custom domain, troubleshooting) is in
 
 ```
 src/
-├── index.ts             # Hono app + routes
+├── index.ts             # Hono app + scheduled purge + export QueueDO
 ├── domain.ts            # pure domain: types, parseDistKey, value semantics
+├── domain-services/     # retry FSM, key selection, status classification, breaker policy
+├── transport.ts         # upstream fetch port (30s timeout)
+├── events.ts            # synchronous event axis (UpstreamAttemptSettled)
 ├── storage/             # D1 entity layer (upstream registry, dist keys, usage hour buckets)
+├── usage/               # write-back stats: core (buffer/flush) + reads (today/weight/series)
 ├── key-pool.ts          # per-provider in-memory key pool (cooldown/breaker authority + checkpoint)
-├── usage-store.ts       # hour-bucket usage stats (write-back, in-memory buffering → D1)
-├── circuit-breaker.ts   # cooldown: post-use + breaker + invalid (params runtime from KV)
+├── circuit-breaker.ts   # side-effect binder: policy → key-pool memory
 ├── breaker-config.ts    # runtime cooldown params (KV breaker_config, admin-adjustable)
 ├── auth.ts              # login / session / CSRF / logout
 ├── config.ts            # PUBLIC_BASE_URL single source of truth
-├── proxy.ts             # auth → pick protocol path → retry core (up to 3x) → respond
+├── routes/              # sub-apps (public / data-plane proxy / admin auth)
+├── proxy/               # authenticate, count-dist, forward, handlers/, executors/
+├── queue/               # task DTO, QueueDO, upstream-result subscriber
 ├── adapters/            # consumer-side protocol ACL (searxng ↔ Tavily; reader ↔ Tavily Extract)
 ├── providers/           # one descriptor per upstream (tavily / exa / index)
 ├── admin/               # /admin/* routes (per-provider files + shared)

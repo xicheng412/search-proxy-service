@@ -102,18 +102,21 @@ Authorization: Bearer <proto?-><provider>-<key>
 └──────────────────────────────────────────────────────┘
        ▼ (drain → runNativeTask / runSearxngTask)
 ┌──────────────────────────────────────────────────────┐
-│ searchWithRetry (src/retry.ts) 重试状态机(FSM)        │
-│  ⑤ recordDistCall（native 在核内记；searxng 路径也记） │
-│  ⑥ selectUpstreamKey：从 enabled∧未冷却 按权重选       │
+│ searchWithRetry (src/domain-services/retry-state-machine.ts) │
+│  ⑤ selectUpstreamKey：从 enabled∧未冷却 按权重选       │
 │     └─ 无 key / 全冷却 → 503（按协议错误体）           │
-│  ⑦ fetch 上游（30s 超时, 每次换 key, 最多 3 次）       │
-│  ⑧ 分类处理：                                          │
+│     （dist 到达计数已在主 Worker countDist +1，核内不再记）│
+│  ⑥ fetch 上游（30s 超时, 每次换 key, 最多 3 次）       │
+│  ⑦ 分类处理（按描述符 statusClassMap 的族，不按码硬编码）│
 │     - 2xx   → 记 success, 重置连续失败, 协议响应       │
-│     - 429/432 → 记 fail + 疑似失效长冷却, 换 key 重试  │
-│     - 400/404/422 → 立即返回, 不记失败不烧 key        │
-│     - 401/403 → 记 fail + 疑似失效长冷却, 换 key      │
-│     - 5xx/网络 → 记 fail + 指数退避, 换 key 重试      │
-│  ⑨ 耗尽 → 透传最后错误 / 502（按协议错误体）           │
+│     - rate-limit（429；tavily 另有 432）                │
+│                → 记 fail + 疑似失效长冷却, 换 key 重试 │
+│     - client-error（400/404/422；tavily 另有 433）      │
+│                → 立即返回, 不记失败不烧 key            │
+│     - auth-error（401/403）→ 记 fail + 疑似失效长冷却  │
+│     - server-error（其余 5xx / 网络 / 2xx 不可用）      │
+│                → 记 fail + 指数退避, 换 key 重试       │
+│  ⑧ 耗尽 → 透传最后错误 / 502（按协议错误体）           │
 └──────────────────────────────────────────────────────┘
        │
        ▼ (fetch)
@@ -191,14 +194,15 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 ┌─────────────────────────────────────────────────────────────────┐
 │ domain.ts (纯领域)                                                │
 │  类型 + parseDistKey 前缀路由规则(协议/provider) + 值语义          │
+│  （Availability / CooldownCause / RetryClass / 领域事件）         │
 │  零依赖; 所有其它模块都只消费这里的词汇。                          │
 └─────────────────────────────────────────────────────────────────┘
                           ↑ ↑
 ┌────────────────────────┐ │ ┌──────────────────────────┐
 │ providers/             │ │ │ adapters/searxng.ts      │
-│  tavily.ts / exa.ts +  │ │ │  协议转换（纯函数，不读   │
-│  index.ts (注册表)     │ │ │  D1/KV）；proxy/queue 消费 │
-│  防腐层, 新增 provider │ │ │                           │
+│  tavily.ts / exa.ts +  │ │ │ adapters/reader.ts       │
+│  index.ts (注册表)     │ │ │  协议转换（纯函数，不读   │
+│  防腐层, 新增 provider │ │ │  D1/KV）；executors 消费  │
 │  只加一份描述符         │ │ └──────────────────────────┘
 └────────────────────────┘ │
             ↑              │
@@ -211,29 +215,33 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 └───────────┬───────────────────────────────────────────┘
             ↑
 ┌───────────┴───────────────────────────────────────────┐
-│  usage-store.ts（内存缓冲 → 节流 flush → storage/usage）│
+│  usage/（core 写堡垒 + reads/ 读产品 → storage/usage）  │
 │  key-pool.ts（每 provider 内存池：冷却/熔断权威 +      │
-│  checkpoint，由 durable-object.ts 持有）                         │
-│  circuit-breaker.ts（熔断策略 → key-pool 内存）         │
-│  breaker-config.ts（冷却时长运行时参数, KV + TTL 缓存） │
+│  checkpoint，由 queue/durable-object.ts 持有）         │
+│  circuit-breaker.ts（副作用绑定：策略 → key-pool 内存）│
+│  breaker-config.ts（冷却时长运行时参数, KV + TTL 缓存）│
 └───────────┬───────────────────────────────────────────┘
             ↑
 ┌───────────┴───────────────────────────────────────────┐
-│ retry.ts (FSM + 选 key + 上游传输)                     │
-│  searchWithRetry / selectUpstreamKey / proxyToUpstream │
-│ queue/task.ts (叶模块：NativeTask / SearxngTask)       │
+│ domain-services/（领域服务，仅依赖端口类型）            │
+│  retry-state-machine.ts (FSM: searchWithRetry)         │
+│  selection.ts / classify.ts / breaker-policy.ts        │
+│  transport.ts（上游 fetch 端口实现）                   │
+│  events.ts（同步事件轴，仅 UpstreamAttemptSettled）     │
+│ queue/task.ts (叶模块：NativeTask / SearxngTask / ReaderTask)│
 └───────────┬───────────────────────────────────────────┘
             ↑
 ┌───────────┴───────────────────────────────────────────┐
-│ proxy.ts (边界：鉴权 + 任务打装 + 队列转发 + 执行器)     │
-│  handleSearch / authenticate / forwardToQueue /        │
-│  runNativeTask / runSearxngTask                        │
+│ proxy/ (边界：任务打装 + 队列转发 + 执行器)             │
+│  authenticate.ts / count-dist.ts / forward.ts          │
+│  handlers/(search|extract|reader).ts                   │
+│  executors/(native|searxng|reader).ts                  │
 └───────────┬───────────────────────────────────────────┘
             ↑  drain → 执行器
 ┌───────────┴────────────┐   ┌──────────────────────────┐
-│ index.ts (入口)         │   │ QueueDO (durable-object.ts)       │
-│  - 路由注册 /search      │   │  每 provider 一把, 串行   │
-│  - scheduled 清理用量    │   │  放行 + maxDepth 拒入     │
+│ index.ts + routes/     │   │ queue/durable-object.ts  │
+│  路由注册 / scheduled   │   │  QueueDO：每 provider 一把│
+│  （proxy/public/admin） │   │  串行放行 + maxDepth 拒入 │
 └─────────────────────────┘   └──────────────────────────┘
          ↑
 ┌────────┴──────────────────────────────────────────────┐
@@ -254,22 +262,34 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 | `adapters/reader.ts` | 消费方 ACL：/reader/<url> 抠目标 / 目标→Tavily Extract 请求体 / Tavily 响应→纯文本 / reader 错误体 | 不 import 仓库模块；不读 KV/DB |
 | `storage/upstream-keys.ts` | 上游 key 注册表 D1 读写 + keyset 分页 + 冷却批量 checkpoint | 不做节流/不吞错/不写策略；熔断/冷却权威态在 `durable-object.ts` 的 KeyPool |
 | `storage/dist-keys.ts` | 分发 key D1 读写 + Cache API 鉴权读缓存（读穿 + 写失效） | 不写业务逻辑 |
-| `storage/usage.ts` | 用量小时桶 D1 读写（UPSERT 求和 / 按窗口查询） | 不带内存缓冲（那是 usage-store 的活） |
-| `usage-store.ts` | 内存累积 + 节流 flush + 读叠加（按 UTC 小时桶） | 不改 domain 规则；不直接被 admin 写 |
-| `circuit-breaker.ts` | 连续失败计数 → 冷却（经 `breaker-config` 读运行时参数） | 不感知 provider；失败静默 |
+| `storage/usage.ts` | 用量小时桶 D1 读写（UPSERT 求和 / 按窗口查询） | 不带内存缓冲（那是 `usage/core.ts` 的活） |
+| `usage/core.ts` | 内存累积 + 节流 flush（写堡垒，按 UTC 小时桶） | 不改 domain 规则；不直接被 admin 写 |
+| `usage/reads/` | 三类读产品：`today.ts`（管理页当日）/ `weight.ts`（热路径权重信号）/ `series.ts`（dashboard 序列） | 不写 pending；只叠加 core 的 pending |
+| `usage/index.ts` | UsageStore 门面 + 每 isolate 单例（组合 core 与 reads） | 不含具体策略 |
+| `circuit-breaker.ts` | 熔断/冷却副作用绑定：读配置 → `computeBreakerOutcome` → 写 KeyPool 内存 | 不感知 provider；失败静默；不含冷却算法 |
+| `domain-services/breaker-policy.ts` | 三层冷却纯策略（`computeBreakerOutcome`）+ `BreakerState`/`BreakerOutcome` | 零 IO；不写状态 |
 | `key-pool.ts` | 每 provider DO 内存的 key 池 + 冷却/熔断权威态；合并 reload / 阈值 checkpoint / 推式同步接口 | 不做协议、不碰 usage 统计 |
 | `breaker-config.ts` / `queue/config.ts` / `dist-cache-config.ts` | 读/写 KV 运行时参数（TTL 缓存，写后失效） | 不经手请求热路径 |
-| `retry.ts` | 重试状态机（FSM）+ 选 key + 上游传输（`proxyToUpstream`，30s 超时） | 不接触 Hono Context；不含协议适配 |
-| `queue/task.ts` | 队列任务 DTO（`NativeTask` / `SearxngTask`） | 零依赖叶模块，不读 KV/DB |
-| `durable-object.ts` | `QueueDO`：每 provider 一把，串行放行 + `maxDepth` 拒入 | 不含鉴权；不含重试策略 |
-| `proxy.ts` | 边界：鉴权 + 任务打装 + 队列转发 + native/searxng 执行器（经 retry 核 callbacks 注入） | 不含重试策略；不读视图模板 |
+| `domain-services/retry-state-machine.ts` | 重试状态机（FSM）+ `searchWithRetry` 驱动器；经端口注入 transport / events / usage / pool | 不接触 Hono Context；不含协议适配；不直接 import 基础设施实现 |
+| `domain-services/selection.ts` / `classify.ts` | 候选过滤 + 加权选 key；状态码 → 分类族（查描述符映射） | 零 IO；不写业务分支 |
+| `transport.ts` | 上游 fetch 端口实现（30s 超时） | 不含协议适配 |
+| `events.ts` | 同步轻量事件轴（仅 `UpstreamAttemptSettled`） | 不跨 isolate、不入队列 |
+| `queue/task.ts` | 队列任务 DTO（`NativeTask` / `SearxngTask` / `ReaderTask`） | 零依赖叶模块，不读 KV/DB |
+| `queue/durable-object.ts` | `QueueDO`：每 provider 一把，串行放行 + `maxDepth`/`waitBudgetMs` 背压 + 持有 KeyPool | 不含鉴权；不含重试策略 |
+| `queue/upstream-subscriber.ts` | `UpstreamAttemptSettled` 订阅者：按 cls 路由冷却 + upstream 记账 | 不持有 DO 实例（池经 resolver 惰性解析） |
+| `proxy/authenticate.ts` | 数据面准入：解析复合前缀 → 查分发 key → 注入 `c.var.auth` | 不写业务数据 |
+| `proxy/count-dist.ts` | dist 请求到达计数（转发前 +1，主 Worker 直记） | 不区分成败、不耦合上游执行 |
+| `proxy/forward.ts` | 打装 `NativeTask` / 转发给 provider 的队列 DO | 不含重试策略 |
+| `proxy/handlers/` | `/search` `/extract` `/reader` 入口门禁 + 任务打装 | 不直接访问上游 |
+| `proxy/executors/` | native / searxng / reader 执行器（经 retry 核 callbacks 注入协议渲染） | 不含重试/冷却策略 |
+| `routes/` | 子应用装配（public / proxy 数据面 / admin-auth） | 不含业务逻辑 |
 | `auth.ts` | 登录 / 会话（KV）/ CSRF / 登出 | 不写业务数据 |
-| `admin/` | 路由 + 鉴权校验 + 调 storage / usage-store / 三组参数 | 不直接拼 HTML；视图在 views/ |
+| `admin/` | 路由 + 鉴权校验 + 调 storage / usage / 三组参数 | 不直接拼 HTML；视图在 views/ |
 | `views/` | 模板片段（HTMX 友好）+ 渲染函数；样式组织见 [views-cube-css.md](./views-cube-css.md) | 不写 IO |
 | `config.ts` | `PUBLIC_BASE_URL` 唯一取值点（缓存） | 不参与请求热路径 |
 | `scripts/deploy.sh` | 注入 `PUBLIC_BASE_URL` → `wrangler deploy` | 不存任何真实域名 |
 
-> `storage/` 泛型 CRUD 不写策略：**所有权收口在上层**——usage-store 决定"何时 flush / 静默"，circuit-breaker 决定"何时冷却"，proxy/queue 决定"何时转发、超时多久"。
+> `storage/` 泛型 CRUD 不写策略：**所有权收口在上层**——usage core 决定"何时 flush / 静默"，circuit-breaker 决定"何时冷却"，proxy/queue 决定"何时转发、超时多久"。
 
 ### 4.2 "新增 provider 需要改哪些文件"
 
@@ -278,11 +298,11 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 1. `src/providers/<name>.ts`：写一份 `ProviderConfig` 描述符（base / capabilities / upstream / admin / testBody / errorBody / **`statusClassMap` + `statusClassFallback`（状态码→分类族映射，兜底族保证未知码语义确定）**）。
 2. `src/providers/index.ts`：把它注册到 `PROVIDERS`。
 
-其余所有代码（proxy / storage / usage-store / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
+其余所有代码（proxy / storage / usage / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
 
-> **已知例外（Dashboard 上游趋势图序列）**：`usage-store.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
+> **已知例外（Dashboard 上游趋势图序列）**：`usage/reads/series.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
 
-> **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy.ts` 加一条协议路径 / 一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `durable-object.ts` 分派。例见 `searxng`、`reader`。
+> **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy/executors/` 加一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `queue/durable-object.ts` 分派 + 在 `proxy/handlers/` 与 `routes/proxy.ts` 接入端点。例见 `searxng`、`reader`。
 
 ---
 
@@ -321,7 +341,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 ### 5.2 统计精度契约（重要）
 
-`usage-store.ts` 实现的是**写回式近似统计**，不是精确计数：
+`usage/`（`core.ts` 写堡垒 + `reads/` 读产品）实现的是**写回式近似统计**，不是精确计数：
 
 - 同一 isolate 内 `record*` 后立即 `read*` 可见（本实例内存增量叠加）。
 - 跨 isolate 最多延迟「≥30min 或 ≥256 条」（默认 30 分钟，或缓冲达 `flushMaxPending`=256 条即落库；队列清空时兜底 flush，见 §6.4）。
@@ -348,7 +368,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 `usage_counts` 由 `kind` 列隔离两条独立统计线。**它们是两个维度，不是同一事件的两个视图，不要求一致**：
 
-- **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。**provider 线 = 该公司全部能力的上游尝试合计（Search + Extract 并账，不按能力拆分）**。记法随 §6.3 状态机：`2xx → 成功`；非 429 失败 / 401 · 403 → 失败；`429 → 不记`（仅冷却）；`400/404/422 → 不记`（不重试、不烧 key）。
+- **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。**provider 线 = 该公司全部能力的上游尝试合计（Search + Extract 并账，不按能力拆分）**。记法随 §6.3 状态机（按分类族，不按状态码字面）：`2xx → 成功`；`server-error`（5xx/网络/2xx-不可用）、`auth-error`（401/403）与 `rate-limit`（429，tavily 另有 432）→ 失败；`client-error`（400/404/422，tavily 另有 433）→ 不记（不重试、不烧 key）。
 
 **Dashboard 序列读侧契约**：`readUpstreamSeries`/`readDistSeries`（`src/usage/reads/series.ts`）返回 `minHour..当前小时` 的完整小时序列，空桶补 0——因前端趋势图用 Chart.js time scale 按真实时间间距渲染，稀疏序列会让 x 轴跳过无数据小时（2026-09 修复）。
 - **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求**到达量**」，`scope` = 分发 api_key，主 Worker `countDist` 中间件在转发前 +1（不区分成败、不耦合上游执行）——不区分后端/协议（provider 列为 NULL，0004 起 dist 无 provider 维度，读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。队列拒入（maxDepth 429）与未轮到断开发生在转发后——请求确已到达 → **计入**；鉴权失败（`authenticate` 短路）→ 不计。`calls = success + fail` 派生（现仅 success 为值）。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h请求」（逐 key、单列次数）消费。
@@ -371,7 +391,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 按权重随机抽样
 ```
 
-窗口 = `usage-store.ts` 的 `weightWindowMs`（默认 30min），仅影响热路径权重信号；管理页「当日成功/失败」仍按 UTC 日展示，两者刻意分叉。
+窗口 = `usage/reads/weight.ts` 的 `weightWindowMs`（默认 30min），仅影响热路径权重信号；管理页「当日成功/失败」仍按 UTC 日展示，两者刻意分叉。
 无可用 → `503`，错误体用该 provider 自己的格式。
 
 ### 6.2 冷却（三层，共用一个字段）
@@ -385,7 +405,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 - **post-use / base / invalid 三个时长存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（≤3s 生效），无需重新部署**（见 `src/breaker-config.ts`）。
 - **权威态落点**：冷却与熔断计数的唯一写者是持有该 key 池的单点进程（per-provider `QueueDO` 内存，`key-pool.ts`），选 key 读到的即最新值；D1 仅为低频 checkpoint（`CHECKPOINT_INTERVAL_MS` 30s / `CHECKPOINT_MIN_DIRTY` 16 条双阈值）。冷启动/60s 兜底从 D1 重读并**合并**（保留内存冷却）；管理页「冷却」徽章读 D1 快照，最多滞后 30s（展示路径，非放行判据）。
 
-### 6.3 自动重试（`searchWithRetry` 核，位于 `src/retry.ts`）
+### 6.3 自动重试（`searchWithRetry` 核，位于 `src/domain-services/retry-state-machine.ts`）
 
 - 单次请求最多尝试 3 个不同的上游 key（`MAX_ATTEMPTS`）。
 - 每次尝试换 key；网络异常/超时（30s）视为失败并换 key。
@@ -523,11 +543,16 @@ exhausted → onFailure（透传最后响应或 503/502）。
 ├── src/
 │   ├── index.ts           # 入口：路由注册 + scheduled 用量清理 + export QueueDO
 │   ├── domain.ts          # 纯领域：类型、前缀路由规则、值语义（零依赖）
-│   ├── 数据层             # storage/（D1 实体读写）+ usage-store.ts + 三个 config 模块
-│   ├── 可靠性             # circuit-breaker.ts / retry.ts（FSM + 选 key + 传输）
-│   ├── 调用面             # proxy.ts（边界）+ queue/task.ts（任务 DTO）+ durable-object.ts（QueueDO）
+│   ├── domain-services/   # 领域服务：retry FSM / selection / classify / breaker-policy
+│   ├── transport.ts       # 上游 fetch 端口实现
+│   ├── events.ts          # 同步事件轴（UpstreamAttemptSettled）
+│   ├── 数据层             # storage/（D1 实体读写）+ usage/（core + reads）+ 三个 config 模块
+│   ├── 可靠性             # key-pool.ts + circuit-breaker.ts + breaker-config.ts
+│   ├── 调用面             # routes/ + proxy/（authenticate/forward/handlers/executors）+ queue/（task + QueueDO + subscriber）
 │   ├── 扩展点             # providers/（防腐层）+ adapters/（协议转换）
 │   └── 管理面             # admin/ + views/（HTMX）+ auth.ts + config.ts
+├── static/                # admin.css / admin.js / dashboard.js / help.css（CDN 静态资源）
+├── tests/                 # vitest 单测/集成测（helpers/ 为 fake D1/Cache/Workers 桩）
 ├── migrations/            # D1 迁移
 ├── scripts/deploy.sh      # 生产部署（注入 PUBLIC_BASE_URL）
 ├── config/ .dev.vars.example  # 环境配置（gitignored 真实值）

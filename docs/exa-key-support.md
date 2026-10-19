@@ -65,22 +65,22 @@ export interface DistributedKey {
   created_at: number;
 }
 
-export interface DistStats { tavily: number; exa: number; }
+export interface DistStats { success: number; fail: number; }  // 现行：calls = success + fail（dist 现仅 success 为值）
 ```
 
 > ⚠️ **关于 `plain_viewed`**：早期草案里 `DistributedKey` 包含 `plain_viewed: boolean` 字段（用于"明文只显示一次 + 二次密码重新查看"流程）。该流程最终**未实施**——后台采用"行内注入明文 + 一键复制"替代。**当前类型不含 `plain_viewed`**，不要按旧文档去读这个字段。
 
-### 3.1 分层落地
+### 3.1 分层落地（**历史版**；当前分层以 architecture.md §4 为准）
 
 | 层 | 文件 | 职责 |
 |---|---|---|
 | 纯领域（零依赖） | `src/domain.ts` | 类型 + `parseDistKey` 前缀路由规则 + 值语义 + 熔断常量 |
-| 持久化 | `src/storage.ts` | KV 纯读写原语 + Keys 数组泛型 CRUD |
-| 统计缓冲 | `src/usage-store.ts` | 内存累积 + 节流 flush + 读叠加 |
-| 熔断 | `src/circuit-breaker.ts` | 连续失败计数 → 冷却；与统计分离 |
-| 应用编排 | `src/proxy/{authenticate,forward,handlers}.ts` | 准入中间件 + 打装/转发 + 端点 handler，由描述符驱动 |
+| 持久化 | `src/storage/`（现） | D1 实体读写（历史版为 `src/storage.ts` 的 KV CRUD） |
+| 统计缓冲 | `src/usage/`（现） | 内存累积 + 节流 flush + 读产品（历史版为 `src/usage-store.ts`） |
+| 熔断 | `src/circuit-breaker.ts` + `src/domain-services/breaker-policy.ts` | 纯策略与副作用绑定分离 |
+| 应用编排 | `src/proxy/{authenticate,forward,handlers,executors}/` | 准入中间件 + 打装/转发 + 端点 handler + 执行器 |
 | Provider 防腐 | `src/providers/{tavily,exa,index}.ts` | 一个 provider 的全部事实 |
-| 管理路由 | `src/admin/{tavily,exa,keys,index}.ts` | 后台路由 + 鉴权 + 调 storage / usage-store |
+| 管理路由 | `src/admin/{tavily,exa,keys,index}.ts` | 后台路由 + 鉴权 + 调 storage / usage |
 | 视图模板 | `src/views/{tavily,exa,index}.ts` | HTMX 片段 + 渲染函数 |
 
 ---
@@ -88,31 +88,32 @@ export interface DistStats { tavily: number; exa: number; }
 ## 4. 请求认证：前缀路由
 
 ```
-Authorization: Bearer <provider>-<key>
-                        └─┬──┘ └─┬─┘
-                  必须 tavily / exa   查库的 api_key（精确匹配）
+Authorization: Bearer <proto?-><provider>-<key>
+                        └────┬────┘ └─┬─┘
+              复合前缀（大小写不敏感）  查库的 api_key（精确匹配）
 ```
 
-- `parseDistKey(token)`（[`src/domain.ts`](../src/domain.ts)）：按第一个 `-` 切分；前缀（大小写不敏感，归一化小写）= provider；右侧 = api_key。生成 key 是 hex 不含 `-`，切分无歧义。
+- `parseDistKey(token)`（[`src/domain.ts`](../src/domain.ts)）：按**最后一个** `-` 切分（`searxng-tavily-<key>` 必须整体作为前缀）；前缀（大小写不敏感，归一化小写）= `[proto-]provider`；右侧 = api_key（区分大小写）。生成 key 是 hex 不含 `-`，切分无歧义。
+- 当前合法前缀：`tavily` / `exa`（native）、`searxng-tavily`、`reader-tavily`。
 - 前缀合法但 key 无效 / 禁用 → 401，**用该 provider 自己的错误格式**。
-- 无 token / 前缀非法（`tvly-` / 裸 key） → 401，提示 `Bearer <tavily|exa>-<key>`（provider 未知，用 Tavily 默认格式）。
-- 路由：`handleSearch` → `authenticate` 得 `{ provider, apiKey, distKey }` → `handleProviderProxy(c, PROVIDERS[provider], "/search", apiKey)`。
+- 无 token / 前缀非法（`tvly-` / 裸 key） → 401，提示 `Bearer <tavily|exa|searxng-tavily|reader-tavily>-<key>`（provider 未知，用 Tavily 默认格式）。
+- 路由：handler 经 `authenticate` 得 `{ protocol, provider, apiKey, distKey }` → 打装任务 → 队列 DO（历史版为直接 `handleProviderProxy`）。
 
 ---
 
 ## 5. 代理与统计
 
-- `handleProviderProxy`（[`src/proxy/`](../src/proxy/)）：
-  - 加权随机选 key（`1 / (fail+1)`，排除 disabled / 冷却）
-  - 无可用 → 503（该 provider 格式）
-  - 透明转发
-  - 429 → 切同 provider 另一 key 重试一次
-  - 2xx / 其他 → 分类 {成功 / 失败 + 熔断} → 原样透传
-- 分发 key 当日调用按 provider 拆分：`recordDistCall(apiKey, provider, date)` → `dist_stats:{key}:{date} = { tavily, exa }`。
+> **历史版**（上述 `handleProviderProxy` / KV `dist_stats` 已不存在）。现行实现：
+> `handlers → countDist（dist 请求到达量）→ forwardToQueue → QueueDO → executor → searchWithRetry`，
+> 上游 key 的成败/冷却/记账见 architecture.md §6.3 与 CONTEXT「重试分类族」。
 
-### 5.1 统计精度（与 [`architecture.md` §5.1](./architecture.md) 一致）
+- 现行选 key：加权随机（`1 / (fail+1)`，排除 disabled / 冷却），无可用 → 503（该 provider 格式）。
+- 现行分类：按描述符 `statusClassMap` 的族处理（rate-limit / client-error / auth-error / server-error），非按状态码字面。
+- 现行 dist 统计：主 Worker `countDist` 每笔到达 +1，不区分 provider/能力（0004 起 `provider` 为 NULL）。
 
-`usage-store.ts` 是**写回式近似统计**：内存累积 → 节流 flush（默认 5s 间隔）→ KV；读时叠加本实例未 flush 增量。同一 isolate 立即可见，跨 isolate 最多一间隔延迟，isolate 回收时丢失 ≤ 一间隔量。写失败静默，绝不阻塞主流程。
+### 5.1 统计精度（与 [`architecture.md` §5.2](./architecture.md) 一致）
+
+`src/usage/`（`core.ts` + `reads/`）是**写回式近似统计**：内存累积 → 节流 flush（≥30min 或 ≥256 条）→ D1；读时叠加本实例未 flush 增量。同一 isolate 立即可见，跨 isolate 最多一个 flush 阈值区间延迟，isolate 回收时丢失 ≤ 该区间量。写失败静默，绝不阻塞主流程。
 
 ---
 

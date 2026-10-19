@@ -16,7 +16,7 @@ type Ctx = Context<{ Bindings: Env; Variables: AppVariables }>;
 export async function handleExtract(c: Ctx): Promise<Response> {
   const auth = c.var.auth; // 中间件保证存在；错误响应已由 authenticate 短路
   try {
-    const def = PROVIDERS[auth.provider];
+    const def = PROVIDERS[auth.credential.provider];
     // 门禁与 native 透传统一走 runNative：能力未声明→404、未开放该协议→405、命中→转发队列 DO
     return await runNative(c, def, auth, "extract");
   } catch (err) {

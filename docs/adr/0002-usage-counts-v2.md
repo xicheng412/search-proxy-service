@@ -1,6 +1,6 @@
 # ADR-0002: usage_counts 去 dist 哨兵 + 热路径信号覆盖索引
 
-> **Status**: accepted（2026-09-13。记录 `migrations/0004_usage_counts_v2.sql` 及配套代码清理；正面推翻 ADR-0001 §55 对选 key 权重信号查询的"不扩覆盖索引"判据）
+> **Status**: accepted（2026-09-13。记录 `migrations/0004_usage_counts_v2.sql` 及配套代码清理；正面推翻 ADR-0001 §5 对选 key 权重信号查询的"不扩覆盖索引"判据）
 
 ## 决策
 
@@ -43,4 +43,4 @@
 ## 关联
 
 - `docs/architecture.md` §5.1（表结构/索引）、§5.2.1（索引判据例外）、§5.2.2（kind='dist' provider NULL 表述）。
-- 推翻 ADR-0001 §55 对**该条查询**的"不扩覆盖索引"判据——以本节例外为准；其余查询仍守原判据。
+- 推翻 ADR-0001 §5 对**该条查询**的"不扩覆盖索引"判据——以本节例外为准；其余查询仍守原判据。

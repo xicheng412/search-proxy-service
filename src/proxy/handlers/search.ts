@@ -37,11 +37,11 @@ async function collectSearxngParams(c: Ctx): Promise<Record<string, string>> {
 /** /search 入口：鉴权分发 key（中间件已注入 c.var.auth），把任务打成可序列化载荷转发给队列 DO。 */
 export async function handleSearch(c: Ctx): Promise<Response> {
   const auth = c.var.auth; // 中间件保证存在；错误响应已由 authenticate 短路
-  const def = PROVIDERS[auth.provider];
+  const def = PROVIDERS[auth.credential.provider];
   const apiKey = auth.distKey.api_key;
 
   try {
-    if (auth.protocol === "searxng") {
+    if (auth.credential.protocol === "searxng") {
       const params = await collectSearxngParams(c);
       const { params: parsed, error } = parseSearxngParams(params);
       if (error) {
@@ -79,7 +79,7 @@ export async function handleSearch(c: Ctx): Promise<Response> {
   } catch (err) {
     // 代理不应裸抛 500；转为带错误信息的响应便于定位（也避免泄露堆栈给客户端）
     const msg = err instanceof Error ? err.message : String(err);
-    if (auth.protocol === "searxng") {
+    if (auth.credential.protocol === "searxng") {
       return searxngError(502, "internal search error");
     }
     return Response.json(
