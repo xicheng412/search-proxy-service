@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { formatRemaining } from "../src/views/index";
 import { tavilyListFragment } from "../src/views/tavily";
 import { exaListFragment } from "../src/views/exa";
-import type { TavilyKey } from "../src/domain";
+import type { CoreKey } from "../src/domain";
 
 describe("formatRemaining（≥100s→min / <100s→s，ceil 取整；0→-）", () => {
   it("≥100s 进分钟档，ceil 到整数分钟", () => {
@@ -30,7 +30,7 @@ describe("formatRemaining（≥100s→min / <100s→s，ceil 取整；0→-）",
 describe("Tavily/Exa 列表冷却徽章 SSR", () => {
   const now = 1_700_000_000_000;
   const pagination = { page: 1, first: null, previous: null, next: null };
-  const coolingKey: TavilyKey = {
+  const coolingKey: CoreKey = {
     id: "k1",
     key: "tvly-X",
     name: "",
@@ -39,7 +39,7 @@ describe("Tavily/Exa 列表冷却徽章 SSR", () => {
     suspended_cause: "breaker",
     created_at: 1,
   };
-  const idleKey: TavilyKey = {
+  const idleKey: CoreKey = {
     id: "k2",
     key: "tvly-Y",
     name: "",

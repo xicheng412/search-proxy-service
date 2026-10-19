@@ -1,6 +1,6 @@
 // Tavily Keys 管理页模板（按确认与 Exa 各维护一份，路径/文案为本 provider 专用）。
 
-import { TavilyKey, TavilyStats, maskKey } from "../domain";
+import { CoreKey, Stats, maskKey } from "../domain";
 import {
   Pagination,
   esc,
@@ -8,6 +8,7 @@ import {
   formatRemaining,
   layout,
   paginationHtml,
+  toast,
 } from "./index";
 
 export function tavilyPage(csrf: string, fragment: string): string {
@@ -25,15 +26,15 @@ export function tavilyPage(csrf: string, fragment: string): string {
 }
 
 export function tavilyListFragment(
-  keys: TavilyKey[],
-  statsMap: Record<string, TavilyStats>,
+  keys: CoreKey[],
+  statsMap: Record<string, Stats>,
   csrf: string,
   now: number,
   pagination: Pagination,
   flash?: string,
   total: number | null = null
 ): string {
-  const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
+  const flashHtml = toast(flash);
   const rows = keys.length
     ? keys
         .map((k) => {

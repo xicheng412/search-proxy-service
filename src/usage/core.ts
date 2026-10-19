@@ -19,8 +19,6 @@ type Result = "success" | "fail";
 export interface PendingFilter {
   /** 仅匹配该 kind 的 pending 条目。 */
   kind?: UsageKind;
-  /** 仅匹配该 scope 的 pending 条目。 */
-  scope?: string;
   /** 仅匹配 hour >= minHour 的 pending 条目（字符串比较，与原 `hour < minHour` 跳跃一致）。 */
   minHour?: string;
 }
@@ -163,7 +161,6 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     for (const [k, v] of pending) {
       const [kind, scope, provider, hour] = k.split("\u0000");
       if (filter.kind !== undefined && filter.kind !== (kind as UsageKind)) continue;
-      if (filter.scope !== undefined && filter.scope !== scope) continue;
       if (filter.minHour !== undefined && hour < filter.minHour) continue;
       entry.kind = kind as UsageKind;
       entry.scope = scope;

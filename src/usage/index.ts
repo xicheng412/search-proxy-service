@@ -5,8 +5,7 @@
 // 所有方法引用皆为闭包（无 this），直接传引用安全。
 
 import type { Env } from "../types";
-import type { DistStats, Provider } from "../domain";
-import type { UsageIncrement } from "../storage/usage";
+import type { Stats, Provider } from "../domain";
 import { createCore } from "./core";
 import { makeTodayRead } from "./reads/today";
 import { makeWeightSignal } from "./reads/weight";
@@ -34,9 +33,7 @@ export interface UsageStore {
   readDistCallsByScopes(
     apiKeys: string[],
     minHour: string
-  ): Promise<Record<string, DistStats>>;
-  /** 读某 scope 的小时明细（给前端组合"今日/最近N小时"边界用）。 */
-  readHourly(kind: "upstream" | "dist", scope: string, minHour: string): Promise<UsageIncrement[]>;
+  ): Promise<Record<string, Stats>>;
   /** 读上游真实调用尝试小时序列（Memory TTL + pending 叠加）；给 dashboard 近5天趋势图。返回 `minHour..当前小时` 完整小时序列，空桶补 0；dashboard 趋势图按 Chart.js time scale 渲染需等时间间隔。 */
   readUpstreamSeries(minHour: string): Promise<UpstreamSeriesPoint[]>;
   /** 读全部分发 key 的 dist 小时序列（Memory TTL + pending 叠加）；给 dashboard 24h/昨日卡。返回 `minHour..当前小时` 完整小时序列，空桶补 0；dashboard 趋势图按 Chart.js time scale 渲染需等时间间隔。 */
@@ -83,7 +80,6 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     flushNow: core.flushNow,
     readUpstreamTodayStats: today.upstreamToday,
     readDistCallsByScopes: today.distToday,
-    readHourly: today.hourly,
     readUpstreamWeightSignal: weight.readSignal,
     refreshWeightBase: () => weight.refreshNow().catch(() => {}),
     readUpstreamSeries: series.upstream,

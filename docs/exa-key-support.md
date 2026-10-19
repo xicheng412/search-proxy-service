@@ -49,7 +49,7 @@ Tavily 代理跑稳后，需要把同样的"多 key + 加权随机 + 熔断 + �
 export type Provider = "tavily" | "exa";
 export type KeyStatus = "enabled" | "disabled";
 
-export interface CoreKey {            // 上游 key; TavilyKey = CoreKey, ExaKey = CoreKey
+export interface CoreKey {            // 上游 key（provider 由 CoreKey.provider/UpstreamDef 区分，无 provider 别名类型）
   id: string;                          // tk_* / ek_*
   key: string;                         // 上游真实 key
   name: string;
@@ -65,7 +65,7 @@ export interface DistributedKey {
   created_at: number;
 }
 
-export interface DistStats { success: number; fail: number; }  // 现行：calls = success + fail（dist 现仅 success 为值）
+export interface Stats { success: number; fail: number; }  // 现行：calls = success + fail（dist 现仅 success 为值）
 ```
 
 > ⚠️ **关于 `plain_viewed`**：早期草案里 `DistributedKey` 包含 `plain_viewed: boolean` 字段（用于"明文只显示一次 + 二次密码重新查看"流程）。该流程最终**未实施**——后台采用"行内注入明文 + 一键复制"替代。**当前类型不含 `plain_viewed`**，不要按旧文档去读这个字段。

@@ -11,19 +11,13 @@
 
 import type { Env } from "./types";
 import type { UpstreamDef, CoreKey, CooldownCause, Provider } from "./domain";
+import type { BreakerState } from "./domain-services/breaker-policy";
 import { listUpstreamKeys, checkpointCooldowns } from "./storage/upstream-keys";
-
-/** 熔断连续计数：仅内存权威，不落库（重启用 0，安全方向）。 */
-export interface BreakerMem {
-  consecutive: number;
-  updated_at: number;
-  created_at: number;
-}
 
 export interface KeyPool {
   /** 返回当前内部数组；元素对象被 applyBreakerOutcome 原地改（选 key 即刻可见最新冷却）。 */
   getKeys(): CoreKey[];
-  getBreakerState(id: string): BreakerMem | null;
+  getBreakerState(id: string): BreakerState | null;
   /** 原地写某次上游结果的 cooldown + cause + 可选熔断计数，并标记 dirty（待 checkpoint）。 */
   applyBreakerOutcome(id: string, cooldownUntil: number, cause: CooldownCause, consecutive: number | null, now: number): void;
   /** admin 启用：清掉机器冷却（cooldown_until 与 suspended_cause），该 key 立即可选。 */
@@ -44,7 +38,7 @@ export const RELOAD_FLOOR_MS = 60_000;        // 内存态陈旧上限，admin p
 
 export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): KeyPool {
   let keys: CoreKey[] = seed ? [...seed] : [];
-  const breaker = new Map<string, BreakerMem>();
+  const breaker = new Map<string, BreakerState>();
   const dirty = new Set<string>();
   let loaded = seed !== undefined;
   let loadedAt = seed !== undefined ? Date.now() : 0;

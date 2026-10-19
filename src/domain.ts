@@ -54,8 +54,6 @@ export interface CoreKey {
   suspended_cause: CooldownCause | null;   // 冷却因由；null=未冷却/未知
   created_at: number;
 }
-export type TavilyKey = CoreKey;
-export type ExaKey = CoreKey;
 
 export interface DistributedKey {
   api_key: string;      // 高熵随机字符串（hex），不含任何品牌前缀
@@ -64,13 +62,8 @@ export interface DistributedKey {
   created_at: number;
 }
 
-export interface TavilyStats {
-  success: number;
-  fail: number;
-}
-
-/** 分发 key 请求计数（calls = success + fail 派生），不区分后端/协议。 */
-export interface DistStats {
+/** 用量读数（success/fail 计数），与 provider/scope 无关；calls = success + fail 派生。 */
+export interface Stats {
   success: number;
   fail: number;
 }

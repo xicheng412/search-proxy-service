@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken } from "../auth";
-import { DistStats, hourKey } from "../domain";
+import { Stats, hourKey } from "../domain";
 import {
   cachedDistributedKeyCount,
   deleteDistributedKey,
@@ -39,7 +39,7 @@ async function buildCallsMap(
   env: Env,
   dkeys: { api_key: string }[],
   minHour: string
-): Promise<Record<string, DistStats>> {
+): Promise<Record<string, Stats>> {
   const store = getUsageStore(env);
   return store.readDistCallsByScopes(
     dkeys.map((k) => k.api_key),

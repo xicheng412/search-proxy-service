@@ -1,6 +1,6 @@
 // 管理员认证模块：密码登录、KV 会话、CSRF 防护、登出。
 
-import { Context, MiddlewareHandler } from "hono";
+import { Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Env, AppVariables } from "./types";
 import { randomToken } from "./domain";
@@ -63,16 +63,10 @@ export async function getSession(
   return session;
 }
 
-export function getSessionSid(
-  c: Context<{ Bindings: Env; Variables: AppVariables }>
-): string | null {
-  return getCookie(c, SESSION_COOKIE) ?? null;
-}
-
 export async function destroySession(
   c: Context<{ Bindings: Env; Variables: AppVariables }>
 ): Promise<void> {
-  const sid = getSessionSid(c);
+  const sid = getCookie(c, SESSION_COOKIE) ?? null;
   if (sid) await c.env.KV.delete(sessionKey(sid)).catch(() => {});
   deleteCookie(c, SESSION_COOKIE, { path: "/" });
 }
@@ -103,24 +97,6 @@ export async function validateCsrf(
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
   return diff === 0;
-}
-
-/** 要求已登录；未登录则对 API 返回 401，对页面返回 302 跳登录页。 */
-export function requireAuth(redirectToLogin = false): MiddlewareHandler<{
-  Bindings: Env;
-  Variables: AppVariables;
-}> {
-  return async (c, next) => {
-    const session = await getSession(c);
-    if (!session) {
-      if (redirectToLogin) {
-        return c.redirect("/admin/login?next=" + encodeURIComponent(c.req.path));
-      }
-      return c.text("Unauthorized", 401);
-    }
-    c.set("admin", true);
-    await next();
-  };
 }
 
 /** 登录处理：POST /admin/login，校验密码。 */

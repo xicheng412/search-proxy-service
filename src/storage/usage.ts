@@ -104,29 +104,6 @@ export async function sumUsageByScopes(
   return out;
 }
 
-/** 读某 scope 的小时明细（最近 N 小时 / 24 分段给前端组合统计边界用）。 */
-export async function readHourly(
-  env: Env,
-  kind: UsageKind,
-  scope: string,
-  minHour: string
-): Promise<UsageIncrement[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT kind, scope, provider, hour, success, fail
-     FROM usage_counts WHERE kind = ?1 AND scope = ?2 AND hour >= ?3 ORDER BY hour`
-  )
-    .bind(kind, scope, minHour)
-    .all();
-  return (results as Record<string, unknown>[]).map((r) => ({
-    kind,
-    scope,
-    provider: r.provider as string | null,
-    hour: r.hour as string,
-    success: (r.success as number) ?? 0,
-    fail: (r.fail as number) ?? 0,
-  }));
-}
-
 /** 跨全部 scope 按小时桶 × provider 聚合（dashboard 折线序列用）。复用 idx_usage_window 索引。 */
 export async function readSeriesByProvider(
   env: Env,

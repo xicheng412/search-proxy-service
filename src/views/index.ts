@@ -3,7 +3,7 @@
 // login 与 dashboard 页面模板分别在 views/login.ts 与 views/dashboard.ts。
 
 import {
-  DistStats,
+  Stats,
   DistributedKey,
   maskKey,
 } from "../domain";
@@ -150,7 +150,7 @@ export function keysPage(csrf: string, fragment: string): string {
 
 export function distListFragment(
   keys: DistributedKey[],
-  callsMap: Record<string, DistStats>,
+  callsMap: Record<string, Stats>,
   csrf: string,
   pagination: Pagination,
   flash?: string,
@@ -158,7 +158,7 @@ export function distListFragment(
   total: number | null = null,
   selfQuery: string = "?page=1"
 ): string {
-  const flashHtml = flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
+  const flashHtml = toast(flash);
   const rows = keys.length
     ? keys
         .map((k) => {
@@ -226,7 +226,7 @@ export function distListFragment(
 export function distGenerateResult(
   plainApiKey: string,
   keys: DistributedKey[],
-  callsMap: Record<string, DistStats>,
+  callsMap: Record<string, Stats>,
   csrf: string,
   pagination: Pagination,
   publicBaseUrl: string = "",
@@ -242,4 +242,9 @@ export function distGenerateResult(
 
 export function errorFragment(msg: string): string {
   return `<div class="err">${esc(msg)}</div>`;
+}
+
+/** 一次性 flash 报文（内联 toast，非弹窗）；无消息时返回空串。 */
+export function toast(flash?: string): string {
+  return flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
 }

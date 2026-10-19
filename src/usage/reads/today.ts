@@ -3,13 +3,8 @@
 // 依赖方向只向下：reads/ → core → storage/usage → domain；不 import proxy.ts / admin/*。
 
 import type { Env } from "../../types";
-import type { DistStats } from "../../domain";
-import {
-  type UsageIncrement,
-  type UsageKind,
-  readHourly as storeReadHourly,
-  sumUsageByScopes,
-} from "../../storage/usage";
+import type { Stats } from "../../domain";
+import { sumUsageByScopes } from "../../storage/usage";
 import type { UsageCore } from "../core";
 
 export interface TodayOpts {
@@ -31,7 +26,7 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
     ids: string;
     minHour: string;
     at: number;
-    base: Record<string, DistStats>;
+    base: Record<string, Stats>;
   } | null = null;
 
   /** 批量读上游 key 某 UTC 日（minHour 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
@@ -83,7 +78,7 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
   async function distToday(
     apiKeys: string[],
     minHour: string
-  ): Promise<Record<string, DistStats>> {
+  ): Promise<Record<string, Stats>> {
     if (apiKeys.length === 0) return {};
     const idsKey = [...apiKeys].sort().join(",");
     const now = Date.now();
@@ -93,7 +88,7 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
       distCache.minHour !== minHour ||
       now - distCache.at >= readCacheMs
     ) {
-      const base: Record<string, DistStats> = {};
+      const base: Record<string, Stats> = {};
       const byScope = await sumUsageByScopes(env, "dist", apiKeys, minHour);
       for (const key of apiKeys) {
         // 汇总该 scope 全部 provider 的 success/fail；缺失 provider 不产生计数。
@@ -108,14 +103,14 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
       distCache = { ids: idsKey, minHour, at: now, base };
     }
     // 近似口径：pending 中该 scope 的全部小时增量并入（无视 provider 值）。一次扫完、按键累加。
-    const approx: Record<string, DistStats> = {};
+    const approx: Record<string, Stats> = {};
     core.collapsePending("dist", new Set(apiKeys), null, (scope, _p, _h, s, f) => {
       const a = approx[scope] ?? { success: 0, fail: 0 };
       a.success += s;
       a.fail += f;
       approx[scope] = a;
     });
-    const result: Record<string, DistStats> = {};
+    const result: Record<string, Stats> = {};
     for (const key of apiKeys) {
       const b = distCache.base[key] ?? { success: 0, fail: 0 };
       const ap = approx[key] ?? { success: 0, fail: 0 };
@@ -124,14 +119,5 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
     return result;
   }
 
-  /** 读某 scope 的小时明细（给前端组合"今日/最近N小时"边界用）：纯转发 storage 层。 */
-  async function hourly(
-    kind: UsageKind,
-    scope: string,
-    minHour: string
-  ): Promise<UsageIncrement[]> {
-    return storeReadHourly(env, kind, scope, minHour);
-  }
-
-  return { upstreamToday, distToday, hourly };
+  return { upstreamToday, distToday };
 }
