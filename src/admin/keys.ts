@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken } from "../auth";
-import { Stats, hourKey } from "../domain";
+import { Stats, bucketKey } from "../domain";
 import {
   cachedDistributedKeyCount,
   deleteDistributedKey,
@@ -38,12 +38,12 @@ export const keysAdmin = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 async function buildCallsMap(
   env: Env,
   dkeys: { api_key: string }[],
-  minHour: string
+  minBucket: string
 ): Promise<Record<string, Stats>> {
   const store = getUsageStore(env);
   return store.readDistCallsByScopes(
     dkeys.map((k) => k.api_key),
-    minHour
+    minBucket
   );
 }
 
@@ -98,7 +98,7 @@ keysAdmin.get("/", async (c) => {
   const callsMap = await buildCallsMap(
     c.env,
     distPage.keys,
-    hourKey(Date.now() - 24 * 3600 * 1000)
+    bucketKey(Date.now() - 24 * 3600 * 1000)
   );
   return c.html(
     keysPage(
@@ -117,7 +117,7 @@ keysAdmin.get("/list", async (c) => {
   const callsMap = await buildCallsMap(
     c.env,
     distPage.keys,
-    hourKey(Date.now() - 24 * 3600 * 1000)
+    bucketKey(Date.now() - 24 * 3600 * 1000)
   );
   return c.html(
     distListFragment(distPage.keys, callsMap, csrf, pagination, undefined, base, total, selfQuery)
@@ -151,7 +151,7 @@ keysAdmin.post("/generate", async (c) => {
   const callsMap = await buildCallsMap(
     env,
     page1.keys,
-    hourKey(Date.now() - 24 * 3600 * 1000)
+    bucketKey(Date.now() - 24 * 3600 * 1000)
   );
   return c.html(
     distGenerateResult(generated.api_key, page1.keys, callsMap, csrf, pagination1, base, total, "?page=1")

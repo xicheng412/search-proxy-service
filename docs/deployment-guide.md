@@ -130,6 +130,17 @@ Deployed tavily-cf-proxy triggers
 Current Version ID: <hex>
 ```
 
+## 6.1 数据库迁移
+
+实体数据（上游/分发 key、用量统计）存 D1（binding `DB`），表结构由 `wrangler d1 migrations` 作为**唯一权威**管理（目录/模式/版本表在 `wrangler.toml` 显式钉住：`migrations_dir` / `migrations_pattern` / `migrations_table`）。
+
+- **应用迁移**：`scripts/migrate.sh [local|remote]`（默认 `remote`）——先 `wrangler d1 migrations apply`，再断言 `migrations list` 无 `pending` 残留（有残留 = 某条迁移失败，脚本以非零退出阻止继续）。
+- **部署自动迁移**：`scripts/deploy.sh`（即 `pnpm run deploy:cf`）已在 `wrangler deploy` 之前执行 `scripts/migrate.sh remote`——保证新代码依赖的表结构（如 0007 起 `usage_counts.bucket`）先于代码上库就位。
+- **查迁移状态**：`wrangler d1 migrations list search-proxy --local|--remote`，逐条显示 applied / pending。
+- **故障恢复**：D1 每次 `migrations apply` 前会自动备份，写迁移失败时从 `wrangler d1 backup list` / `restore` 恢复到 apply 前快照，再排查修正后重跑迁移。**勿在未确认迁移就位前部署**——新代码会在旧表结构（如仍为 `hour` 列）下写失败（既有「写失败静默」语义，统计有损但主流程不受影响）。
+
+本地验证迁移（首次）可用 `npx wrangler d1 execute search-proxy --local --file=migrations/0001_init.sql` 建库并依次应用 0001–0007，再 `bash scripts/migrate.sh local`。
+
 ## 7. 验证线上
 
 ```bash

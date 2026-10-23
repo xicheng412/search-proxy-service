@@ -4,22 +4,22 @@
 // 走真实 worker.fetch（路由装配 + 视图拆分完整路径）；DB 按 SQL 形态 + binds 内容
 // 分派（不依赖调用顺序），KV 用内存 map 供"登录后"注入会话；未知 DB 调用直接 throw。
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import worker from "../src/index";
 import type { Env } from "../src/types";
-import { hourKey } from "../src/domain";
+import { bucketKey } from "../src/domain";
 
 type Row = Record<string, unknown>;
 
-// 图表序列小时：取"两天前的当前小时"（恒落在 dashboard 读侧 5 天窗口内）。
+// 图表序列桶：取"两天前的当前桶"（恒落在 dashboard 读侧 5 天窗口内，但落在三张卡 24h/昨日/今日区间之外）。
 // 不用绝对日期——窗口随真实时钟滑动，硬编码日期会随时间漂移而失效。
-const SERIES_HOUR = hourKey(Date.now() - 2 * 86_400_000);
+const SERIES_BUCKET = bucketKey(Date.now() - 2 * 86_400_000);
 
 const SCRIPTED: Record<string, Row[]> = {
-  // readSeriesByProvider 的 .all()：binds = (kind, minHour)
-  upstream: [{ hour: SERIES_HOUR, provider: "tavily", success: 3, fail: 1 }],
+  // readSeriesByProvider 的 .all()：binds = (kind, minBucket)
+  upstream: [{ bucket: SERIES_BUCKET, provider: "tavily", success: 3, fail: 1 }],
   // dist 行无 provider 维度（provider 为 NULL）
-  dist: [{ hour: SERIES_HOUR, provider: null, success: 9, fail: 0 }],
+  dist: [{ bucket: SERIES_BUCKET, provider: null, success: 9, fail: 0 }],
 };
 
 function makeStatement(sql: string, binds: unknown[]) {
@@ -163,11 +163,18 @@ describe("dashboard 总览页（views/dashboard.ts）", () => {
 
     // 图表序列 JSON 注入（raw JSON，非 HTML esc：引号原样）
     const dist = scriptBody(html, "dist-series");
-    expect(dist).toContain(`"hour":"${SERIES_HOUR}"`);
+    expect(dist).toContain(`"bucket":"${SERIES_BUCKET}"`);
     expect(dist).toContain('"calls":9');
     const upstream = scriptBody(html, "upstream-series");
     expect(upstream).toContain('"tavily":4');
     expect(upstream).toContain('"exa":0');
+
+    // 三张卡由服务端渲染（不再用 `–` 占位）；SERIES_BUCKET 落在 24h/昨日/今日区间之外 → 均为 0。
+    expect(html).toContain('<div class="stat-num" id="calls-24h">0</div>');
+    expect(html).toContain('<div class="stat-num" id="calls-yesterday">0</div>');
+    expect(html).toContain('<div class="stat-num" id="calls-today">0</div>');
+    // 桶宽不再注入前端：趋势图按小时聚合，x 轴固定 hour 刻度（见 static/dashboard.js）。
+    expect(html).not.toContain('id="bucket-ms"');
 
     // 图表脚本与公共 layout 外壳（拆分后页面仍走 layout）
     expect(html).toContain("chart.umd.min.js");
@@ -177,6 +184,41 @@ describe("dashboard 总览页（views/dashboard.ts）", () => {
 
     // 导航高亮 dashboard
     expect(html).toContain('nav-item active" href="/admin"');
+  });
+
+  it("dist 当前桶行落入 24h 与今日（service 端口径、今天/昨天日边界）", async () => {
+    // UsageStore 是单例，其 D1 访问走模块级 scriptedDb（live 引用 SCRIPTED）。把 now 拨到明天
+    // （>30min TTL 且 minBucket 变）令单例的 dist 序列缓存失效重读，届时 scriptedDb 返回当前桶行。
+    const realNow = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(realNow + 86_400_000));
+    const nowBucket = bucketKey();
+    const origDist = SCRIPTED.dist;
+    SCRIPTED.dist = [{ bucket: nowBucket, provider: null, success: 9, fail: 0 }];
+    kvStore.set(
+      "session:sid-2",
+      JSON.stringify({
+        created_at: Date.now(),
+        expires_at: Date.now() + 86_400_000,
+        csrf: "csrf-token-234",
+      })
+    );
+    try {
+      const res = await worker.fetch(
+        new Request("https://proxy.example/admin", { headers: { cookie: "admin_session=sid-2" } }),
+        env,
+        { waitUntil: () => {} } as unknown as ExecutionContext
+      );
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      // 当前桶落在 today 与 last24h 区间内、昨日区间之外 → 前两者为 9、昨日为 0。
+      expect(html).toContain('<div class="stat-num" id="calls-24h">9</div>');
+      expect(html).toContain('<div class="stat-num" id="calls-today">9</div>');
+      expect(html).toContain('<div class="stat-num" id="calls-yesterday">0</div>');
+    } finally {
+      SCRIPTED.dist = origDist;
+      vi.useRealTimers();
+    }
   });
 });
 

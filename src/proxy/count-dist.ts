@@ -8,13 +8,13 @@
 import { MiddlewareHandler } from "hono";
 import type { Env, AppVariables } from "../types";
 import { getUsageStore } from "../usage";
-import { hourKey } from "../domain";
+import { bucketKey } from "../domain";
 
 /** 依赖 c.var.auth（authenticate 先行注入）；handler 之前执行，「到达即 +1」。 */
 export const countDist: MiddlewareHandler<{ Bindings: Env; Variables: AppVariables }> =
   async (c, next) => {
     const store = getUsageStore(c.env);
-    store.recordDistCall(c.var.auth.distKey.api_key, hourKey());
+    store.recordDistCall(c.var.auth.distKey.api_key, bucketKey());
     store.flushSoon(c.executionCtx);
     await next();
   };

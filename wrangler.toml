@@ -11,12 +11,15 @@ workers_dev = false
 binding = "KV"
 id = "ff56ea82daa846538fdf11e6bff662eb"
 
-# D1 数据库：实体数据（上游/分发 key、用量小时桶、熔断状态）迁到 SQLite。
+# D1 数据库：实体数据（上游/分发 key、用量时间桶、熔断状态）迁到 SQLite。
+# 迁移以 wrangler d1 migrations 为唯一权威；显式钉住目录/模式/版本表，脚本 scripts/migrate.sh 依赖。
 [[d1_databases]]
 binding = "DB"
 database_name = "search-proxy"
 database_id = "2bc00217-ccb0-44c0-a1aa-138fc2ca400e"
 migrations_dir = "migrations"
+migrations_pattern = "migrations/*.sql"
+migrations_table = "d1_migrations"
 
 # 每 provider 一把队列 Durable Object（idFromName(provider) = "tavily"|"exa"）。
 # 串行放行上游请求（intervalMs 间隔 + maxDepth 拒入），参数运行时经 KV `queue_config` 调整。
@@ -30,7 +33,7 @@ class_name = "QueueDO"
 type = "durable-object"
 storage = "sqlite"
 
-# 用量保留清理：每天 UTC 03:00 删除超保留期的 usage_counts 小时桶。
+# 用量保留清理：每天 UTC 03:00 删除超保留期的 usage_counts 时间桶。
 [triggers]
 crons = ["0 3 * * *"]
 

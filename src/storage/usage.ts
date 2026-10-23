@@ -9,12 +9,12 @@ import type { Env } from "../types";
 
 export type UsageKind = "upstream" | "dist";
 
-/** 一次用量增量（小时桶）。success/fail 二选一递 1；calls := success + fail 派生。 */
+/** 一次用量增量（时间桶）。success/fail 二选一递 1；calls := success + fail 派生。 */
 export interface UsageIncrement {
   kind: UsageKind;
   scope: string; // upstream key id | dist api_key
   provider: string | null; // upstream: 'tavily' | 'exa' | future；dist 无 provider 维度，恒 null
-  hour: string; // 'YYYY-MM-DDTHH:00' UTC
+  bucket: string; // 'YYYY-MM-DDTHH:MM' UTC
   success: number;
   fail: number;
 }
@@ -24,9 +24,9 @@ export interface UsageWindow {
   fail: number;
 }
 
-/** 某个小时桶 × provider 的聚合行（跨全部 scope）。dist 无 provider 维度，provider 为 null。 */
-export interface HourlyRow {
-  hour: string;
+/** 某个时间桶 × provider 的聚合行（跨全部 scope）。dist 无 provider 维度，provider 为 null。 */
+export interface BucketRow {
+  bucket: string;
   provider: string | null;
   success: number;
   fail: number;
@@ -35,17 +35,17 @@ export interface HourlyRow {
 /** 批量 merge 用量增量（UPSERT 求和）。用 DB.batch 一次性事务提交。 */
 export async function mergeUsage(env: Env, rows: UsageIncrement[]): Promise<void> {
   if (rows.length === 0) return;
-  // UPSERT 冲突键 = 0004 后新 PK (kind,scope,hour)。旧 target (kind,scope,provider,hour)
-  // 在新 PK 下不匹配任何唯一约束（SQLite 语法报错），故迁移 0004 必须先于新代码部署；
+  // UPSERT 冲突键 = 0007 后新 PK (kind,scope,bucket)。旧 target 不匹配任何唯一约束
+  // （SQLite 语法报错），故迁移必须先于新代码部署；
   // 窗口期（旧代码 + 新表）旧 flush 写失败属「写失败静默、统计有损」的既有语义。
   const stmts = rows.map((r) =>
     env.DB.prepare(
-      `INSERT INTO usage_counts(kind,scope,provider,hour,success,fail)
+      `INSERT INTO usage_counts(kind,scope,provider,bucket,success,fail)
        VALUES(?1,?2,?3,?4,?5,?6)
-       ON CONFLICT(kind,scope,hour) DO UPDATE SET
+       ON CONFLICT(kind,scope,bucket) DO UPDATE SET
          success = success + excluded.success,
          fail    = fail + excluded.fail`
-    ).bind(r.kind, r.scope, r.provider, r.hour, r.success, r.fail)
+    ).bind(r.kind, r.scope, r.provider, r.bucket, r.success, r.fail)
   );
   await env.DB.batch(stmts);
 }
@@ -55,10 +55,10 @@ export async function sumUsageByScopes(
   env: Env,
   kind: UsageKind,
   scopes: string[],
-  minHour: string
+  minBucket: string
 ): Promise<Record<string, Record<string, UsageWindow>>> {
   if (scopes.length === 0) return {};
-  // D1/SQLite caps numbered bind variables at ?100; kind + minHour use two slots.
+  // D1/SQLite caps numbered bind variables at ?100; kind + minBucket use two slots.
   const maxScopesPerQuery = 98;
   const out: Record<string, Record<string, UsageWindow>> = {};
   const mergeRows = (results: unknown[]) => {
@@ -78,9 +78,9 @@ export async function sumUsageByScopes(
     const { results } = await env.DB.prepare(
       `SELECT scope, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
        FROM usage_counts
-       WHERE kind = ?1 AND scope IN (${placeholders}) AND hour >= ?${scopes.length + 2}
+       WHERE kind = ?1 AND scope IN (${placeholders}) AND bucket >= ?${scopes.length + 2}
        GROUP BY scope, provider`
-    ).bind(kind, ...scopes, minHour).all();
+    ).bind(kind, ...scopes, minBucket).all();
     mergeRows(results);
     return out;
   }
@@ -94,9 +94,9 @@ export async function sumUsageByScopes(
       env.DB.prepare(
         `SELECT scope, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
          FROM usage_counts
-         WHERE kind = ?1 AND scope IN (${placeholders}) AND hour >= ?${scopeBatch.length + 2}
+         WHERE kind = ?1 AND scope IN (${placeholders}) AND bucket >= ?${scopeBatch.length + 2}
          GROUP BY scope, provider`
-      ).bind(kind, ...scopeBatch, minHour)
+      ).bind(kind, ...scopeBatch, minBucket)
     );
   }
   const batchResults = await env.DB.batch(stmts);
@@ -104,23 +104,23 @@ export async function sumUsageByScopes(
   return out;
 }
 
-/** 跨全部 scope 按小时桶 × provider 聚合（dashboard 折线序列用）。复用 idx_usage_window 索引。 */
+/** 跨全部 scope 按时间桶 × provider 聚合（dashboard 折线序列用）。复用 idx_usage_window 索引。 */
 export async function readSeriesByProvider(
   env: Env,
   kind: UsageKind,
-  minHour: string
-): Promise<HourlyRow[]> {
+  minBucket: string
+): Promise<BucketRow[]> {
   const { results } = await env.DB.prepare(
-    `SELECT hour, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
+    `SELECT bucket, provider, COALESCE(SUM(success),0) AS success, COALESCE(SUM(fail),0) AS fail
      FROM usage_counts
-     WHERE kind = ?1 AND hour >= ?2
-     GROUP BY hour, provider
-     ORDER BY hour`
+     WHERE kind = ?1 AND bucket >= ?2
+     GROUP BY bucket, provider
+     ORDER BY bucket`
   )
-    .bind(kind, minHour)
+    .bind(kind, minBucket)
     .all();
   return (results as Record<string, unknown>[]).map((r) => ({
-    hour: r.hour as string,
+    bucket: r.bucket as string,
     provider: r.provider as string | null,
     success: (r.success as number) ?? 0,
     fail: (r.fail as number) ?? 0,

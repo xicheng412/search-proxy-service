@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------
 
 import { csrfField, layout } from "./index";
+import type { DistSummaries } from "../usage";
 
 export interface DashboardData {
   tavilyTotal: number;
@@ -13,6 +14,7 @@ export interface DashboardData {
   distEnabled: number;
   distSeries: string;
   upstreamSeries: string;
+  distSummaries: DistSummaries;
   queueIntervalMs: number;
   queueMaxDepth: number;
   queueWaitBudgetMs: number;
@@ -55,20 +57,20 @@ export function adminPage(data: DashboardData): string {
   <div class="dash-rail">
     <div class="card stat">
       <div class="stat-label">最近 24h</div>
-      <div class="stat-num" id="calls-24h">–</div>
+      <div class="stat-num" id="calls-24h">${data.distSummaries.last24h}</div>
     </div>
     <div class="card stat">
       <div class="stat-label">昨日</div>
-      <div class="stat-num" id="calls-yesterday">–</div>
+      <div class="stat-num" id="calls-yesterday">${data.distSummaries.yesterday}</div>
     </div>
     <div class="card stat">
       <div class="stat-label">今日</div>
-      <div class="stat-num" id="calls-today">–</div>
+      <div class="stat-num" id="calls-today">${data.distSummaries.today}</div>
     </div>
-    <div class="dash-rail-foot">分发请求量 · 本地时区 · 今日含当前小时</div>
+    <div class="dash-rail-foot">分发请求量 · UTC 日 · 含当前桶</div>
   </div>
   <div class="card chart">
-    <h2 title="每个 UTC 小时桶内上游官方 key 的真实调用尝试次数，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（上游真实调用 Tavily/Exa）</span></h2>
+    <h2 title="每个 UTC 时间桶（15 分钟）内上游官方 key 的真实调用尝试次数，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（上游真实调用 Tavily/Exa）</span></h2>
     <div class="chart-box"><canvas id="calls-chart"></canvas></div>
   </div>
 </div>
@@ -125,7 +127,10 @@ export function adminPage(data: DashboardData): string {
  * JSON 注入用 `\u003c` 而非 HTML esc：`<script>` 内容是 raw text，实体不反解码，
  * esc 把 `"` 变 `&quot;` 会破坏 JSON；`\u003c` 是合法 JSON 转义且防 `</script`/`<!--`。
  */
-function dashboardScript(distSeriesJson: string, upstreamSeriesJson: string): string {
+function dashboardScript(
+  distSeriesJson: string,
+  upstreamSeriesJson: string
+): string {
   return `<script type="application/json" id="dist-series">${distSeriesJson.replace(/</g, "\\u003c")}</script>
 <script type="application/json" id="upstream-series">${upstreamSeriesJson.replace(/</g, "\\u003c")}</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>

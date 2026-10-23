@@ -10,34 +10,36 @@ import { createCore } from "./core";
 import { makeTodayRead } from "./reads/today";
 import { makeWeightSignal } from "./reads/weight";
 import { makeSeriesRead } from "./reads/series";
-import type { UpstreamSeriesPoint, DistSeriesPoint } from "./reads/series";
+import type { UpstreamSeriesPoint, DistSeriesPoint, DistSummaries } from "./reads/series";
 
 // 保持序列点类型面向外可达（现状本就在原 usage-store.ts 公开导出）。
-export type { UpstreamSeriesPoint, DistSeriesPoint };
+export type { UpstreamSeriesPoint, DistSeriesPoint, DistSummaries };
 
 type Result = "success" | "fail";
 
 export interface UsageStore {
   /** 记一次上游结果（成功/失败）——纯内存累加，0 IO。 */
-  recordUpstreamResult(id: string, provider: Provider, hour: string, result: Result): void;
+  recordUpstreamResult(id: string, provider: Provider, bucket: string, result: Result): void;
   /** 记一次分发 key 请求到达（无成败维度，仅计数）——纯内存累加，0 IO。 */
-  recordDistCall(apiKey: string, hour: string): void;
-  /** 批量读上游 key 某 UTC 日（minHour 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
+  recordDistCall(apiKey: string, bucket: string): void;
+  /** 批量读上游 key 某 UTC 日（minBucket 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
   readUpstreamTodayStats(
     ids: string[],
-    minHour: string
+    minBucket: string
   ): Promise<Record<string, { success: number; fail: number }>>;
   /** 热路径选 key 信号：滑动窗口失败数快照（后台刷新）+ 本实例 pending——0 次 D1 往返。 */
   readUpstreamWeightSignal(ids: string[]): Promise<Record<string, number>>;
   /** 批量读多个分发 key 某 UTC 日统计（展示用）：D1 现值 + 本实例增量叠加。 */
   readDistCallsByScopes(
     apiKeys: string[],
-    minHour: string
+    minBucket: string
   ): Promise<Record<string, Stats>>;
-  /** 读上游真实调用尝试小时序列（Memory TTL + pending 叠加）；给 dashboard 近5天趋势图。返回 `minHour..当前小时` 完整小时序列，空桶补 0；dashboard 趋势图按 Chart.js time scale 渲染需等时间间隔。 */
-  readUpstreamSeries(minHour: string): Promise<UpstreamSeriesPoint[]>;
-  /** 读全部分发 key 的 dist 小时序列（Memory TTL + pending 叠加）；给 dashboard 24h/昨日卡。返回 `minHour..当前小时` 完整小时序列，空桶补 0；dashboard 趋势图按 Chart.js time scale 渲染需等时间间隔。 */
-  readDistSeries(minHour: string): Promise<DistSeriesPoint[]>;
+  /** 读上游真实调用尝试时间序列（Memory TTL + pending 叠加）；给 dashboard 近5天趋势图。返回 `minBucket..当前桶` 完整时间序列，空桶补 0；dashboard 趋势图按 Chart.js time scale 渲染需等时间间隔。 */
+  readUpstreamSeries(minBucket: string): Promise<UpstreamSeriesPoint[]>;
+  /** 读全部分发 key 的 dist 时间序列（Memory TTL + pending 叠加）；给 dashboard 三张卡与趋势图。返回 `minBucket..当前桶` 完整时间序列，空桶补 0；dashboard 趋势图按 Chart.js time scale 渲染需等时间间隔。 */
+  readDistSeries(minBucket: string): Promise<DistSeriesPoint[]>;
+  /** Dashboard 三张卡（最近 24h / 今日 / 昨日）的 dist 汇总，服务端口径（避免前端按时区重算）。 */
+  readDistSummaries(seriesMinBucket: string): Promise<DistSummaries>;
   /** 节流调度 flush：距上次 ≥interval 且未达条数上限才排入 waitUntil，不阻塞请求。 */
   flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void;
   /** 立即落库缓冲中全部增量（队列清空兜底用）：复用 flush 的防重入与批量合并，不改节流时钟。 */
@@ -47,7 +49,7 @@ export interface UsageStore {
 }
 
 export interface UsageStoreOpts {
-  /** 小时桶大致统计落库节流：距上次 flush 不足此间隔且未达条数阈值则不写。默认 30min（≥30min 落库，不追求实时）。 */
+  /** 时间桶大致统计落库节流：距上次 flush 不足此间隔且未达条数阈值则不写。默认 BUCKET_MS（跨 isolate 最多 1 个桶不可见）。 */
   flushIntervalMs?: number;
   /** 单 isolate 缓冲（pending）条数上限；达到即强制 flush，防长驻 isolate 无界增长。默认 256。 */
   flushMaxPending?: number;
@@ -84,6 +86,7 @@ export function createUsageStore(env: Env, opts: UsageStoreOpts = {}): UsageStor
     refreshWeightBase: () => weight.refreshNow().catch(() => {}),
     readUpstreamSeries: series.upstream,
     readDistSeries: series.dist,
+    readDistSummaries: series.readDistSummaries,
   };
 }
 

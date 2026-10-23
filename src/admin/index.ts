@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { Env, AppVariables } from "../types";
 import { getCsrfToken } from "../auth";
-import { hourKey } from "../domain";
+import { bucketKey } from "../domain";
 import { countDistributedKeys } from "../storage/dist-keys";
 import { countUpstreamKeys } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage";
@@ -51,10 +51,11 @@ admin.get("/", async (c) => {
   ]);
 
   const store = getUsageStore(env);
-  const seriesMinHour = hourKey(Date.now() - 5 * 86_400_000);
-  const [distSeries, upstreamSeries] = await Promise.all([
-    store.readDistSeries(seriesMinHour),
-    store.readUpstreamSeries(seriesMinHour),
+  const seriesMinBucket = bucketKey(Date.now() - 5 * 86_400_000);
+  const [distSeries, upstreamSeries, distSummaries] = await Promise.all([
+    store.readDistSeries(seriesMinBucket),
+    store.readUpstreamSeries(seriesMinBucket),
+    store.readDistSummaries(seriesMinBucket),
   ]);
   const [queueCfg, breakerCfg, distCacheCfg, csrf] = await Promise.all([
     readQueueConfig(kv),
@@ -73,6 +74,7 @@ admin.get("/", async (c) => {
       distEnabled: dkeys.enabled,
       distSeries: JSON.stringify(distSeries),
       upstreamSeries: JSON.stringify(upstreamSeries),
+      distSummaries,
       queueIntervalMs: queueCfg.intervalMs,
       queueMaxDepth: queueCfg.maxDepth,
       queueWaitBudgetMs: queueCfg.waitBudgetMs,

@@ -10,7 +10,7 @@ import { TAVILY } from "../../src/providers";
 import { createKeyPool, type KeyPool } from "../../src/key-pool";
 import { getUsageStore } from "../../src/usage";
 import { makeUpstreamSubscriber } from "../../src/queue/upstream-subscriber";
-import { hourKey } from "../../src/domain";
+import { bucketKey } from "../../src/domain";
 import { makeConstantD1 } from "../helpers/fake-d1";
 
 const fakeKV = { get: async () => null }; // 无配置 → 默认 postUse 10s
@@ -38,7 +38,7 @@ describe("makeUpstreamSubscriber", () => {
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 0, updated_at: at, created_at: at });
     expect(pool.getKeys()[0].cooldown_until).toBe(at + 10_000); // post-use 10s
     expect(pool.getKeys()[0].suspended_cause).toBe("post-use");
-    await expect(store.readUpstreamTodayStats(["k1"], hourKey(at))).resolves.toEqual({
+    await expect(store.readUpstreamTodayStats(["k1"], bucketKey(at))).resolves.toEqual({
       k1: { success: 1, fail: 0 },
     });
   });
@@ -55,7 +55,7 @@ describe("makeUpstreamSubscriber", () => {
     expect(pool.getBreakerState("k2")).toBeNull(); // 不碰连续计数
     expect(pool.getKeys()[0].cooldown_until).toBe(at + 43_200_000); // invalidSec 12h
     expect(pool.getKeys()[0].suspended_cause).toBe("rate-limit");
-    await expect(store.readUpstreamTodayStats(["k2"], hourKey(at))).resolves.toEqual({
+    await expect(store.readUpstreamTodayStats(["k2"], bucketKey(at))).resolves.toEqual({
       k2: { success: 0, fail: 1 },
     });
   });

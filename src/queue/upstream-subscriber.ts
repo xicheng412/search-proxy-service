@@ -11,7 +11,7 @@
 
 import type { Env } from "../types";
 import type { Provider } from "../domain";
-import { hourKey } from "../domain";
+import { bucketKey } from "../domain";
 import type { KeyPool } from "../key-pool";
 import type { EventSubscriber } from "../events";
 import { getUsageStore } from "../usage";
@@ -33,9 +33,9 @@ export function makeUpstreamSubscriber(env: Env, poolOf: PoolResolver): EventSub
     // usage 记账：success→success；auth/server-error 与 rate-limit→fail（rate-limit 视为 key 级
     // 不可用，借失败会计入权重惩罚与当日失败）；client-error 不记（理论上不入事件，防御性忽略）。
     if (ev.cls === "success") {
-      store.recordUpstreamResult(ev.keyId, ev.provider, hourKey(ev.at), "success");
+      store.recordUpstreamResult(ev.keyId, ev.provider, bucketKey(ev.at), "success");
     } else if (ev.cls !== "client-error") {
-      store.recordUpstreamResult(ev.keyId, ev.provider, hourKey(ev.at), "fail");
+      store.recordUpstreamResult(ev.keyId, ev.provider, bucketKey(ev.at), "fail");
     }
     return cooldown;
   };

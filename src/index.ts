@@ -11,6 +11,7 @@ import { publicApp } from "./routes/public";
 import { proxyApp } from "./routes/proxy";
 import { adminAuth } from "./routes/admin-auth";
 import { admin } from "./admin";
+import { bucketKey } from "./domain";
 
 export type { Env } from "./types";
 export { QueueDO } from "./queue/durable-object";
@@ -22,7 +23,7 @@ app.route("/", proxyApp);
 app.route("/admin", adminAuth);
 app.route("/admin", admin);
 
-// 用量保留：D1 无 TTL，定时清理超 90 天的 UTC 小时桶行。小时桶价廉，每日一次足够。
+// 用量保留：D1 无 TTL，定时清理超 90 天的 UTC 时间桶行。桶价廉，每日一次足够。
 const USAGE_RETENTION_DAYS = 90;
 
 export default {
@@ -32,8 +33,7 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<void> {
-    const cutoff =
-      new Date(Date.now() - USAGE_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 13) + ":00";
-    await env.DB.prepare("DELETE FROM usage_counts WHERE hour < ?1").bind(cutoff).run();
+    const cutoff = bucketKey(Date.now() - USAGE_RETENTION_DAYS * 86_400_000);
+    await env.DB.prepare("DELETE FROM usage_counts WHERE bucket < ?1").bind(cutoff).run();
   },
 };

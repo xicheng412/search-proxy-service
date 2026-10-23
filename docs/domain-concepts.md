@@ -29,7 +29,7 @@
 | UpdateQueueConfig / UpdateBreakerConfig / UpdateDistCacheConfig | 用户(admin) | admin POST /admin/queue-config / breaker-config / dist-cache-config → KV 写 + 缓存失效 |
 | AuthenticateRequest | 调用方 | authenticate middleware → getDistributedKey（含复合前缀解析 + Cache API 读穿） |
 | ExecuteProxyRequest（search/extract/reader → QueueDO） | 调用方 | handlers → countDist（dist 到达计数在主 Worker 转发前完成）→ forwardToQueue → QueueDO → executor → searchWithRetry |
-| ScheduledPurgeUsage | cron（scheduled 事件） | index.ts scheduled → DELETE FROM usage_counts WHERE hour < cutoff |
+| ScheduledPurgeUsage | cron（scheduled 事件） | index.ts scheduled → DELETE FROM usage_counts WHERE bucket < cutoff |
 
 ## 2. 领域事件（命令产物）
 
@@ -70,6 +70,8 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
   dist 请求到达已在主 Worker 计入。
 - **单点写者**：per-provider KeyPool 仅其 QueueDO 写冷却（权威在内存）；
   D1 只承载投影 / checkpoint 备份 / usage_counts，不参与冷却决策。
+- **usage_counts 全 15 分钟桶**：`usage_counts` 全部行为 15 分钟桶；迁移 0007 已把历史小时行按等比
+  拆为 4 个桶（余数归最后一段），总量严格守恒。读取侧不区分历史与新增行。
 
 ## 5. 聚合与实体
 
@@ -80,7 +82,7 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 - **聚合 DistributedKey（根 = DistributedKey 行）**：实体 DistributedKey（身份 `api_key`）；
   行为 generate / toggle / delete / validateCredential（authenticate）；Cache API 读穿快路径。
 - **值对象（domain 层，`src/domain.ts`）**：Availability（可用性）、CooldownCause（冷却因由）、
-  RetryClass（重试分类族）、DistAuth（复合前缀解析结果）、HourBucket（小时桶键，以字符串表示）、
+  RetryClass（重试分类族）、DistAuth（复合前缀解析结果）、bucketKey（时间桶键，以字符串表示）、
   UpstreamAttemptSettled（领域事件）。
 - **值对象/DTO（domain 层之外，按所在层归位）**：
   `BreakerState` / `BreakerOutcome` → `src/domain-services/breaker-policy.ts`（领域服务侧值对象）；

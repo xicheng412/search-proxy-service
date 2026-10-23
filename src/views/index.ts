@@ -172,7 +172,7 @@ export function distListFragment(
             <td>${esc(k.note)}</td>
             <td>${st}</td>
             <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
-            <td title="该分发 key 最近24小时（含当前小时）的请求数">${s.success + s.fail}</td>
+            <td title="该分发 key 最近24小时（15 分钟桶，含当前桶）的请求数">${s.success + s.fail}</td>
             <td>
               <div class="hstack">
                 <div class="menu-wrap">
@@ -216,7 +216,7 @@ export function distListFragment(
   </div>
   <table>
     <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th title="该分发 key 最近24小时（含当前小时）的请求数">最近24h请求</th><th>操作</th></tr>
+      <th title="该分发 key 最近24小时（15 分钟桶，含当前桶）的请求数">最近24h请求</th><th>操作</th></tr>
     <tbody>${rows}</tbody>
   </table>
   ${paginationHtml(pagination, keys.length > 0, "#keys-list", total)}`;

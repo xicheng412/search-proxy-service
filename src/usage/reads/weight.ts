@@ -2,11 +2,11 @@
 // 热路径选 key 信号：滑动窗口失败数快照（后台刷新，最长陈旧 signalBaseTtlMs）+ core pending 叠加，
 // 每请求 0 次 D1 往返。signalBase 状态归本模块闭包；刷新驱动共三处：flush 落库钩子（组合根 index.ts onFlushed）、
 // QueueDO drain 每任务前置 refreshWeightBase（queue/durable-object.ts）、外部显式调用 refreshWeightBase；
-// 三处共用 maybeRefresh 的 TTL+minHour 自节流。
+// 三处共用 maybeRefresh 的 TTL+minBucket 自节流。
 // 依赖方向只向下：reads/ → core → storage/usage → domain；不 import proxy.ts / admin/*。
 
 import type { Env } from "../../types";
-import { hourKey } from "../../domain";
+import { bucketKey } from "../../domain";
 import type { UsageCore } from "../core";
 
 export interface WeightOpts {
@@ -21,41 +21,41 @@ export function makeWeightSignal(env: Env, core: UsageCore, opts: WeightOpts = {
   const signalBaseTtlMs = opts.signalBaseTtlMs ?? 120_000;
 
   // 热路径选 key 信号：滑动窗口失败数快照，由 flush/drain/显式三驱动后台刷新，最长陈旧 signalBaseTtlMs。
-  let signalBase: { minHour: string; at: number; fail: Record<string, number> } | null = null;
+  let signalBase: { minBucket: string; at: number; fail: Record<string, number> } | null = null;
 
   /**
    * 惰性刷新信号快照：空 base / 窗口下界变化 / 超 TTL 才查询；失败由调用方吞掉，保留旧 base。
    * 不吞错——吞错由组合根调用点负责（onFlushed 钩子与 refreshWeightBase 各自 catch）。
    */
   async function maybeRefresh(): Promise<void> {
-    const minHour = hourKey(Date.now() - weightWindowMs);
+    const minBucket = bucketKey(Date.now() - weightWindowMs);
     const now = Date.now();
-    if (signalBase && signalBase.minHour === minHour && now - signalBase.at < signalBaseTtlMs) return;
+    if (signalBase && signalBase.minBucket === minBucket && now - signalBase.at < signalBaseTtlMs) return;
     const { results } = await env.DB.prepare(
       `SELECT scope, COALESCE(SUM(fail),0) AS fail
-       FROM usage_counts WHERE kind = ?1 AND hour >= ?2 GROUP BY scope`
-    ).bind("upstream", minHour).all();
+       FROM usage_counts WHERE kind = ?1 AND bucket >= ?2 GROUP BY scope`
+    ).bind("upstream", minBucket).all();
     const fail: Record<string, number> = {};
     for (const r of results as Record<string, unknown>[]) fail[r.scope as string] = (r.fail as number) ?? 0;
-    signalBase = { minHour, at: now, fail };
+    signalBase = { minBucket, at: now, fail };
   }
 
   /** 热路径选 key 信号：滑动窗口失败数快照（后台刷新）+ 本实例 pending；0 次 D1 往返。 */
   async function readSignal(ids: string[]): Promise<Record<string, number>> {
     if (ids.length === 0) return {};
-    const minHour = hourKey(Date.now() - weightWindowMs);
+    const minBucket = bucketKey(Date.now() - weightWindowMs);
     const out: Record<string, number> = {};
     for (const id of ids) {
-      out[id] = signalBase && signalBase.minHour === minHour ? (signalBase.fail[id] ?? 0) : 0;
+      out[id] = signalBase && signalBase.minBucket === minBucket ? (signalBase.fail[id] ?? 0) : 0;
     }
-    core.collapsePending("upstream", new Set(ids), minHour, (scope, _p, _h, _s, fail) => {
+    core.collapsePending("upstream", new Set(ids), minBucket, (scope, _p, _b, _s, fail) => {
       out[scope] += fail;
     });
     return out;
   }
 
   /** 立即刷新权重信号 base（空 base / 窗口下界变化 / 超 TTL 才查 D1，否则 0 IO no-op）。
-   *  沿用 maybeRefresh 的 TTL + minHour 双条件自节流；不吞错——吞错由组合根调用点负责。 */
+   *  沿用 maybeRefresh 的 TTL + minBucket 双条件自节流；不吞错——吞错由组合根调用点负责。 */
   async function refreshNow(): Promise<void> {
     await maybeRefresh();
   }

@@ -1,5 +1,5 @@
 // 基础设施层·日用量统计的"管理页当日"读产品（原 usage-store.ts 的读侧拆出）。
-// 各自持有私有 30s 缓存（读缓存覆盖 minHour 与 scope 集合），D1 现值 + core pending 叠加。
+// 各自持有私有 30s 缓存（读缓存覆盖 minBucket 与 scope 集合），D1 现值 + core pending 叠加。
 // 依赖方向只向下：reads/ → core → storage/usage → domain；不 import proxy.ts / admin/*。
 
 import type { Env } from "../../types";
@@ -15,35 +15,35 @@ export interface TodayOpts {
 export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
   const readCacheMs = opts.readCacheMs ?? 30_000;
 
-  // ---- 读缓存（本 read 产品独立；minHour 与 scope 集合都变才失效）----
+  // ---- 读缓存（本 read 产品独立；minBucket 与 scope 集合都变才失效）----
   let upstreamCache: {
     ids: string;
-    minHour: string;
+    minBucket: string;
     at: number;
     base: Record<string, { success: number; fail: number }>;
   } | null = null;
   let distCache: {
     ids: string;
-    minHour: string;
+    minBucket: string;
     at: number;
     base: Record<string, Stats>;
   } | null = null;
 
-  /** 批量读上游 key 某 UTC 日（minHour 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
+  /** 批量读上游 key 某 UTC 日（minBucket 起）统计（展示用，admin 列表页）：D1 现值 + 本实例增量叠加。 */
   async function upstreamToday(
     ids: string[],
-    minHour: string
+    minBucket: string
   ): Promise<Record<string, { success: number; fail: number }>> {
     const idsKey = [...ids].sort().join(",");
     const now = Date.now();
     if (
       !upstreamCache ||
       upstreamCache.ids !== idsKey ||
-      upstreamCache.minHour !== minHour ||
+      upstreamCache.minBucket !== minBucket ||
       now - upstreamCache.at >= readCacheMs
     ) {
       const base: Record<string, { success: number; fail: number }> = {};
-      const byScope = await sumUsageByScopes(env, "upstream", ids, minHour);
+      const byScope = await sumUsageByScopes(env, "upstream", ids, minBucket);
       for (const id of ids) {
         const byProvider = byScope[id] ?? {};
         let s = 0;
@@ -54,12 +54,12 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
         }
         base[id] = { success: s, fail: f };
       }
-      upstreamCache = { ids: idsKey, minHour, at: now, base };
+      upstreamCache = { ids: idsKey, minBucket, at: now, base };
     }
-    // 近似口径：pending 中该 scope 的全部小时增量并入（scope 不含 \u0000，与
+    // 近似口径：pending 中该 scope 的 bucket >= minBucket 增量并入（scope 不含 \u0000，与
     // 原 `k.startsWith("upstream\u0000" + id + "\u0000")` 等价）。一次扫完、按键累加。
     const approx: Record<string, { success: number; fail: number }> = {};
-    core.collapsePending("upstream", new Set(ids), null, (scope, _p, _h, s, f) => {
+    core.collapsePending("upstream", new Set(ids), minBucket, (scope, _p, _b, s, f) => {
       const a = approx[scope] ?? { success: 0, fail: 0 };
       a.success += s;
       a.fail += f;
@@ -77,7 +77,7 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
   /** 批量读多个分发 key 某 UTC 日统计（展示用）：D1 现值 + 本实例增量叠加。 */
   async function distToday(
     apiKeys: string[],
-    minHour: string
+    minBucket: string
   ): Promise<Record<string, Stats>> {
     if (apiKeys.length === 0) return {};
     const idsKey = [...apiKeys].sort().join(",");
@@ -85,11 +85,11 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
     if (
       !distCache ||
       distCache.ids !== idsKey ||
-      distCache.minHour !== minHour ||
+      distCache.minBucket !== minBucket ||
       now - distCache.at >= readCacheMs
     ) {
       const base: Record<string, Stats> = {};
-      const byScope = await sumUsageByScopes(env, "dist", apiKeys, minHour);
+      const byScope = await sumUsageByScopes(env, "dist", apiKeys, minBucket);
       for (const key of apiKeys) {
         // 汇总该 scope 全部 provider 的 success/fail；缺失 provider 不产生计数。
         let success = 0;
@@ -100,11 +100,11 @@ export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {
         }
         base[key] = { success, fail };
       }
-      distCache = { ids: idsKey, minHour, at: now, base };
+      distCache = { ids: idsKey, minBucket, at: now, base };
     }
-    // 近似口径：pending 中该 scope 的全部小时增量并入（无视 provider 值）。一次扫完、按键累加。
+    // 近似口径：pending 中该 scope 的 bucket >= minBucket 增量并入（无视 provider 值）。一次扫完、按键累加。
     const approx: Record<string, Stats> = {};
-    core.collapsePending("dist", new Set(apiKeys), null, (scope, _p, _h, s, f) => {
+    core.collapsePending("dist", new Set(apiKeys), minBucket, (scope, _p, _b, s, f) => {
       const a = approx[scope] ?? { success: 0, fail: 0 };
       a.success += s;
       a.fail += f;

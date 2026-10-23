@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createUsageStore } from "../src/usage";
-import { hourKey } from "../src/domain";
+import { bucketKey } from "../src/domain";
 import type { Env } from "../src/types";
 import { makeConstantD1, makeScriptedD1 } from "./helpers/fake-d1";
 
@@ -12,38 +12,38 @@ const seedRows = [
   { scope: "key-a", provider: "exa", success: 5, fail: 1 },
   { scope: "key-b", provider: "tavily", success: 1, fail: 0 },
 ];
-const minHour = "2026-09-01T00:00";
+const minBucket = "2026-09-01T00:00";
 
 describe("readDistCallsByScopes", () => {
   it("跨全部 provider 汇总 success/fail，缺失 provider 不产生计数", async () => {
     const { db, allCalls } = makeConstantD1(seedRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    const res = await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
+    const res = await store.readDistCallsByScopes(["key-a", "key-b"], minBucket);
     expect(res["key-a"]).toEqual({ success: 8, fail: 3 }); // tavily 3/2 + exa 5/1
     expect(res["key-b"]).toEqual({ success: 1, fail: 0 });
     expect(allCalls()).toBe(1);
   });
 
-  it("相同 scope 集合与 minHour 的第二次读取不新增 D1 聚合查询", async () => {
+  it("相同 scope 集合与 minBucket 的第二次读取不新增 D1 聚合查询", async () => {
     const { db, allCalls } = makeConstantD1(seedRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
-    await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
+    await store.readDistCallsByScopes(["key-a", "key-b"], minBucket);
+    await store.readDistCallsByScopes(["key-a", "key-b"], minBucket);
     expect(allCalls()).toBe(1);
   });
 
   it("缓存命中期间 pending 增量叠加且不新增查询；upstream 不影响 dist 结果", async () => {
     const { db, allCalls } = makeConstantD1(seedRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readDistCallsByScopes(["key-a", "key-b"], minHour); // 填充缓存
-    const before = await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
+    await store.readDistCallsByScopes(["key-a", "key-b"], minBucket); // 填充缓存
+    const before = await store.readDistCallsByScopes(["key-a", "key-b"], minBucket);
     expect(before["key-a"]).toEqual({ success: 8, fail: 3 });
 
-    const h = hourKey();
+    const h = bucketKey();
     store.recordDistCall("key-a", h); // 到达计数（无成败实参）
     store.recordUpstreamResult("up-1", "tavily", h, "success"); // 不应混入 dist
 
-    const after = await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
+    const after = await store.readDistCallsByScopes(["key-a", "key-b"], minBucket);
     expect(after["key-a"]).toEqual({ success: 9, fail: 3 }); // 仅 key-a 的 dist +1
     expect(after["key-b"]).toEqual({ success: 1, fail: 0 });
     expect(allCalls()).toBe(1); // 仍在缓存命中窗口，无新 D1 查询
@@ -52,17 +52,17 @@ describe("readDistCallsByScopes", () => {
   it("空 scope 集合返回空 map 且不执行 D1 查询", async () => {
     const { db, allCalls } = makeConstantD1(seedRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    const res = await store.readDistCallsByScopes([], minHour);
+    const res = await store.readDistCallsByScopes([], minBucket);
     expect(res).toEqual({});
     expect(allCalls()).toBe(0);
   });
 
-  it("修改 scope 集合或 minHour 会重新查询", async () => {
+  it("修改 scope 集合或 minBucket 会重新查询", async () => {
     const { db, allCalls } = makeConstantD1(seedRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readDistCallsByScopes(["key-a", "key-b"], minHour);
+    await store.readDistCallsByScopes(["key-a", "key-b"], minBucket);
     expect(allCalls()).toBe(1);
-    await store.readDistCallsByScopes(["key-a"], minHour);
+    await store.readDistCallsByScopes(["key-a"], minBucket);
     expect(allCalls()).toBe(2);
     await store.readDistCallsByScopes(["key-a"], "2026-09-02T00:00");
     expect(allCalls()).toBe(3);
@@ -80,7 +80,7 @@ describe("readUpstreamWeightSignal", () => {
   it("pending 叠加且不新增 D1", async () => {
     const { db, allCalls } = makeConstantD1([]);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail");
+    store.recordUpstreamResult("key-a", "tavily", bucketKey(), "fail");
     await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 1 });
     expect(allCalls()).toBe(0);
   });
@@ -89,7 +89,7 @@ describe("readUpstreamWeightSignal", () => {
     const signalRows = [{ scope: "key-a", provider: "tavily", success: 3, fail: 2 }];
     const { db, allCalls } = makeConstantD1(signalRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    store.recordUpstreamResult("key-a", "tavily", hourKey(), "success"); // 让 flush 有东西可写
+    store.recordUpstreamResult("key-a", "tavily", bucketKey(), "success"); // 让 flush 有东西可写
     let captured: Promise<unknown> | undefined;
     store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
     expect(captured).toBeDefined();
@@ -106,28 +106,28 @@ describe("readUpstreamWeightSignal", () => {
   it("flush 刷新信号 base 时按 weightWindowMs 滑动窗口取数（非当日）", async () => {
     const { db, log } = makeScriptedD1([{ results: [] }, { results: [] }]);
     const store = createUsageStore({ DB: db } as unknown as Env, { weightWindowMs: 5 * 60_000 });
-    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail"); // 让 flush 有内容
+    store.recordUpstreamResult("key-a", "tavily", bucketKey(), "fail"); // 让 flush 有内容
     let captured: Promise<unknown> | undefined;
     store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
     expect(captured).toBeDefined();
     await captured;
     // flush：batch（mergeUsage）→ all（信号刷新）；刷新 SQL 的下界绑定为窗口起点。
-    const refresh = log().filter((c) => c.op === "all" && c.sql.includes("hour >= ?2"));
+    const refresh = log().filter((c) => c.op === "all" && c.sql.includes("bucket >= ?2"));
     expect(refresh).toHaveLength(1);
-    expect(refresh[0].binds[1]).toBe(hourKey(Date.now() - 5 * 60_000));
+    expect(refresh[0].binds[1]).toBe(bucketKey(Date.now() - 5 * 60_000));
   });
 
   it("默认 weightWindowMs（30min）下刷新下界随之变化", async () => {
     const { db, log } = makeScriptedD1([{ results: [] }, { results: [] }]);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail");
+    store.recordUpstreamResult("key-a", "tavily", bucketKey(), "fail");
     let captured: Promise<unknown> | undefined;
     store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
     expect(captured).toBeDefined();
     await captured;
-    const refresh = log().filter((c) => c.op === "all" && c.sql.includes("hour >= ?2"));
+    const refresh = log().filter((c) => c.op === "all" && c.sql.includes("bucket >= ?2"));
     expect(refresh).toHaveLength(1);
-    expect(refresh[0].binds[1]).toBe(hourKey(Date.now() - 30 * 60_000));
+    expect(refresh[0].binds[1]).toBe(bucketKey(Date.now() - 30 * 60_000));
   });
 });
 
@@ -138,7 +138,7 @@ describe("flush 双阈值 + flushNow", () => {
       flushIntervalMs: 60_000,
       flushMaxPending: 2,
     });
-    const h = hourKey();
+    const h = bucketKey();
     // 首次 flushSoon 落库并推进 lastFlushAt（此后 60s 内年龄分支不再满足）
     store.recordUpstreamResult("key-a", "tavily", h, "fail");
     let first: Promise<unknown> | undefined;
@@ -161,7 +161,7 @@ describe("flush 双阈值 + flushNow", () => {
     const signalRows = [{ scope: "key-a", provider: "tavily", success: 0, fail: 3 }];
     const { db, batchCalls } = makeConstantD1(signalRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    const h = hourKey();
+    const h = bucketKey();
     store.recordUpstreamResult("key-a", "tavily", h, "success");
     store.recordUpstreamResult("key-a", "tavily", h, "fail");
     await store.flushNow();
@@ -175,9 +175,9 @@ describe("权重信号窗口过滤 + 独立刷新", () => {
   it("pending 中窗口外小时桶的 fail 不计入权重", async () => {
     const { db, allCalls } = makeConstantD1([]);
     const store = createUsageStore({ DB: db } as unknown as Env, { weightWindowMs: 60 * 60_000 });
-    // 越窗桶：比 minHour 早至少一小时，保证落在滑动窗口外
-    const stale = hourKey(Date.now() - 121 * 60_000);
-    const now = hourKey();
+    // 越窗桶：比 minBucket 早至少一小时，保证落在滑动窗口外
+    const stale = bucketKey(Date.now() - 121 * 60_000);
+    const now = bucketKey();
     store.recordUpstreamResult("key-a", "tavily", stale, "fail");
     store.recordUpstreamResult("key-a", "tavily", now, "fail");
     await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 1 });
@@ -189,11 +189,11 @@ describe("权重信号窗口过滤 + 独立刷新", () => {
     const store = createUsageStore({ DB: db } as unknown as Env, {
       flushIntervalMs: 30 * 60 * 1000,
     });
-    store.recordUpstreamResult("key-a", "tavily", hourKey(), "fail"); // 缓冲非空，验证与 flush 解耦
+    store.recordUpstreamResult("key-a", "tavily", bucketKey(), "fail"); // 缓冲非空，验证与 flush 解耦
     await store.refreshWeightBase();
-    const refresh = () => log().filter((c) => c.op === "all" && c.sql.includes("hour >= ?2"));
+    const refresh = () => log().filter((c) => c.op === "all" && c.sql.includes("bucket >= ?2"));
     expect(refresh()).toHaveLength(1);
-    expect(refresh()[0].binds[1]).toBe(hourKey(Date.now() - 30 * 60_000));
+    expect(refresh()[0].binds[1]).toBe(bucketKey(Date.now() - 30 * 60_000));
     await store.refreshWeightBase();
     expect(refresh()).toHaveLength(1); // 120s TTL 内第二次 no-op（0 D1）
     // refreshWeightBase 不触 flush：缓冲仍在 pending，未产生 INSERT
@@ -202,163 +202,148 @@ describe("权重信号窗口过滤 + 独立刷新", () => {
 });
 
 describe("readUpstreamSeries", () => {
+  // now 固定 2026-09-01T11:00Z，桶宽 15min：minBucket=10:00 起范围 10:00..11:00 共 5 桶（只 mock Date，不碰 timer）。
   const upstreamRows = [
-    { hour: "2026-09-01T08:00", provider: "tavily", success: 3, fail: 1 },
-    { hour: "2026-09-01T08:00", provider: "exa", success: 2, fail: 0 },
-    { hour: "2026-09-01T09:00", provider: "tavily", success: 1, fail: 0 },
+    { bucket: "2026-09-01T10:00", provider: "tavily", success: 3, fail: 1 },
+    { bucket: "2026-09-01T10:00", provider: "exa", success: 2, fail: 0 },
+    { bucket: "2026-09-01T10:30", provider: "tavily", success: 1, fail: 0 },
   ];
-  const seriesMinHour = "2026-09-01T00:00";
+  const seriesMinBucket = "2026-09-01T10:00";
 
   beforeEach(() => {
-    // 固定 now=2026-09-01T11:00Z → 序列范围 00:00..11:00 共 12 个桶（只 mock Date，不碰 timer）。
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-01T11:00:00Z"));
   });
   afterEach(() => vi.useRealTimers());
 
-  it("按小时升序聚合各 provider 的 success+fail，缺失 provider 补 0；空桶补 0", async () => {
+  it("按 15min 桶升序聚合各 provider 的 success+fail，缺失 provider 补 0；空桶补 0", async () => {
     const { db, allCalls } = makeConstantD1(upstreamRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    const res = await store.readUpstreamSeries(seriesMinHour);
+    const res = await store.readUpstreamSeries(seriesMinBucket);
     expect(res).toEqual([
-      { hour: "2026-09-01T00:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T01:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T02:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T03:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T04:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T05:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T06:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T07:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T08:00", tavily: 4, exa: 2 },
-      { hour: "2026-09-01T09:00", tavily: 1, exa: 0 },
-      { hour: "2026-09-01T10:00", tavily: 0, exa: 0 },
-      { hour: "2026-09-01T11:00", tavily: 0, exa: 0 },
+      { bucket: "2026-09-01T10:00", tavily: 4, exa: 2 },
+      { bucket: "2026-09-01T10:15", tavily: 0, exa: 0 },
+      { bucket: "2026-09-01T10:30", tavily: 1, exa: 0 },
+      { bucket: "2026-09-01T10:45", tavily: 0, exa: 0 },
+      { bucket: "2026-09-01T11:00", tavily: 0, exa: 0 },
     ]);
     expect(allCalls()).toBe(1);
   });
 
-  it("相同 minHour 的第二次读取不新增 D1 查询", async () => {
+  it("相同 minBucket 的第二次读取不新增 D1 查询", async () => {
     const { db, allCalls } = makeConstantD1(upstreamRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readUpstreamSeries(seriesMinHour);
-    const res = await store.readUpstreamSeries(seriesMinHour);
-    expect(res).toHaveLength(12);
+    await store.readUpstreamSeries(seriesMinBucket);
+    const res = await store.readUpstreamSeries(seriesMinBucket);
+    expect(res).toHaveLength(5);
     expect(allCalls()).toBe(1);
   });
 
-  it("pending 叠加且不新增 D1 查询；小时桶不在 base 时兜底创建；dist 不混入 upstream", async () => {
+  it("pending 叠加且不新增 D1 查询；桶不在 base 时兜底创建；dist 不混入 upstream", async () => {
     const { db, allCalls } = makeConstantD1(upstreamRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readUpstreamSeries(seriesMinHour); // 填缓存
-    const h = "2026-09-01T10:00";
+    await store.readUpstreamSeries(seriesMinBucket); // 填缓存
+    const h = "2026-09-01T10:45";
     store.recordUpstreamResult("up-9", "tavily", h, "success");
     store.recordUpstreamResult("up-9", "tavily", h, "fail");
     store.recordUpstreamResult("up-9", "exa", h, "success");
     store.recordDistCall("key-x", h); // 不应混入 upstream
 
-    const res = await store.readUpstreamSeries(seriesMinHour);
-    expect(res).toHaveLength(12);
-    expect(res[10]).toEqual({ hour: "2026-09-01T10:00", tavily: 2, exa: 1 });
+    const res = await store.readUpstreamSeries(seriesMinBucket);
+    expect(res).toHaveLength(5);
+    expect(res[3]).toEqual({ bucket: "2026-09-01T10:45", tavily: 2, exa: 1 });
     expect(allCalls()).toBe(1); // 仍在 TTL 窗口内，无新 D1 查询
   });
 
   it("seriesTtlMs=0 时每次读取都重新查询 D1", async () => {
     const { db, allCalls } = makeConstantD1([]);
     const store = createUsageStore({ DB: db } as unknown as Env, { seriesTtlMs: 0 });
-    await store.readUpstreamSeries(seriesMinHour);
-    await store.readUpstreamSeries(seriesMinHour);
+    await store.readUpstreamSeries(seriesMinBucket);
+    await store.readUpstreamSeries(seriesMinBucket);
     expect(allCalls()).toBe(2);
   });
 
-  it("不同 minHour 触发重新查询", async () => {
+  it("不同 minBucket 触发重新查询", async () => {
     const { db, allCalls } = makeConstantD1(upstreamRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readUpstreamSeries(seriesMinHour);
-    // 04:00 起读：范围 04:00..11:00 共 8 桶（原用未来日会命中 fillRange 兜底分支，改用范围内的 minHour）。
-    const res = await store.readUpstreamSeries("2026-09-01T04:00");
-    expect(res).toHaveLength(8);
+    await store.readUpstreamSeries(seriesMinBucket);
+    // 10:15 起读：范围 10:15..11:00 共 4 桶。
+    const res = await store.readUpstreamSeries("2026-09-01T10:15");
+    expect(res).toHaveLength(4);
     expect(allCalls()).toBe(2);
   });
 });
 
 describe("readDistSeries", () => {
-  // dist 行 provider 恒 NULL（0004 起无 provider 维度）：calls 须为该小时全部行 success+fail 合计。
+  // dist 行 provider 恒 NULL（0004 起无 provider 维度）：calls 须为该桶全部行 success+fail 合计。
   const distRows = [
-    { hour: "2026-09-01T08:00", provider: null, success: 3, fail: 1 },
-    { hour: "2026-09-01T08:00", provider: null, success: 2, fail: 0 },
-    { hour: "2026-09-01T08:00", provider: null, success: 1, fail: 0 },
-    { hour: "2026-09-01T09:00", provider: null, success: 1, fail: 0 },
+    { bucket: "2026-09-01T10:00", provider: null, success: 3, fail: 1 },
+    { bucket: "2026-09-01T10:00", provider: null, success: 2, fail: 0 },
+    { bucket: "2026-09-01T10:00", provider: null, success: 1, fail: 0 },
+    { bucket: "2026-09-01T10:30", provider: null, success: 1, fail: 0 },
   ];
-  const seriesMinHour = "2026-09-01T00:00";
+  const seriesMinBucket = "2026-09-01T10:00";
 
   beforeEach(() => {
-    // 固定 now=2026-09-01T11:00Z → 序列范围 00:00..11:00 共 12 个桶（只 mock Date，不碰 timer）。
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-01T11:00:00Z"));
   });
   afterEach(() => vi.useRealTimers());
 
-  it("按小时升序聚合，calls 为跨全部 provider 的 success+fail 合计；空桶补 0", async () => {
+  it("按 15min 桶升序聚合，calls 为跨全部 provider 的 success+fail 合计；空桶补 0", async () => {
     const { db, allCalls } = makeConstantD1(distRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    const res = await store.readDistSeries(seriesMinHour);
+    const res = await store.readDistSeries(seriesMinBucket);
     expect(res).toEqual([
-      { hour: "2026-09-01T00:00", calls: 0 },
-      { hour: "2026-09-01T01:00", calls: 0 },
-      { hour: "2026-09-01T02:00", calls: 0 },
-      { hour: "2026-09-01T03:00", calls: 0 },
-      { hour: "2026-09-01T04:00", calls: 0 },
-      { hour: "2026-09-01T05:00", calls: 0 },
-      { hour: "2026-09-01T06:00", calls: 0 },
-      { hour: "2026-09-01T07:00", calls: 0 },
-      { hour: "2026-09-01T08:00", calls: 7 }, // (3+1)+(2+0)+(1+0)
-      { hour: "2026-09-01T09:00", calls: 1 },
-      { hour: "2026-09-01T10:00", calls: 0 },
-      { hour: "2026-09-01T11:00", calls: 0 },
+      { bucket: "2026-09-01T10:00", calls: 7 }, // (3+1)+(2+0)+(1+0)
+      { bucket: "2026-09-01T10:15", calls: 0 },
+      { bucket: "2026-09-01T10:30", calls: 1 },
+      { bucket: "2026-09-01T10:45", calls: 0 },
+      { bucket: "2026-09-01T11:00", calls: 0 },
     ]);
     expect(allCalls()).toBe(1);
   });
 
-  it("相同 minHour 的第二次读取不新增 D1 查询", async () => {
+  it("相同 minBucket 的第二次读取不新增 D1 查询", async () => {
     const { db, allCalls } = makeConstantD1(distRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readDistSeries(seriesMinHour);
-    const res = await store.readDistSeries(seriesMinHour);
-    expect(res).toHaveLength(12);
+    await store.readDistSeries(seriesMinBucket);
+    const res = await store.readDistSeries(seriesMinBucket);
+    expect(res).toHaveLength(5);
     expect(allCalls()).toBe(1);
   });
 
-  it("pending 叠加且不新增 D1 查询；小时桶不在 base 时兜底创建；upstream 不混入 dist", async () => {
+  it("pending 叠加且不新增 D1 查询；桶不在 base 时兜底创建；upstream 不混入 dist", async () => {
     const { db, allCalls } = makeConstantD1(distRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readDistSeries(seriesMinHour); // 填缓存
-    const h = "2026-09-01T10:00";
+    await store.readDistSeries(seriesMinBucket); // 填缓存
+    const h = "2026-09-01T10:45";
     // dist 无成败维度：恒记 success（calls 纯 success 计数）
     store.recordDistCall("key-x", h);
     store.recordDistCall("key-x", h);
     store.recordUpstreamResult("up-9", "tavily", h, "success"); // 不应混入 dist
 
-    const res = await store.readDistSeries(seriesMinHour);
-    expect(res).toHaveLength(12);
-    expect(res[10]).toEqual({ hour: "2026-09-01T10:00", calls: 2 });
+    const res = await store.readDistSeries(seriesMinBucket);
+    expect(res).toHaveLength(5);
+    expect(res[3]).toEqual({ bucket: "2026-09-01T10:45", calls: 2 });
     expect(allCalls()).toBe(1); // 仍在 TTL 窗口内，无新 D1 查询
   });
 
   it("seriesTtlMs=0 时每次读取都重新查询 D1", async () => {
     const { db, allCalls } = makeConstantD1([]);
     const store = createUsageStore({ DB: db } as unknown as Env, { seriesTtlMs: 0 });
-    await store.readDistSeries(seriesMinHour);
-    await store.readDistSeries(seriesMinHour);
+    await store.readDistSeries(seriesMinBucket);
+    await store.readDistSeries(seriesMinBucket);
     expect(allCalls()).toBe(2);
   });
 
-  it("不同 minHour 触发重新查询", async () => {
+  it("不同 minBucket 触发重新查询", async () => {
     const { db, allCalls } = makeConstantD1(distRows);
     const store = createUsageStore({ DB: db } as unknown as Env);
-    await store.readDistSeries(seriesMinHour);
-    // 04:00 起读：范围 04:00..11:00 共 8 桶。
-    const res = await store.readDistSeries("2026-09-01T04:00");
-    expect(res).toHaveLength(8);
+    await store.readDistSeries(seriesMinBucket);
+    // 10:15 起读：范围 10:15..11:00 共 4 桶。
+    const res = await store.readDistSeries("2026-09-01T10:15");
+    expect(res).toHaveLength(4);
     expect(allCalls()).toBe(2);
   });
 });

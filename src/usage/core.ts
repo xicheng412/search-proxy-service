@@ -3,7 +3,7 @@
 // 写侧是共享一份状态的顺序管道：pending 缓冲 + flush 防重入 + 双阈值节流，
 // 无"产品集合"可言，故不改读侧拆分（reads/）。
 // 精度契约（近似值）：同一实例内 record* 后立即 Read 可见（各 read 产品叠加本 pending）；
-// 跨实例最多延迟「≥30min 或 ≥256 条」（双阈值，见 flushSoon）；队列清空时兜底 flush
+// 跨实例最多延迟「≥BUCKET_MS 或 ≥256 条」（双阈值，见 flushSoon）；队列清空时兜底 flush
 // （见 durable-object.ts drain）；isolate 回收时未 flush 增量丢失 ≤ 上述阈值区间。
 // flush 写失败静默，读失败按 0 处理，绝不阻塞主流程。
 // 用量按 UTC 小时桶落库（usage_counts）；success/fail 二选一，calls = 二者之和（派生）。
@@ -12,6 +12,7 @@
 
 import type { Env } from "../types";
 import type { Provider } from "../domain";
+import { BUCKET_MS } from "../domain";
 import { mergeUsage, type UsageIncrement, type UsageKind } from "../storage/usage";
 
 type Result = "success" | "fail";
@@ -19,15 +20,15 @@ type Result = "success" | "fail";
 export interface PendingFilter {
   /** 仅匹配该 kind 的 pending 条目。 */
   kind?: UsageKind;
-  /** 仅匹配 hour >= minHour 的 pending 条目（字符串比较，与原 `hour < minHour` 跳跃一致）。 */
-  minHour?: string;
+  /** 仅匹配 bucket >= minBucket 的 pending 条目（字符串比较，与原 `bucket < minBucket` 跳跃一致）。 */
+  minBucket?: string;
 }
 
 export interface PendingEntry {
   kind: UsageKind;
   scope: string;
   provider: string | null; // dist 无 provider 维度：解包时把空串归一为 null
-  hour: string;
+  bucket: string;
   success: number;
   fail: number;
 }
@@ -39,26 +40,26 @@ export interface CoreOpts {
 
 export interface UsageCore {
   /** 记一次上游结果（成功/失败）——纯内存累加，0 IO。 */
-  recordUpstreamResult(id: string, provider: Provider, hour: string, result: Result): void;
+  recordUpstreamResult(id: string, provider: Provider, bucket: string, result: Result): void;
   /** 记一次分发 key 请求到达（无成败维度，仅计数）——纯内存累加，0 IO。 */
-  recordDistCall(apiKey: string, hour: string): void;
+  recordDistCall(apiKey: string, bucket: string): void;
   /** 节流调度 flush：距上次 ≥interval 且未达条数上限才排入 waitUntil，不阻塞请求。 */
   flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void;
   /** 立即落库缓冲中全部增量（队列清空兜底用）：复用 flush 的防重入与批量合并，不改节流时钟。 */
   flushNow(): Promise<void>;
   /** 单遍扫 pending，按 filter 过滤后同步回调每个命中条目（复用单个 entry 对象，零分配）。 */
   visitPending(filter: PendingFilter, cb: (e: PendingEntry) => void): void;
-  /** 单遍聚合 pending：一次扫完、按 kind+scopes+minHour 过滤后对每个命中条目调 acc。
-   *  scopes 空集 = 不过滤 scope（命中全部）；minHour null = 不过滤 hour。热路径读产品
+  /** 单遍聚合 pending：一次扫完、按 kind+scopes+minBucket 过滤后对每个命中条目调 acc。
+   *  scopes 空集 = 不过滤 scope（命中全部）；minBucket null = 不过滤 bucket。热路径读产品
    *  用它替代对每个 scope 各调一次 visitPending 的 O(ids × pending) 嵌套，降到 O(pending)。 */
   collapsePending(
     kind: UsageKind,
     scopes: ReadonlySet<string>,
-    minHour: string | null,
+    minBucket: string | null,
     acc: (
       scope: string,
       provider: string | null,
-      hour: string,
+      bucket: string,
       success: number,
       fail: number
     ) => void
@@ -68,11 +69,12 @@ export interface UsageCore {
 }
 
 // dist 行无 provider 维度（0004 后 provider 为 NULL）：拼键时归一为空串，upstream 为真实 provider。
-const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "hour">) =>
-  `${r.kind}\u0000${r.scope}\u0000${r.provider ?? ""}\u0000${r.hour}`;
+const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "bucket">) =>
+  `${r.kind}\u0000${r.scope}\u0000${r.provider ?? ""}\u0000${r.bucket}`;
 
 export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
-  const flushIntervalMs = opts.flushIntervalMs ?? 30 * 60 * 1000;
+  // flushIntervalMs 默认 BUCKET_MS：与桶宽同量级（14 分钟），跨 isolate 最多 1 个桶不可见。
+  const flushIntervalMs = opts.flushIntervalMs ?? BUCKET_MS;
   const flushMaxPending = opts.flushMaxPending ?? 256;
 
   // ---- 写堡垒状态（每个 core 实例独立；一个 isolate 一份）----
@@ -90,12 +92,12 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     try {
       const rows: UsageIncrement[] = [];
       for (const [key, v] of batch) {
-        const [kind, scope, provider, hour] = key.split("\u0000");
+        const [kind, scope, provider, bucket] = key.split("\u0000");
         rows.push({
           kind: kind as UsageIncrement["kind"],
           scope,
           provider,
-          hour,
+          bucket,
           success: v.success,
           fail: v.fail,
         });
@@ -113,7 +115,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
   function flushSoon(ctx: { waitUntil(p: Promise<unknown>): void }): void {
     if (pending.size === 0) return;
     const now = Date.now();
-    // 双阈值：距上次 ≥ interval（默认为 30min 小时桶，大致统计）或缓冲达到条数上限即落库；
+    // 双阈值：距上次 ≥ interval（默认为 BUCKET_MS，大致统计）或缓冲达到条数上限即落库；
     // 条数兜底防长驻 isolate 的 pending 无界增长。
     if (now - lastFlushAt < flushIntervalMs && pending.size < flushMaxPending) return;
     lastFlushAt = now;
@@ -129,20 +131,20 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
   function recordUpstreamResult(
     id: string,
     provider: Provider,
-    hour: string,
+    bucket: string,
     result: Result
   ): void {
-    const key = bufKey({ kind: "upstream", scope: id, provider, hour });
+    const key = bufKey({ kind: "upstream", scope: id, provider, bucket });
     const cur = pending.get(key) ?? { success: 0, fail: 0 };
     if (result === "success") cur.success += 1;
     else cur.fail += 1;
     pending.set(key, cur);
   }
 
-  function recordDistCall(apiKey: string, hour: string): void {
+  function recordDistCall(apiKey: string, bucket: string): void {
     // dist 无 provider 维度：provider 恒 null（0004 起不落哨兵值）。
     // 到达即 +1：恒记 success（fail 恒 0；calls = success + fail 派生，不变）。
-    const key = bufKey({ kind: "dist", scope: apiKey, provider: null, hour });
+    const key = bufKey({ kind: "dist", scope: apiKey, provider: null, bucket });
     const cur = pending.get(key) ?? { success: 0, fail: 0 };
     cur.success += 1;
     pending.set(key, cur);
@@ -154,19 +156,19 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
       kind: "upstream",
       scope: "",
       provider: null,
-      hour: "",
+      bucket: "",
       success: 0,
       fail: 0,
     };
     for (const [k, v] of pending) {
-      const [kind, scope, provider, hour] = k.split("\u0000");
+      const [kind, scope, provider, bucket] = k.split("\u0000");
       if (filter.kind !== undefined && filter.kind !== (kind as UsageKind)) continue;
-      if (filter.minHour !== undefined && hour < filter.minHour) continue;
+      if (filter.minBucket !== undefined && bucket < filter.minBucket) continue;
       entry.kind = kind as UsageKind;
       entry.scope = scope;
       // dist 行 provider 为空串：归一为 null，与读侧 "无 provider 维度" 的口径一致。
       entry.provider = provider === "" ? null : provider;
-      entry.hour = hour;
+      entry.bucket = bucket;
       entry.success = v.success;
       entry.fail = v.fail;
       cb(entry);
@@ -174,25 +176,25 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
   }
 
   /** 单遍聚合 pending：一次扫完，对每条命中 filter 的条目调 acc。与 visitPending 相同的
-   *  字符串键解析与归一（dist 空串 provider → null）；scopes 空集不过滤，minHour null 不过滤。 */
+   *  字符串键解析与归一（dist 空串 provider → null）；scopes 空集不过滤，minBucket null 不过滤。 */
   function collapsePending(
     kind: UsageKind,
     scopes: ReadonlySet<string>,
-    minHour: string | null,
+    minBucket: string | null,
     acc: (
       scope: string,
       provider: string | null,
-      hour: string,
+      bucket: string,
       success: number,
       fail: number
     ) => void
   ): void {
     for (const [k, v] of pending) {
-      const [kKind, scope, provider, hour] = k.split("\u0000");
+      const [kKind, scope, provider, bucket] = k.split("\u0000");
       if (kKind !== kind) continue;
       if (scopes.size !== 0 && !scopes.has(scope)) continue;
-      if (minHour !== null && hour < minHour) continue;
-      acc(scope, provider === "" ? null : provider, hour, v.success, v.fail);
+      if (minBucket !== null && bucket < minBucket) continue;
+      acc(scope, provider === "" ? null : provider, bucket, v.success, v.fail);
     }
   }
 

@@ -18,7 +18,7 @@
 
 ## 2. 概念与调用凭据
 
-> 概念定义（上游 key / 分发 key / 线协议 / provider / 冷却 / 熔断 / 当日 / 小时桶…）见仓库根 [CONTEXT.md](../CONTEXT.md)——它是领域词汇唯一事实源，本文档不再重复定义，只写实现侧的拼装规则。
+> 概念定义（上游 key / 分发 key / 线协议 / provider / 冷却 / 熔断 / 当日 / 时间桶…）见仓库根 [CONTEXT.md](../CONTEXT.md)——它是领域词汇唯一事实源，本文档不再重复定义，只写实现侧的拼装规则。
 
 ### 2.1 调用凭据的拼装规则
 
@@ -262,8 +262,8 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 | `adapters/reader.ts` | 消费方 ACL：/reader/<url> 抠目标 / 目标→Tavily Extract 请求体 / Tavily 响应→纯文本 / reader 错误体 | 不 import 仓库模块；不读 KV/DB |
 | `storage/upstream-keys.ts` | 上游 key 注册表 D1 读写 + keyset 分页 + 冷却批量 checkpoint | 不做节流/不吞错/不写策略；熔断/冷却权威态在 `durable-object.ts` 的 KeyPool |
 | `storage/dist-keys.ts` | 分发 key D1 读写 + Cache API 鉴权读缓存（读穿 + 写失效） | 不写业务逻辑 |
-| `storage/usage.ts` | 用量小时桶 D1 读写（UPSERT 求和 / 按窗口查询） | 不带内存缓冲（那是 `usage/core.ts` 的活） |
-| `usage/core.ts` | 内存累积 + 节流 flush（写堡垒，按 UTC 小时桶） | 不改 domain 规则；不直接被 admin 写 |
+| `storage/usage.ts` | 用量时间桶 D1 读写（UPSERT 求和 / 按窗口查询） | 不带内存缓冲（那是 `usage/core.ts` 的活） |
+| `usage/core.ts` | 内存累积 + 节流 flush（写堡垒，按 UTC 时间桶） | 不改 domain 规则；不直接被 admin 写 |
 | `usage/reads/` | 三类读产品：`today.ts`（管理页当日）/ `weight.ts`（热路径权重信号）/ `series.ts`（dashboard 序列） | 不写 pending；只叠加 core 的 pending |
 | `usage/index.ts` | UsageStore 门面 + 每 isolate 单例（组合 core 与 reads） | 不含具体策略 |
 | `circuit-breaker.ts` | 熔断/冷却副作用绑定：读配置 → `computeBreakerOutcome` → 写 KeyPool 内存 | 不感知 provider；失败静默；不含冷却算法 |
@@ -310,7 +310,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 
 两类存储，职责二分：
 
-- **D1**（binding `DB`）：实体数据——上游 key 注册表（`upstream_keys`，含冷却 checkpoint 备份）、分发 key、用量小时桶。
+- **D1**（binding `DB`）：实体数据——上游 key 注册表（`upstream_keys`，含冷却 checkpoint 备份）、分发 key、用量时间桶。
 - **KV**（binding `KV`）：运行时参数（`breaker_config` / `queue_config` / `dist_cache_config`）与登录会话（`session:<sid>`）。KV 上的 TTL 相当于 D1 迁移前留下的"零维护清理"习惯。
 
 ### 5.1 D1 表结构
@@ -321,19 +321,19 @@ upstream_keys(provider, id, key, name, status, cooldown_until, created_at)
               -- cooldown_until：QueueDO 内存池低频 checkpoint ≤30s 写回（见 §6.2）
 breaker_state(id, consecutive, updated_at, created_at)   -- 已停用（迁移保留）：连续计数权威在 QueueDO 内存
 distributed_keys(api_key, note, status, created_at)      -- PK api_key
-usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
-              PK (kind, scope, hour); provider 可空（dist 无 provider 维度写 NULL，见 0004）
+usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15min）
+              PK (kind, scope, bucket); provider 可空（dist 无 provider 维度写 NULL，见 0004）
 索引：idx_upstream_keys_provider_created_id (keyset 分页)
-     idx_usage_scope  (kind, scope, hour, provider)
-     idx_usage_window (kind, hour, provider)
-     idx_usage_signal (kind, hour, scope, fail)  -- 选 key 权重信号 index-only（见 0004）
+     idx_usage_scope  (kind, scope, bucket, provider)
+     idx_usage_window (kind, bucket, provider)
+     idx_usage_signal (kind, bucket, scope, fail)  -- 选 key 权重信号 index-only（见 0004）
 ```
 
 | 设计点 | 决策 | 原因 |
 |---|---|---|
 | 实体上 D1，参数/会话留 KV | 实体改删查 + 分页强于 KV；参数要"≤3s 生效"且低写频，KV 正合适 | 各自用擅长的 |
 | 上游 key 用表 + `(provider,id)` 主键 | provider 作维度字段，新增只加值 | 与 `providers/` 描述符对齐 |
-| 用量按 UTC 小时桶 + 索引 | 热路径聚合一次往返（`SUM + GROUP BY`） | 见 §5.2 精度契约 |
+| 用量按 UTC 时间桶（15min）+ 索引 | 热路径聚合一次往返（`SUM + GROUP BY`） | 见 §5.2 精度契约 |
 | 熔断连续计数权威在 QueueDO 内存（`key-pool.ts`），不落库 | 10 分钟空窗用内存 `updated_at` 判定 | 单点写者内存即权威，选 key 无陈旧；丢失方向安全（重置计数） |
 | 用量超 90 天清理 | `scheduled` cron（每天 UTC 03:00）删 `usage_counts` | D1 无 TTL，主动设保留期 |
 
@@ -344,9 +344,10 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 `usage/`（`core.ts` 写堡垒 + `reads/` 读产品）实现的是**写回式近似统计**，不是精确计数：
 
 - 同一 isolate 内 `record*` 后立即 `read*` 可见（本实例内存增量叠加）。
-- 跨 isolate 最多延迟「≥30min 或 ≥256 条」（默认 30 分钟，或缓冲达 `flushMaxPending`=256 条即落库；队列清空时兜底 flush，见 §6.4）。
+- 跨 isolate 最多延迟「≥15min（`BUCKET_MS`）或 ≥256 条」（默认 `BUCKET_MS`，或缓冲达 `flushMaxPending`=256 条即落库；队列清空时兜底 flush，见 §6.4）。
 - isolate 被回收时未 flush 的增量丢失（≤ 上述阈值区间）。
 - 写失败静默，读失败按 0 处理，**绝不阻塞主流程**。
+- Dashboard 三张卡（最近 24h / 今日 / 昨日）由服务端 `readDistSummaries` 计算并注入，前端只显示、不再按浏览器时区归日。
 
 这条契约对"选 key 权重"无影响（小幅误差反而让负载更均衡），仅影响"展示"和"异常 key 定位"的精度。精确度在这里是**显式、可消费的设计变量**——读侧优化的第一原则是"能近似就近似"，具体置换优先级见 §5.2.1。
 
@@ -358,7 +359,7 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
    - 热路径选 key 权重只依赖 `本 isolate 内存增量 + 长效缓存 base`，权重 base **独立 120s 刷新**（queue drain 驱动，与 flush 节奏解耦），稳态 0 D1 往返。误差方向是"比真实略旧的失败数"：刚出问题的 key 到下一轮刷新才被压低，对负载均衡是可接受甚至更稳的行为（§6.1 权重本就该贴近"最近大盘"而非"本瞬间"）。
    - 高频读一律挂缓存；缓存命中即 0 D1。**目标形态：代理热路径 0 次 D1 统计往返。**
 2. **用次数换往返**：去不掉的读（展示类）保持低频；多批/多条查询用 `DB.batch()` 合并为一次往返；只 SELECT 消费方真正要的列与维度（例：选 key 只取 `SUM(fail)` + `GROUP BY scope`，不取 provider 拆分、不取 success）。
-3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（小时桶聚合后每 key 每日 ≤ 24 行）。默认不为 index-only scan 扩覆盖索引——写侧按 30min/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。**唯一例外：`idx_usage_signal`（0004）**——选 key 权重信号查询 `WHERE kind='upstream' AND hour>=? GROUP BY scope` 无任何 hour 前缀索引可用、实际全扫 kind 历史（90d×key×provider），与"瓶颈不是行数"的前提相悖；覆盖索引把扫描裁到窗口小时桶且免回表，写放大与 0004 重建后整体缩小的索引基本持平（见 ADR-0002）。
+3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（时间桶聚合后每 key 每日 ≤ 96 行）。默认不为 index-only scan 扩覆盖索引——写侧按 `BUCKET_MS`/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。**唯一例外：`idx_usage_signal`（0004/0007）**——选 key 权重信号查询 `WHERE kind='upstream' AND bucket>=? GROUP BY scope` 无任何 bucket 前缀索引可用、实际全扫 kind 历史（90d×key×provider），与"瓶颈不是行数"的前提相悖；覆盖索引把扫描裁到窗口时间桶且免回表，写放大与重建后整体缩小的索引基本持平（见 ADR-0002）。
 
 **不进入置换范围**（精确语义，禁止近似）：
 - 熔断 / 冷却状态（`breaker_state`、`cooldown_until`）：安全相关的放行决策，不许一秒误差。前提是多写者或跨进程副本；本仓库的冷却/熔断唯一写者即选 key 的单点进程（per-provider `QueueDO` 内存池 `KeyPool`，见 ADR-0001 §1 与 §6.2），内存即权威、读取无陈旧，D1 仅低频 checkpoint（丢失方向安全），不属"近似"。
@@ -370,14 +371,16 @@ usage_counts(kind, scope, provider, hour, success, fail) -- UTC 小时桶
 
 - **`kind='upstream'`（尝试粒度，上游成本线）**— 记「对上游官方 key 的一次请求尝试」，`scope` = 上游 key id。回答「每把官方 key 被真实调用了几次、成败如何」，反映官方 key 的成本与健康度。供 Tavily/Exa Keys 页「当日成功/失败」、选 key 权重信号（§6.1）与 Dashboard 近 5 天趋势图（Tavily/Exa 两条线）消费。**provider 线 = 该公司全部能力的上游尝试合计（Search + Extract 并账，不按能力拆分）**。记法随 §6.3 状态机（按分类族，不按状态码字面）：`2xx → 成功`；`server-error`（5xx/网络/2xx-不可用）、`auth-error`（401/403）与 `rate-limit`（429，tavily 另有 432）→ 失败；`client-error`（400/404/422，tavily 另有 433）→ 不记（不重试、不烧 key）。
 
-**Dashboard 序列读侧契约**：`readUpstreamSeries`/`readDistSeries`（`src/usage/reads/series.ts`）返回 `minHour..当前小时` 的完整小时序列，空桶补 0——因前端趋势图用 Chart.js time scale 按真实时间间距渲染，稀疏序列会让 x 轴跳过无数据小时（2026-09 修复）。
+**Dashboard 序列读侧契约**：`readUpstreamSeries`/`readDistSeries`（`src/usage/reads/series.ts`）返回 `minBucket..当前桶` 的完整时间序列，空桶补 0——因前端趋势图用 Chart.js time scale 按真实时间间距渲染，稀疏序列会让 x 轴跳过无数据桶（2026-09 修复）。三张卡（最近 24h / 今日 / 昨日）的口径在服务端，见 `readDistSummaries`。
+
+**趋势图前端按小时聚合**：服务端序列保持 15min 桶（存储与精度需要），但 5 天 ≈480 点画折线过密且呈锯齿状，故 `static/dashboard.js` 在渲染前把同一 UTC 小时内的 4 个桶求和（键 = `bucket.slice(0,13)`，依赖桶键定长 16 字符、字典序=时间序），x 轴刻度固定为 `hour`（`MM/dd HH:mm`）。**服务端不新增小时序列端点**——聚合只发生在展示层，`calls = success + fail` 的求和守恒在客户端完成（见 `toHourly`）。
 - **`kind='dist'`（请求粒度，分发消费线）**— 记「每单分发 key 请求**到达量**」，`scope` = 分发 api_key，主 Worker `countDist` 中间件在转发前 +1（不区分成败、不耦合上游执行）——不区分后端/协议（provider 列为 NULL，0004 起 dist 无 provider 维度，读侧只按 scope 汇总、无视其值）。回答「每个下游分发 key 发来多少请求」，反映消费方用量。队列拒入（maxDepth 429）与未轮到断开发生在转发后——请求确已到达 → **计入**；鉴权失败（`authenticate` 短路）→ 不计。`calls = success + fail` 派生（现仅 success 为值）。供 Dashboard「最近24小时/昨日」卡（跨全部分发 key 汇总）与分发 Keys 页「最近24h请求」（逐 key、单列次数）消费。
 
 **双源展示是有意的**：Dashboard 上 **24h/昨日卡 = dist（消费量）**，**近 5 天趋势图 = upstream（上游真实调用负载、Tavily/Exa 两线）**——各自回答不同问题，不对齐。
 
 **两线天然不相等，属预期**：重试把一次请求放大成多条 upstream 记录（dist 恒一单一条）；429、400/404/422 只影响上游侧或两线都不出现；队列拒入（429）与未轮到断开计入 dist 到达、不计 upstream（未执行上游）；鉴权失败（`authenticate` 拦截）两线都不记。
 
-**选数规则**：消费统计先定问题——官方 key 的消耗/健康用 `upstream`，分发 key 的用量/账单用 `dist`，不要拿两条线对账。即便同一 `dist` 维度，Dashboard 与 Keys 页也因时间窗口（Dashboard 按客户端 ms 滚动含当前不完整小时、Keys 按整点钟桶多含一个边界桶）与展示缓存 TTL（30s / 30min）不同而对不上，同样是预期行为。
+**选数规则**：消费统计先定问题——官方 key 的消耗/健康用 `upstream`，分发 key 的用量/账单用 `dist`，不要拿两条线对账。即便同一 `dist` 维度，Dashboard 三张卡与 Keys 页也因时间窗口（Dashboard 卡由服务端按 UTC 区间计算、含当前桶；Keys 页从 UTC 日 `utcTodayStart` 起）与展示缓存 TTL（当日页 30s / 序列 30min）不同而对不上，同样是预期行为。
 
 ---
 

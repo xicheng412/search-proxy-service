@@ -20,4 +20,8 @@ else
   echo "⚠️  未找到 config/prod.env（参考 config/prod.env.example），将不带 PUBLIC_BASE_URL 部署（运行时回退 localhost）" >&2
 fi
 
+# 先迁移后部署：保证新代码依赖的表结构（0007 起 usage_counts.bucket）先于代码上库就位；
+# 迁移失败（有 pending 残留）时脚本以非零退出，冒烟阻止部署。
+"$(dirname "$0")/migrate.sh" remote
+
 wrangler deploy "${extra_vars[@]}"

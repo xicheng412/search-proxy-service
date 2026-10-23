@@ -12,7 +12,7 @@ import type { ExecutionContext } from "@cloudflare/workers-types";
 import { proxyApp } from "../src/routes/proxy";
 import type { AppVariables, Env } from "../src/types";
 import { getUsageStore } from "../src/usage";
-import { hourKey } from "../src/domain";
+import { bucketKey } from "../src/domain";
 import { makeConstantD1 } from "./helpers/fake-d1";
 
 const fakeKV = { get: async () => null, put: async () => {} };
@@ -45,7 +45,7 @@ function makeEnv(queue: { fetch: Mock }, distRows: Record<string, unknown>[]) {
 beforeAll(async () => {
   const store = getUsageStore(makeEnv(makeQueue(), []));
   let captured: Promise<unknown> | undefined;
-  store.recordDistCall("__prime__", hourKey());
+  store.recordDistCall("__prime__", bucketKey());
   store.flushSoon({ waitUntil: (p) => (captured = p) } as never);
   expect(captured).toBeDefined();
   await captured;
@@ -89,7 +89,7 @@ describe("countDist 请求到达计数", () => {
   it("鉴权通过的请求：主 Worker 记 +1（success=1/fail=0）", async () => {
     const apiKey = "cnt1";
     const { app, env } = buildFor(apiKey, [enabledRow(apiKey)]);
-    const h = hourKey();
+    const h = bucketKey();
 
     const res = await postExtract(app, env, `tavily-${apiKey}`);
 
@@ -101,7 +101,7 @@ describe("countDist 请求到达计数", () => {
   it("同 key 两次请求：恰 +2（每请求一次）", async () => {
     const apiKey = "cnt2";
     const { app, env } = buildFor(apiKey, [enabledRow(apiKey)]);
-    const h = hourKey();
+    const h = bucketKey();
 
     await postExtract(app, env, `tavily-${apiKey}`);
     await postExtract(app, env, `tavily-${apiKey}`);
@@ -113,7 +113,7 @@ describe("countDist 请求到达计数", () => {
   it("禁用分发 key：401 短路，不计数（0/0）", async () => {
     const apiKey = "cnt3";
     const { app, env } = buildFor(apiKey, [enabledRow(apiKey, "disabled")]);
-    const h = hourKey();
+    const h = bucketKey();
 
     const res = await postExtract(app, env, `tavily-${apiKey}`);
 
@@ -125,7 +125,7 @@ describe("countDist 请求到达计数", () => {
   it("未知分发 key：401 短路，不计数（0/0）", async () => {
     const apiKey = "cnt4";
     const { app, env } = buildFor(apiKey, []);
-    const h = hourKey();
+    const h = bucketKey();
 
     const res = await postExtract(app, env, `tavily-${apiKey}`);
 

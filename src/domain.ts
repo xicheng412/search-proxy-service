@@ -143,12 +143,15 @@ export function maskKey(key: string): string {
   return `${prefix}....${key.slice(-6)}`;
 }
 
+/** 用量时间桶宽度（UTC 对齐）。唯一事实源：写入对齐、序列补零、前端刻度都由此派生。 */
+export const BUCKET_MS = 15 * 60_000;
+
 /**
- * 用量小时桶键（UTC）：'YYYY-MM-DDTHH:00'。后端全部时间口径用 UTC，
- * "今日/最近N小时"边界由前端用小时分段自行组合。
+ * 用量时间桶键（UTC）：'YYYY-MM-DDTHH:MM'，按 BUCKET_MS 对齐。
+ * 定长、字典序 = 时间序（所有 `bucket >= minBucket` 的字符串比较依赖此性质）。
  */
-export function hourKey(t: number = Date.now()): string {
-  return new Date(t).toISOString().slice(0, 13) + ":00";
+export function bucketKey(t: number = Date.now()): string {
+  return new Date(Math.floor(t / BUCKET_MS) * BUCKET_MS).toISOString().slice(0, 16);
 }
 
 /** 给定时间点所在 UTC 日的 00:00 小时桶键（服务端内部"今日"口径用）。 */
