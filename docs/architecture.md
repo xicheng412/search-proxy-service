@@ -335,7 +335,7 @@ usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15
 | 上游 key 用表 + `(provider,id)` 主键 | provider 作维度字段，新增只加值 | 与 `providers/` 描述符对齐 |
 | 用量按 UTC 时间桶（15min）+ 索引 | 热路径聚合一次往返（`SUM + GROUP BY`） | 见 §5.2 精度契约 |
 | 熔断连续计数权威在 QueueDO 内存（`key-pool.ts`），不落库 | 10 分钟空窗用内存 `updated_at` 判定 | 单点写者内存即权威，选 key 无陈旧；丢失方向安全（重置计数） |
-| 用量超 90 天清理 | `scheduled` cron（每天 UTC 03:00）删 `usage_counts` | D1 无 TTL，主动设保留期 |
+| 用量超 30 天清理 | `scheduled` cron（每天 UTC 03:00）按 kind × 天区间分批删 `usage_counts` | D1 无 TTL，主动设保留期；程序最长读窗口是趋势图 5 天，30 天足够且省行数 |
 
 > **分发 key 鉴权有 Cache API 快路径**：`storage/dist-keys.ts` 对 `getDistributedKey` 做读穿缓存（写操作失效），撤销/禁用的最坏生效延迟 = `dist_cache_config.cacheTtlSec`（默认 300s，可调）。
 
@@ -359,7 +359,7 @@ usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15
    - 热路径选 key 权重只依赖 `本 isolate 内存增量 + 长效缓存 base`，权重 base **独立 120s 刷新**（queue drain 驱动，与 flush 节奏解耦），稳态 0 D1 往返。误差方向是"比真实略旧的失败数"：刚出问题的 key 到下一轮刷新才被压低，对负载均衡是可接受甚至更稳的行为（§6.1 权重本就该贴近"最近大盘"而非"本瞬间"）。
    - 高频读一律挂缓存；缓存命中即 0 D1。**目标形态：代理热路径 0 次 D1 统计往返。**
 2. **用次数换往返**：去不掉的读（展示类）保持低频；多批/多条查询用 `DB.batch()` 合并为一次往返；只 SELECT 消费方真正要的列与维度（例：选 key 只取 `SUM(fail)` + `GROUP BY scope`，不取 provider 拆分、不取 success）。
-3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（时间桶聚合后每 key 每日 ≤ 96 行）。默认不为 index-only scan 扩覆盖索引——写侧按 `BUCKET_MS`/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。**唯一例外：`idx_usage_signal`（0004/0007）**——选 key 权重信号查询 `WHERE kind='upstream' AND bucket>=? GROUP BY scope` 无任何 bucket 前缀索引可用、实际全扫 kind 历史（90d×key×provider），与"瓶颈不是行数"的前提相悖；覆盖索引把扫描裁到窗口时间桶且免回表，写放大与重建后整体缩小的索引基本持平（见 ADR-0002）。
+3. **最后才优化扫描（索引）**：D1 的单点瓶颈是"往返延迟 + 单库单线程吞吐"，不是行数（时间桶聚合后每 key 每日 ≤ 96 行）。默认不为 index-only scan 扩覆盖索引——写侧按 `BUCKET_MS`/256 条节流 UPSERT，扩索引的写放大代价远大于省下的 heap 读。**唯一例外：`idx_usage_signal`（0004/0007）**——选 key 权重信号查询 `WHERE kind='upstream' AND bucket>=? GROUP BY scope` 无任何 bucket 前缀索引可用、实际全扫 kind 历史（保留期×key×provider），与"瓶颈不是行数"的前提相悖；覆盖索引把扫描裁到窗口时间桶且免回表，写放大与重建后整体缩小的索引基本持平（见 ADR-0002）。
 
 **不进入置换范围**（精确语义，禁止近似）：
 - 熔断 / 冷却状态（`breaker_state`、`cooldown_until`）：安全相关的放行决策，不许一秒误差。前提是多写者或跨进程副本；本仓库的冷却/熔断唯一写者即选 key 的单点进程（per-provider `QueueDO` 内存池 `KeyPool`，见 ADR-0001 §1 与 §6.2），内存即权威、读取无陈旧，D1 仅低频 checkpoint（丢失方向安全），不属"近似"。
