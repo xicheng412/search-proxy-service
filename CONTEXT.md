@@ -81,7 +81,7 @@ _Avoid_: retry loop、重试循环
 ### 领域事件（分解的命令结果）
 
 **UpstreamAttemptSettled**:
-一次上游尝试结束（成功 / 按重试分类族归类失败）分解出的领域事件，由重试 FSM 的在飞环节发布，经同步事件轴驱动冷却与记账——订阅者按分类族路由：success 记 success；server-error / auth-error / rate-limit 记 fail（及各自冷却）；client-error 不入此事件（不换 key 不记账）。
+一次上游尝试结算（携带 `outcome: success | failure(cls)`，cls 为重试分类族）分解出的领域事件，由重试 FSM 的在飞环节发布，经同步事件轴驱动冷却与记账——**每次尝试结算都发布（含 `client-error`）**，订阅者按 outcome 路由：success 记 success；server-error / auth-error / rate-limit 记 fail（及各自冷却）；client-error 由订阅者显式 no-op（不换 key 不记账）。
 _Avoid_: 重试结果、markSuccess / markFail
 
 > 事件轴只服务 UpstreamAttemptSettled：dist 已迁主 Worker 计数（countDist 中间件直记，不经事件总线）。
@@ -113,5 +113,5 @@ _Avoid_: 直接对比 upstream/dist 数字
 _Avoid_: 精确统计、real-time stats
 
 **队列任务（queue task）**:
-主 Worker 鉴权后把"一次相对上游的请求"打装成的可序列化任务。一个任务 = 一次对上游的**完整处理**（内部重试最多换 3 把 key，重试永远不入队），经所属 provider 的队列串行放行：一次只在途 1 个任务，任务结束后隔 `intervalMs`（默认 3s，运行时可调）再放下一个——`intervalMs` 是**任务间最小间隔**，真实放行率 = 1 / max(任务耗时, intervalMs)。排队请求**持连接等待自己的时间片**，等待时延 ≈ 排在前面所有任务的耗时之和；排队数达 `maxDepth`（默认 10）时新请求直接 429 拒入（不计 upstream 执行、但计入 dist 请求到达数），入队后等待超过 `waitBudgetMs`（默认 30s，运行时可调）也直接 429 + Retry-After（与拒入同语义、不计 upstream 执行、但计入 dist 请求到达数）——`maxDepth` 与 `waitBudgetMs` 构成「深度 + 时间」两种背压；客户端断开未轮到则丢弃（不烧上游配额；dist 请求到达已在主 Worker 计入）。
+主 Worker 鉴权后把"一次相对上游的请求"打装成的可序列化任务。一个任务 = 一次对上游的**完整处理**（内部重试最多换 3 把 key，重试永远不入队），经所属 provider 的队列串行放行：一次只在途 1 个任务，任务结束后隔 `intervalMs`（默认 3s，运行时可调）再放下一个——`intervalMs` 是**任务间最小间隔**，真实放行率 = 1 / max(任务耗时, intervalMs)。排队请求**持连接等待自己的时间片**，等待时延 ≈ 排在前面所有任务的耗时之和；排队数达 `maxDepth`（默认 10）时新请求直接 429 拒入（不计 upstream 执行、但计入 dist 请求到达数），入队后等待超过 `waitBudgetMs`（默认 30s，运行时可调）也直接 429 + Retry-After（与拒入同语义、不计 upstream 执行、但计入 dist 请求到达数）——`maxDepth` 与 `waitBudgetMs` 构成「深度 + 时间」两种背压；客户端断开（未轮到或冷却等待中）则丢弃（不烧上游配额；dist 请求到达已在主 Worker 计入）。全部上游 key 冷却时：若最早到期时刻在 `waitBudgetMs` 剩余预算内，则任务执行中等待到该时刻后重选 key；超预算直接 429 + Retry-After（不再 503）。
 _Avoid_: job、请求任务

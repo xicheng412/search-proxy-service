@@ -1,5 +1,6 @@
 // upstream-subscriber 单测：一次 UpstreamAttemptSettled 被订阅者消费——冷却 + usage 各记
-// 一次；rate-limit 记失败 + 疑似失效长冷却；client-error 不处理（不入事件）。回归保护：
+// 一次；rate-limit 记失败 + 疑似失效长冷却；client-error 事件会到达，由订阅者显式 no-op
+// （不冷却、不记账）。回归保护：
 // DO 重建叠加订阅者导致的 usage/冷却翻倍（见 upstream-subscriber.ts 头注释）。
 // 订阅者返回冷却 promise（总线忽略），直接 await 即可确定性等待异步 KV 配置读取后落池，
 // 无需真实定时器。
@@ -33,7 +34,7 @@ describe("makeUpstreamSubscriber", () => {
     const sub = makeUpstreamSubscriber(env, () => pool);
 
     const at = Date.now();
-    await sub({ type: "upstream-attempt-settled", keyId: "k1", provider: "tavily", cls: "success", at });
+    await sub({ type: "upstream-attempt-settled", keyId: "k1", provider: "tavily", outcome: { kind: "success" }, at });
 
     expect(pool.getBreakerState("k1")).toEqual({ consecutive: 0, updated_at: at, created_at: at });
     expect(pool.getKeys()[0].cooldown_until).toBe(at + 10_000); // post-use 10s
@@ -50,7 +51,7 @@ describe("makeUpstreamSubscriber", () => {
     const sub = makeUpstreamSubscriber(env, () => pool);
 
     const at = Date.now();
-    await sub({ type: "upstream-attempt-settled", keyId: "k2", provider: "tavily", cls: "rate-limit", at });
+    await sub({ type: "upstream-attempt-settled", keyId: "k2", provider: "tavily", outcome: { kind: "failure", cls: "rate-limit" }, at });
 
     expect(pool.getBreakerState("k2")).toBeNull(); // 不碰连续计数
     expect(pool.getKeys()[0].cooldown_until).toBe(at + 43_200_000); // invalidSec 12h
@@ -60,7 +61,7 @@ describe("makeUpstreamSubscriber", () => {
     });
   });
 
-  it("client-error：不处理（事件不入订阅，防御性忽略）", async () => {
+  it("client-error：事件到达但订阅者显式 no-op（不冷却、不记账）", async () => {
     const env = envOf();
     const store = getUsageStore(env);
     const pool = poolOf(env, "k3");
@@ -70,7 +71,7 @@ describe("makeUpstreamSubscriber", () => {
       type: "upstream-attempt-settled",
       keyId: "k3",
       provider: "tavily",
-      cls: "client-error",
+      outcome: { kind: "failure", cls: "client-error" },
       at: Date.now(),
     });
 

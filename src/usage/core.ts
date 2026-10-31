@@ -6,7 +6,7 @@
 // 跨实例最多延迟「≥BUCKET_MS 或 ≥256 条」（双阈值，见 flushSoon）；队列清空时兜底 flush
 // （见 durable-object.ts drain）；isolate 回收时未 flush 增量丢失 ≤ 上述阈值区间。
 // flush 写失败静默，读失败按 0 处理，绝不阻塞主流程。
-// 用量按 UTC 小时桶落库（usage_counts）；success/fail 二选一，calls = 二者之和（派生）。
+// 用量按 UTC 时间桶（`BUCKET_MS`）落库（usage_counts）；success/fail 二选一，calls = 二者之和（派生）。
 // 对外仅暴露三种原语：record*（记账）、flush*（落库调度）、visitPending（读侧叠加读）与
 // onFlushed（flush 落库后的钩子，组合根用它刷新权重信号快照）。
 
@@ -73,7 +73,7 @@ const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "bucket"
   `${r.kind}\u0000${r.scope}\u0000${r.provider ?? ""}\u0000${r.bucket}`;
 
 export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
-  // flushIntervalMs 默认 BUCKET_MS：与桶宽同量级（14 分钟），跨 isolate 最多 1 个桶不可见。
+  // flushIntervalMs 默认 BUCKET_MS：与桶宽同量级（15 分钟），跨 isolate 最多 1 个桶不可见。
   const flushIntervalMs = opts.flushIntervalMs ?? BUCKET_MS;
   const flushMaxPending = opts.flushMaxPending ?? 256;
 

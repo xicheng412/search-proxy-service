@@ -155,10 +155,11 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
 }
 
 /**
- * 领域语义词典（命令 → 领域事件 → 订阅者）：
+ * 领域语义词典（命令 → KeyPoolSync 推式同步端口 → 订阅者）：
  *   Add / AddBatch / Rename / Toggle / ToggleBatch / Delete / DeleteBatch
  *   （admin 写 D1，tavily.ts / exa.ts 各 7 处、共 14 处调用点）
- *     → UpstreamKeyChanged（领域事件，语义名；未显式建模，经本函数推送到 DO）
+ *     → UpstreamKeyChanged（KeyPoolSync 推式同步端口，非领域事件；语义名，
+ *       未显式建模，经本函数推送到 DO）
  *     → 订阅者 KeyPool.reload（QueueDO `/_internal/sync-keys` 全量重读合并）
  * 本函数即该语义的收口辅助：任何 upstream key 写操作在持久化（D1）后经它同步内存池。
  * 尽力而为，调用方接 .catch(noop)，失败由 RELOAD_FLOOR_MS（60s）陈旧兜底重读覆盖。

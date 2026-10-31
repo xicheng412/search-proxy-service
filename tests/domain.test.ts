@@ -1,8 +1,8 @@
 // Availability 值语义单测：availabilityOf 把 CoreKey 原始字段（status+cooldown_until+suspended_cause）
-// 派生为统一「冷却/停用」值对象；isSelectableAt 是选 key 的统一谓词事实源（selection.isCandidate 委托它）。
+// 派生为统一「冷却/停用」值对象；`availabilityOf(...).kind === "available"` 是选 key 的唯一谓词。
 
 import { describe, it, expect } from "vitest";
-import { availabilityOf, isSelectableAt, type CoreKey } from "../src/domain";
+import { availabilityOf, type CoreKey } from "../src/domain";
 
 function key(overrides: Partial<CoreKey> = {}): CoreKey {
   return {
@@ -46,27 +46,5 @@ describe("availabilityOf 派生", () => {
     expect(
       availabilityOf(key({ cooldown_until: 900, suspended_cause: "invalid" }), 1000)
     ).toEqual({ kind: "available" });
-  });
-});
-
-describe("isSelectableAt 选 key 谓词", () => {
-  it("available → true", () => {
-    expect(isSelectableAt({ kind: "available" }, 1000)).toBe(true);
-  });
-
-  it("disabled → false", () => {
-    expect(isSelectableAt({ kind: "disabled" }, 1000)).toBe(false);
-  });
-
-  it("suspended 未到期 → false", () => {
-    expect(isSelectableAt({ kind: "suspended", until: 5000, cause: "breaker" }, 1000)).toBe(false);
-  });
-
-  it("suspended 已到期 → true", () => {
-    expect(isSelectableAt({ kind: "suspended", until: 900, cause: "breaker" }, 1000)).toBe(true);
-  });
-
-  it("suspended 恰到期（until===now）→ true（边界含等号）", () => {
-    expect(isSelectableAt({ kind: "suspended", until: 1000, cause: "post-use" }, 1000)).toBe(true);
   });
 });

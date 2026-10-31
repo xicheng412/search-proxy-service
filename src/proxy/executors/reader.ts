@@ -5,6 +5,7 @@ import { searchWithRetry, type CoreDeps } from "../../domain-services/retry-stat
 import type { ProviderConfig } from "../../providers";
 import type { ReaderTask } from "../../queue/task";
 import { buildExtractBody, toTextResponse, readerError } from "../../adapters/reader";
+import { withRetryAfter } from "./retry-after";
 
 /** reader 执行器（转换）：GET /reader/<url> → Tavily Extract 请求 → 转纯文本，交给通用重试核。 */
 export async function runReaderTask(
@@ -34,6 +35,12 @@ export async function runReaderTask(
         }
       },
       onFailure: async (outcome) => {
+        if (outcome.kind === "cooling") {
+          return withRetryAfter(
+            readerError(429, "extract backend keys are cooling down; retry later"),
+            outcome.retryAfterSec
+          );
+        }
         // 目标在 failed_results（确定性失败）已由 toTextResponse 直接返回 502，不走到这里
         if (outcome.lastRes && !outcome.lastRes.ok) {
           return readerError(

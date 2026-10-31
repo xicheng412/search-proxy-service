@@ -5,6 +5,7 @@ import { searchWithRetry, type CoreDeps } from "../../domain-services/retry-stat
 import type { ProviderConfig } from "../../providers";
 import type { SearxngTask } from "../../queue/task";
 import { toSearxngResponse, searxngError } from "../../adapters/searxng";
+import { withRetryAfter } from "./retry-after";
 
 /** searxng 执行器（转换）：构建 searxng 转换回调，交给通用重试核。 */
 export async function runSearxngTask(
@@ -35,6 +36,12 @@ export async function runSearxngTask(
         }
       },
       onFailure: async (outcome) => {
+        if (outcome.kind === "cooling") {
+          return withRetryAfter(
+            searxngError(429, "search backend keys are cooling down; retry later"),
+            outcome.retryAfterSec
+          );
+        }
         // 2xx 但内容不可用（如解析失败）时 lastRes 是 200 —— 视为上游故障，不返回 200+error
         if (outcome.lastRes && !outcome.lastRes.ok) {
           return searxngError(

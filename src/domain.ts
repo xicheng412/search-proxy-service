@@ -1,6 +1,6 @@
 // 纯领域层：类型、领域规则、值语义。零依赖（不 import 本仓库任何模块）。
-// 与存储/呈现/传输解耦：storage.ts（持久化）、usage-store.ts（统计缓冲）、
-// circuit-breaker.ts（熔断）、proxy.ts（编排）、views（呈现）都只消费这里的词汇。
+// 与存储/呈现/传输解耦：storage/（持久化）、usage/（统计缓冲）、
+// circuit-breaker.ts（熔断）、proxy/（编排）、views（呈现）都只消费这里的词汇。
 
 export type Provider = "tavily" | "exa";
 
@@ -24,17 +24,15 @@ export type Availability =
 /** 上游响应按故障可归因性分类的家族（驱动重试/冷却/记账的族）；编号→族映射在 provider 描述符。 */
 export type RetryClass = "rate-limit" | "client-error" | "auth-error" | "server-error";
 
-/** 由 CoreKey 原始字段派生 Availability（人工停用优先；冷却中=定时解除的停用；否则可用）。 */
+/**
+ * 由 CoreKey 原始字段派生 Availability（人工停用优先；冷却中=定时解除的停用；否则可用）。
+ * 冷却到期即 `available` 是唯一规则——`isCandidate` 只用 `kind === "available"`。
+ */
 export function availabilityOf(k: CoreKey, now: number): Availability {
   if (k.status === "disabled") return { kind: "disabled" };
   if (k.cooldown_until != null && k.cooldown_until > now)
     return { kind: "suspended", until: k.cooldown_until, cause: k.suspended_cause };
   return { kind: "available" };
-}
-
-/** Availability 在给定时刻是否可被选为上游 key（冷却到期的 suspended 亦可用）。 */
-export function isSelectableAt(av: Availability, now: number): boolean {
-  return av.kind === "available" || (av.kind === "suspended" && av.until <= now);
 }
 
 /** 上游 key 仓库描述符（providers/*.ts 提供），供 storage 泛型 CRUD 定位 provider 维度。 */
@@ -154,7 +152,7 @@ export function bucketKey(t: number = Date.now()): string {
   return new Date(Math.floor(t / BUCKET_MS) * BUCKET_MS).toISOString().slice(0, 16);
 }
 
-/** 给定时间点所在 UTC 日的 00:00 小时桶键（服务端内部"今日"口径用）。 */
+/** 给定时间点所在 UTC 日 00:00 的桶键（服务端内部"今日"口径用）。 */
 export function utcTodayStart(t: number = Date.now()): string {
   return new Date(t).toISOString().slice(0, 10) + "T00:00";
 }
@@ -185,13 +183,21 @@ export function autoKeyName(): string {
 // 领域事件（分解的命令结果）：type 判定由订阅者 switch，勿建事件层级
 // ---------------------------------------------------------------
 
-/** 一次上游尝试结束（成功 / 失败按族归类）。由重试 FSM 的在飞环节产出，经事件轴驱动冷却与记账。 */
+/** 一次上游尝试的结算结果：成功，或按族归类的失败（含 client-error）。 */
+export type AttemptOutcome =
+  | { kind: "success" }
+  | { kind: "failure"; cls: RetryClass };
+
+/**
+ * 一次上游尝试结算。由重试 FSM 的在飞环节产出，经事件轴驱动冷却与记账。
+ * 每次尝试结算都发布——包括 client-error（不重试、不记账的族）；
+ * 订阅者对不适用的 outcome 自行 no-op。
+ */
 export interface UpstreamAttemptSettled {
   type: "upstream-attempt-settled";
   keyId: string;
   provider: Provider;
-  // 结果族：成功或 RetryClass（"success" 是成功态；client-error 不入此事件——不换 key 不记账）
-  cls: RetryClass | "success";
+  outcome: AttemptOutcome;
   at: number; // 尝试结束时刻
 }
 

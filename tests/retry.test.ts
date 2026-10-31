@@ -26,7 +26,10 @@ function makeEnv(rows: Record<string, unknown>[]) {
   return { DB: makeConstantD1(rows).db, KV: fakeKV } as unknown as Env;
 }
 
-function makeDeps(rows: Record<string, unknown>[]): CoreDeps {
+function makeDeps(
+  rows: Record<string, unknown>[],
+  overrides: Partial<CoreDeps> = {}
+): CoreDeps {
   return {
     env: makeEnv(rows),
     executionCtx: { waitUntil: () => {} },
@@ -35,6 +38,7 @@ function makeDeps(rows: Record<string, unknown>[]): CoreDeps {
     transport: upstreamFetch,
     // 空 DB 的独立 usage 实例：权重信号读 0，与「选 key 权重不在本矩阵」的断言口径一致。
     usage: createUsageStore(makeEnv([])),
+    ...overrides,
   };
 }
 
@@ -78,6 +82,7 @@ const req = { path: TAVILY.capabilities.search.path, body: "{}", contentType: "a
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("searchWithRetry 重试矩阵", () => {
@@ -86,9 +91,10 @@ describe("searchWithRetry 重试矩阵", () => {
     vi.stubGlobal("fetch", fetchMock);
     const onSuccess = vi.fn(async () => new Response("ok"));
     const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+    const publish = vi.fn();
 
     const res = await searchWithRetry(
-      makeDeps([keyRow("k-t1-a")]),
+      makeDeps([keyRow("k-t1-a")], { events: { publish } }),
       TAVILY,
       "api-t1",
       req,
@@ -98,6 +104,14 @@ describe("searchWithRetry 重试矩阵", () => {
     expect(onFailure).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(await res.text()).toBe("ok");
+    // 每次结算都发布一次领域事件（outcome 形状），生产端不能被静默改回 cls
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      type: "upstream-attempt-settled",
+      keyId: "k-t1-a",
+      provider: "tavily",
+      outcome: { kind: "success" },
+    });
   });
 
   it("2. 2xx 但 onSuccess→null（响应不可用）：换 key 试遍 2 把 → exhausted(lastRes 200)", async () => {
@@ -174,9 +188,10 @@ describe("searchWithRetry 重试矩阵", () => {
       vi.stubGlobal("fetch", fetchMock);
       const onSuccess = vi.fn(async () => new Response("ok"));
       const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+      const publish = vi.fn();
 
       await searchWithRetry(
-        makeDeps([keyRow("k-t4a-" + status)]),
+        makeDeps([keyRow("k-t4a-" + status)], { events: { publish } }),
         TAVILY,
         "api-t4-" + status,
         req,
@@ -187,6 +202,14 @@ describe("searchWithRetry 重试矩阵", () => {
       expect(onFailure.mock.calls[0][0]).toMatchObject({ kind: "client-error" });
       expect(onFailure.mock.calls[0][0].lastRes?.status).toBe(status);
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      // client-error 也发布事件（纯事实），是否记账由订阅者决定
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish.mock.calls[0][0]).toMatchObject({
+        type: "upstream-attempt-settled",
+        keyId: "k-t4a-" + status,
+        provider: "tavily",
+        outcome: { kind: "failure", cls: "client-error" },
+      });
     }
   );
 
@@ -226,7 +249,7 @@ describe("searchWithRetry 重试矩阵", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("7. 全部冷却 → unavailable，0 次 fetch", async () => {
+  it("7a. 全部冷却 + 预算 0 → cooling(retryAfterSec=60)，0 次 fetch", async () => {
     const fetchMock = fetchMockWith();
     vi.stubGlobal("fetch", fetchMock);
     const onSuccess = vi.fn(async () => new Response("ok"));
@@ -238,7 +261,29 @@ describe("searchWithRetry 重试矩阵", () => {
         keyRow("k-t7-b", { cooldown_until: Date.now() + 60_000 }),
       ]),
       TAVILY,
-      "api-t7",
+      "api-t7a",
+      req,
+      { onSuccess, onFailure }
+    );
+
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][0]).toMatchObject({ kind: "cooling", retryAfterSec: 60 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("7b. 全部 disabled → unavailable，0 次 fetch", async () => {
+    const fetchMock = fetchMockWith();
+    vi.stubGlobal("fetch", fetchMock);
+    const onSuccess = vi.fn(async () => new Response("ok"));
+    const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+
+    await searchWithRetry(
+      makeDeps([
+        keyRow("k-t7c-a", { status: "disabled" }),
+        keyRow("k-t7c-b", { status: "disabled" }),
+      ]),
+      TAVILY,
+      "api-t7b",
       req,
       { onSuccess, onFailure }
     );
@@ -246,6 +291,35 @@ describe("searchWithRetry 重试矩阵", () => {
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(onFailure.mock.calls[0][0]).toMatchObject({ kind: "unavailable" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("7c. 冷却 5s、预算 30s → sleep(5000) 后成功，onFailure 不调", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const sleep = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const fetchMock = fetchMockWith(200);
+    vi.stubGlobal("fetch", fetchMock);
+    const onSuccess = vi.fn(async () => new Response("ok"));
+    const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+
+    const res = await searchWithRetry(
+      makeDeps(
+        [keyRow("k-t7d-a", { cooldown_until: now + 5_000 })],
+        { coolingWaitBudgetMs: 30_000, sleep }
+      ),
+      TAVILY,
+      "api-t7d",
+      req,
+      { onSuccess, onFailure }
+    );
+
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(5000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
   });
 
   it("8. 4 keys、全 500 → 截在 MAX_ATTEMPTS=3 次，不碰第 4 把", async () => {
@@ -317,27 +391,26 @@ function pickCtx(
     lastRes: null,
     attempt,
     currentKey: null,
+    waitedForCooldown: false,
   };
 }
 
 describe("重试状态机（FSM）", () => {
-  /** 迁移表 12 行逐行断言；第三列 = 是否应携带副作用 action。 */
+  /** 迁移表 10 行逐行断言；第三列 = 是否应携带副作用 action。 */
   const table: Array<[key: string, to: RetryState, hasAction: boolean]> = [
     ["init:no-keys", "no-keys", false],
     ["init:empty-candidates", "unavailable", false],
+    ["init:cooling", "init", true],
+    ["init:cooling-out", "cooling", false],
     ["init:ready", "pick", false],
     ["pick:picked", "in-flight", false],
     ["pick:depleted", "exhausted", false],
     ["in-flight:success", "success", true],
-    ["in-flight:unusable", "pick", true],
-    ["in-flight:network", "pick", true],
-    ["in-flight:rate-limit", "pick", true],
-    ["in-flight:client-error", "client-error", false],
-    ["in-flight:auth-error", "pick", true],
-    ["in-flight:server-error", "pick", true],
+    ["in-flight:client-error", "client-error", true],
+    ["in-flight:failed", "pick", true],
   ];
 
-  it("迁移表：12 行键齐全（缺配/多配即失败）、to 正确、action 有无与副作用表一致", () => {
+  it("迁移表：10 行键齐全（缺配/多配即失败）、to 正确、action 有无与副作用表一致", () => {
     // 守卫：未来新增事件或漏配迁移，键集合变差即失败
     expect(Object.keys(TRANSITIONS).sort()).toEqual(table.map(([k]) => k).sort());
 

@@ -46,7 +46,7 @@ export function buildExtractBody(
  *   - 目标命中 → 200 text/plain（raw_content）
  *   - 目标在 failed_results（确定性失败，重试无意义）→ readerError(502)，不消耗下一次 key
  *   - 响应畸形 / 无该目标的结果 → null（视为"成功但响应不可用"，由重试核换 key 重试）
- * 返回 null 时调用方按重试核"unusable"语义处理；其它情况返回值即最终响应。
+ * 返回 null 时调用方按重试核"2xx 不可用（server-error 族失败）"语义处理；其它情况返回值即最终响应。
  */
 export function toTextResponse(raw: unknown, targetUrl: string): Response | null {
   const resp = (raw ?? {}) as {

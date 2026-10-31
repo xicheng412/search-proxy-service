@@ -4,6 +4,7 @@
 import { searchWithRetry, type CoreDeps } from "../../domain-services/retry-state-machine";
 import type { ProviderConfig } from "../../providers";
 import type { NativeTask } from "../../queue/task";
+import { withRetryAfter } from "./retry-after";
 
 /** 把上游的响应原样透传给请求端（重写响应头，去掉会泄漏信息/冲突的头）。 */
 function passthrough(res: Response): Response {
@@ -30,6 +31,12 @@ export async function runNativeTask(
     {
       onSuccess: async (_res) => passthrough(_res),
       onFailure: async (outcome) => {
+        if (outcome.kind === "cooling") {
+          return withRetryAfter(
+            def.errorBody(429, `All ${def.name} upstream keys are cooling down; retry later.`),
+            outcome.retryAfterSec
+          );
+        }
         if (outcome.lastRes) return passthrough(outcome.lastRes);
         if (outcome.kind === "no-keys") {
           return def.errorBody(503, `No ${def.name} upstream keys configured.`);
@@ -41,10 +48,8 @@ export async function runNativeTask(
             `All upstream ${def.name} keys failed after retries.`
           );
         }
-        return def.errorBody(
-          503,
-          `All upstream ${def.name} keys are temporarily unavailable (disabled or in cooldown).`
-        );
+        // 只剩 unavailable（全部人工禁用）：冷却已在上方映射为 429。
+        return def.errorBody(503, `All upstream ${def.name} keys are disabled.`);
       },
     }
   );

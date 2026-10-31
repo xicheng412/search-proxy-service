@@ -13,7 +13,7 @@
 //   - 等待中任务数达到 maxDepth → 新请求直接 429（拒入，不排队）。
 //   - 入队后等待超过 waitBudgetMs → 定时器直接回 429（drain 跳过 settled 项，不烧配额）。
 //   - intervalMs / maxDepth / waitBudgetMs 由 KV 运行时配置（cachedQueueConfig），缺省 3000/10/30000。
-//   - 连接断开：任务仍未轮到（signal aborted）→ 直接丢弃，不烧上游配额。
+//   - 连接断开：任务仍未轮到、或正处于冷却等待（signal aborted）→ 直接丢弃，不烧上游配额。
 
 import { DurableObject } from "cloudflare:workers";
 import { Env } from "../types";
@@ -43,6 +43,7 @@ interface QueuedRequest {
   signal: AbortSignal;
   timer: number | null;                               // 等待超时定时器句柄（workers-types: setTimeout → number）
   settled: boolean;                                   // 定时器已回 429（防重复执行上游）
+  enqueuedAt: number;                                 // 入队时刻（冷却等待预算 = waitBudgetMs − 已排队时长）
 }
 
 /** 构造 429 拒入响应（按线协议渲染错误体 + Retry-After）。深度拒入与排队超时共用。 */
@@ -170,6 +171,7 @@ export class QueueDO extends DurableObject<Env> {
         signal: request.signal,
         timer: null,
         settled: false,
+        enqueuedAt: Date.now(),
         resolve: () => {},
         reject: () => {},
       };
@@ -213,6 +215,12 @@ export class QueueDO extends DurableObject<Env> {
         item.reject(new Error("client disconnected before its queue slot"));
         continue;
       }
+      // 冷却等待预算 = 排队预算减去已排队时长：单请求的排队+执行期等待总量
+      // 不超过一个 waitBudgetMs（全部 key 冷却时 FSM 在预算内等最早到期的 key）。
+      const remainingWaitBudgetMs = Math.max(
+        0,
+        cfg.waitBudgetMs - (Date.now() - item.enqueuedAt)
+      );
       // 权重信号 base 独立刷新（自节流 ≤120s；稳态为缓存 no-op，无网络代价）：
       // 让每个任务的冷启动/周期刷新都先有新底数，emit(init) 里的 readUpstreamWeightSignal
       // 保持 0 D1 往返（权重刷新节奏与 flush 解耦，不再依赖 flush 节流）。
@@ -229,6 +237,9 @@ export class QueueDO extends DurableObject<Env> {
           events: this.ensureBus(),
           transport: upstreamFetch,
           usage: getUsageStore(this.env),
+          coolingWaitBudgetMs: remainingWaitBudgetMs,
+          // 冷却等待期间调用方可能已断开：立即放弃，不再为其发起上游调用。
+          sleep: (ms: number) => this.sleepUnlessAborted(ms, item.signal),
         };
         const def = PROVIDERS[item.provider];
         const task = item.task; // 局部捕获，便于 discriminated union 窄化
@@ -255,5 +266,28 @@ export class QueueDO extends DurableObject<Env> {
 
   private sleepMs(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /**
+   * 冷却等待专用 sleep（可被调用方断开中断）。abort 时立即清定时器并拒绝，
+   * 由 drain 的 catch → item.reject 走与"未轮到即断开"相同的丢弃语义：不烧上游配额。
+   */
+  private sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error("client disconnected during cooldown wait"));
+      };
+      // abort 已发生（executor 同步段内不可能再变）：直接放弃，不排定时器。
+      if (signal.aborted) {
+        reject(new Error("client disconnected during cooldown wait"));
+        return;
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 }

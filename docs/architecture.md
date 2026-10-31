@@ -104,7 +104,7 @@ Authorization: Bearer <proto?-><provider>-<key>
 ┌──────────────────────────────────────────────────────┐
 │ searchWithRetry (src/domain-services/retry-state-machine.ts) │
 │  ⑤ selectUpstreamKey：从 enabled∧未冷却 按权重选       │
-│     └─ 无 key / 全冷却 → 503（按协议错误体）           │
+│     └─ 无 key / 全禁用 → 503；全冷却 → 等待或 429     │
 │     （dist 到达计数已在主 Worker countDist +1，核内不再记）│
 │  ⑥ fetch 上游（30s 超时, 每次换 key, 最多 3 次）       │
 │  ⑦ 分类处理（按描述符 statusClassMap 的族，不按码硬编码）│
@@ -276,7 +276,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 | `events.ts` | 同步轻量事件轴（仅 `UpstreamAttemptSettled`） | 不跨 isolate、不入队列 |
 | `queue/task.ts` | 队列任务 DTO（`NativeTask` / `SearxngTask` / `ReaderTask`） | 零依赖叶模块，不读 KV/DB |
 | `queue/durable-object.ts` | `QueueDO`：每 provider 一把，串行放行 + `maxDepth`/`waitBudgetMs` 背压 + 持有 KeyPool | 不含鉴权；不含重试策略 |
-| `queue/upstream-subscriber.ts` | `UpstreamAttemptSettled` 订阅者：按 cls 路由冷却 + upstream 记账 | 不持有 DO 实例（池经 resolver 惰性解析） |
+| `queue/upstream-subscriber.ts` | `UpstreamAttemptSettled` 订阅者：按 outcome 路由冷却 + upstream 记账（client-error 显式 no-op） | 不持有 DO 实例（池经 resolver 惰性解析） |
 | `proxy/authenticate.ts` | 数据面准入：解析复合前缀 → 查分发 key → 注入 `c.var.auth` | 不写业务数据 |
 | `proxy/count-dist.ts` | dist 请求到达计数（转发前 +1，主 Worker 直记） | 不区分成败、不耦合上游执行 |
 | `proxy/forward.ts` | 打装 `NativeTask` / 转发给 provider 的队列 DO | 不含重试策略 |
@@ -293,16 +293,20 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 
 ### 4.2 "新增 provider 需要改哪些文件"
 
-按当前设计，**只需要两个文件**：
+常规路径是"一份描述符 + 一行注册"，但**不是只改两个文件**。完整清单：
 
 1. `src/providers/<name>.ts`：写一份 `ProviderConfig` 描述符（base / capabilities / upstream / admin / testBody / errorBody / **`statusClassMap` + `statusClassFallback`（状态码→分类族映射，兜底族保证未知码语义确定）**）。
 2. `src/providers/index.ts`：把它注册到 `PROVIDERS`。
+3. `src/domain.ts`：`Provider` 联合类型加成员，`parseDistKey` 注册 `<name>-` 前缀。
+4. `src/admin/index.ts`：`adminSubPages` 注册后台子应用，Dashboard 的 provider 计数同步。
+5. `src/views/index.ts`：`NAV_ITEMS` 加导航项。
+6. 按 provider 复制的 `src/admin/<name>.ts` 与 `src/views/<name>.ts`（每个 provider 各有一份路由/视图文件）。
 
 其余所有代码（proxy / storage / usage / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
 
-> **已知例外（Dashboard 上游趋势图序列）**：`usage/reads/series.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面两个文件外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
+> **已知例外（Dashboard 上游趋势图序列）**：`usage/reads/series.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面清单外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
 
-> **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面两文件。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy/executors/` 加一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `queue/durable-object.ts` 分派 + 在 `proxy/handlers/` 与 `routes/proxy.ts` 接入端点。例见 `searxng`、`reader`。
+> **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面的 provider 清单。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy/executors/` 加一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `queue/durable-object.ts` 分派 + 在 `proxy/handlers/` 与 `routes/proxy.ts` 接入端点。例见 `searxng`、`reader`。
 
 ---
 
@@ -316,7 +320,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 ### 5.1 D1 表结构
 
 ```
-upstream_keys(provider, id, key, name, status, cooldown_until, created_at)
+upstream_keys(provider, id, key, name, status, cooldown_until, suspended_cause, created_at)
               PK (provider, id); provider = 'tavily'|'exa'|未来
               -- cooldown_until：QueueDO 内存池低频 checkpoint ≤30s 写回（见 §6.2）
 breaker_state(id, consecutive, updated_at, created_at)   -- 已停用（迁移保留）：连续计数权威在 QueueDO 内存
@@ -395,7 +399,7 @@ usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15
 ```
 
 窗口 = `usage/reads/weight.ts` 的 `weightWindowMs`（默认 30min），仅影响热路径权重信号；管理页「当日成功/失败」仍按 UTC 日展示，两者刻意分叉。
-无可用 → `503`，错误体用该 provider 自己的格式。
+无 key / 全禁用 → `503`；全部冷却 → 见 §6.4（等待或 429）。错误体用该 provider 自己的格式。
 
 ### 6.2 冷却（三层，共用一个字段）
 
@@ -426,47 +430,44 @@ usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15
   | auth-error | 401/403 | ✓ | 疑似失效 12h | 不碰连续计数 | 记 fail |
   | server-error | 其余 / 网络 / 2xx-不可用 | ✓ | 指数退避 | ✓ | 记 fail |
 - 每个失败 key 在重试过程中实时更新冷却，已冷却/禁用的 key 自动从候选池过滤。
-- 未配置任何上游 key / 全部冷却或禁用 → `503`（用 provider 错误体，searxng 用 `{error}`）。
+- 未配置任何上游 key / 全部禁用 → `503`（用 provider 错误体，searxng 用 `{error}`）。
+- 全部冷却 → 在等待预算内（≤ 队列 `waitBudgetMs` 剩余，见 §6.4）等到最早到期的 key 后重选；超预算 → `429` + `Retry-After`。
 - 候选池耗尽或达到 3 次上限 → 透传最后一个错误响应；无响应可得 → `502`。
 
 #### 6.3.1 FSM 规约（声明式状态机）
 
-实现是**声明式状态机**：状态（`init`/`pick`/`in-flight` + 终态）、扁平事件（`RetryEvent`，每个失败类一个 `kind`，无子分派）、迁移表（`TRANSITIONS`，key = `` `${state}:${kind}` ``，含可选 action）+ 少量行驱动器。读取进 `emit`、写副作用进迁移 action、请求级 bookkeeping 进 prologue。
+实现是**声明式状态机**：状态（`init`/`pick`/`in-flight`/`cooling` + 终态）、扁平事件（`RetryEvent`：每次在飞结算一个 `success` / `client-error` / `failed(cls)`，全冷却走 `cooling` / `cooling-out`）、迁移表（`TRANSITIONS`，key = `` `${state}:${kind}` ``，含可选 action）+ 少量行驱动器。读取进 `emit`、写副作用进迁移 action、请求级 bookkeeping 进 prologue。
 
 ```
 init ──no-keys───────────────► no-keys           (终态=503)
-  │   ──empty-candidates────► unavailable        (终态=503 全冷却/禁用)
+  │   ──empty-candidates────► unavailable        (终态=503 全禁用)
+  │   ──cooling──[sleep(waitMs)]─► init          (等待最早到期的 key 后重选)
+  │   ──cooling-out───────────► cooling          (终态=429 + Retry-After)
   │   ──ready───────────────► pick
 pick ──picked(key)──────────► in-flight
   │   ──depleted / guard(attempt≥MAX)──► exhausted   (终态)
-in-flight ──success──[markSuccess]──────► success    (终态, 直接返回 res)
-  │        ──unusable──[markFail]───────► pick       (2xx 但 onSuccess→null)
-  │        ──network──[markFail]────────► pick       (fetch 异常/超时)
-  │        ──rate-limit──[markRateLimit]► pick       (记 fail + 疑似失效长冷却)
-  │        ──client-error───────────────► client-error (终态, 无副作用)
-  │        ──auth-error──[markInvalid]──► pick       (记 fail + 疑似失效长冷却)
-  │        ──server-error──[markFail]───► pick       (记 fail + 指数退避)
+in-flight ──success──[publish(success)]───► success    (终态, 直接返回 res)
+  │        ──client-error──[publish(failure,client-error)]─► client-error (终态)
+  │        ──failed(cls)──[publish(failure,cls)]─► pick  (rate-limit/auth/server-error/网络/2xx-不可用)
 
 终态 ↔ RetryOutcome：success=res 直接返回；no-keys/unavailable/client-error/
-exhausted → onFailure（透传最后响应或 503/502）。
+cooling/exhausted → onFailure（透传最后响应、429+Retry-After 或 503/502）。
 ```
 
-**事件表（`RetryEvent`，12 个 kind）**
+**事件表（`RetryEvent`，10 个 kind）**
 
 | kind | 触发 |
 |---|---|
 | `no-keys` | `init`：该 provider 未配置任何上游 key |
-| `empty-candidates` | `init`：全部冷却/禁用 |
+| `empty-candidates` | `init`：无候选且无 enabled key 在冷却（全禁用） |
+| `cooling waitMs` | `init`：全部 enabled key 冷却中，最早到期在等待预算内且本请求未等待过 |
+| `cooling-out retryAfterSec` | `init`：全冷却且超预算 / 已等待过一次 |
 | `ready` | `init`：候选 ≥1，已读权重信号 |
 | `picked key` | `pick`：选到可用 key |
 | `depleted` | `pick`：候选池耗尽或 attempt ≥ MAX |
 | `success res` | `in-flight`：2xx 且 onSuccess 产物非空 |
-| `unusable res` | `in-flight`：2xx 但 onSuccess→null |
-| `network` | `in-flight`：fetch 异常/超时 |
-| `rate-limit res` | `in-flight`：429 |
-| `client-error res` | `in-flight`：400/404/422 |
-| `auth-error res` | `in-flight`：401/403 |
-| `server-error res` | `in-flight`：其余（5xx/未知） |
+| `client-error res` | `in-flight`：400/404/422（tavily 另有 433） |
+| `failed cls` | `in-flight`：其余全部结算（429 限流 / 401/403 / 5xx / 网络 / 2xx-不可用），`cls` = 对应 RetryClass（不含 client-error） |
 
 **迁移表（`TRANSITIONS`，key = `` `${state}:${kind}` ``）**
 
@@ -474,27 +475,28 @@ exhausted → onFailure（透传最后响应或 503/502）。
 |---|---|---|
 | `init:no-keys` | — | `no-keys` |
 | `init:empty-candidates` | — | `unavailable` |
+| `init:cooling` | `sleep(waitMs)` | `init`（重选） |
+| `init:cooling-out` | — | `cooling` |
 | `init:ready` | — | `pick` |
 | `pick:picked` | — | `in-flight` |
 | `pick:depleted` | — | `exhausted` |
-| `in-flight:success` | `markSuccess` 壳 | `success` |
-| `in-flight:unusable` | `markFail` 壳 | `pick` |
-| `in-flight:network` | `markFail` 壳 | `pick` |
-| `in-flight:rate-limit` | `markRateLimit` 壳 | `pick` |
-| `in-flight:client-error` | — | `client-error` |
-| `in-flight:auth-error` | `markInvalid` 壳 | `pick` |
-| `in-flight:server-error` | `markFail` 壳 | `pick` |
+| `in-flight:success` | `publish(success)` | `success` |
+| `in-flight:client-error` | `publish(failure, client-error)` | `client-error` |
+| `in-flight:failed` | `publish(failure, cls)` | `pick` |
+
+> 每次在飞结算都发布 `UpstreamAttemptSettled`（含 client-error）；冷却/统计副作用由订阅者按 `outcome` 路由（client-error 由订阅者 no-op）。
 
 **上下文（`RetryContext`）**
 
 | 字段 | 语义 |
 |---|---|
-| `env` / `def` / `request` / `cb` | 请求参数与依赖 |
-| `store` / `hour` | usage 缓冲与当前小时桶 |
+| `deps` / `def` / `request` / `cb` | 依赖（CoreDeps，含冷却预算 `coolingWaitBudgetMs` 与 `sleep`）与请求参数 |
+| `store` / `pool` | usage 门面 / 上游 key 池 |
 | `keys` / `statsMap` | 上游 key 列表与权重信号 |
 | `tried` / `attempt` | 已试 key 集合 / 尝试计数 |
 | `lastRes` | 最后一次错误响应（`exhausted` 透传） |
 | `currentKey` | 本次在飞请求所用 key |
+| `waitedForCooldown` | 本请求是否已消费过一次冷却等待（不重复等待） |
 
 > `TRANSITIONS` / `emit` / `RetryState` / `RetryEvent` / `RetryContext` 为 **test-only 导出**（FSM 单测的唯一触达面）。usage/熔断持久态/队列 DO/协议渲染不进机器：写副作用在迁移 action，读在 `emit`，协议渲染经 `RetryCallbacks`（`cb`）访问；机器拥有执行/传输（transport 随核在此，避免 proxy↔retry 循环依赖）。
 
@@ -505,8 +507,9 @@ exhausted → onFailure（透传最后响应或 503/502）。
 - **串行放行**：一次只在途 1 个任务，任务（含其内部重试）跑完后隔 `intervalMs`（默认 3s）再放下一个——削峰填谷，把上游请求频率压到可调区间。
 - **maxDepth 拒入**：等待中任务数达到 `maxDepth`（默认 10）→ 新请求直接 `429`（拒入，不排队）。
 - **排队等待预算**：入队后等待超过 `waitBudgetMs`（默认 30s）→ 直接 `429` + `Retry-After`（与拒入同语义、不计统计）；与 `maxDepth` 构成「深度 + 时间」两种背压。
+- **全冷却等待**：任务轮到后若全部上游 key 在冷却，drain 注入的冷却预算 = `waitBudgetMs` − 已排队时长，FSM 在预算内等待最早到期的 key 后重选；超预算 → `429` + `Retry-After`（不再 503）。排队 + 执行期等待总量不超过一个 `waitBudgetMs`。
 - **容量门禁与入队原子**：check + push 在 Promise executor 同步段内完成，中间无 `await`，突发请求不会击穿 maxDepth。
-- **连接断开**：任务仍未轮到（signal aborted）→ 直接丢弃，不烧上游配额。
+- **连接断开**：任务仍未轮到、或正处于冷却等待（signal aborted）→ 直接丢弃，不烧上游配额。
 - **任务内部重试不重新入队**：一个任务 = 一次"对上游的完整处理"（`searchWithRetry` 最多换 `MAX_ATTEMPTS` 把 key），重试试的是 key，不是重新排队。
 - **参数运行时调整**：`intervalMs` / `maxDepth` / `waitBudgetMs` 存 KV `queue_config`（见 `src/queue/config.ts`），改 KV 即生效（≤3s）。
 - **兼持上游 key 池内存权威态**：该 DO 同时持有本 provider 的 key 池（冷却/熔断权威，见 §6.2）；admin 写 D1 后经 `POST https://queue.internal/_internal/sync-keys`（body `{provider}`）推式全量重读；drain 每任务前 `maybeReload`（含 60s 陈旧兜底）、任务后 `maybeCheckpoint`、收尾 `flushNow`。
@@ -519,7 +522,7 @@ exhausted → onFailure（透传最后响应或 503/502）。
 | Exa | `{ "error": "..." }` | 与官方一致（429 / 通用） |
 | SearXNG 协议 | `{ "error": "..." }` | 对齐 searxng `index_error` |
 
-`PROVIDERS[provider].errorBody(status, msg)` 集中产出**上游官方错误体**；searxng 路径由 `adapters/searxng.ts:searxngError` 统一产出，**禁止**在 proxy/admin 里硬编码某一家的格式。
+`PROVIDERS[provider].errorBody(status, msg)` 集中产出**上游官方错误体**；searxng 路径由 `adapters/searxng.ts:searxngError` 统一产出，**禁止**在 proxy/admin 里硬编码某一家的格式。全部 key 冷却且超等待预算时返回 `429` + `Retry-After`（native 用 provider 错误体，searxng / reader 各自 `{error}` 体，见 §6.4）。
 
 ### 6.6 会话与 CSRF
 

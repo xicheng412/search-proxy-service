@@ -37,9 +37,9 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 
 | 事件 | 产生者 | 订阅者 | 是否进 D1 |
 |---|---|---|---|
-| UpstreamAttemptSettled | retry FSM 在飞环节（searchWithRetry 迁移 action） | QueueDO 专属订阅：按 cls 路由冷却（recordUpstreamOutcome 写 KeyPool 内存）+ usage 记账（recordUpstreamResult 内存 pending） | 冷却经 checkpoint 低频落库；usage 经 flush 节流落库 |
+| UpstreamAttemptSettled | retry FSM 在飞环节（searchWithRetry 迁移 action；每次尝试结算都发布，`outcome: success \| failure(cls)`，含 client-error） | QueueDO 专属订阅：按 outcome 路由冷却（recordUpstreamOutcome 写 KeyPool 内存）+ usage 记账（recordUpstreamResult 内存 pending）；client-error 显式 no-op | 冷却经 checkpoint 低频落库；usage 经 flush 节流落库 |
 
-> `UpstreamKeyChanged` 只是语义标签，**不是**代码中的事件类型（无对应 symbol）：admin 的 14 处写命令（`tavily.ts` / `exa.ts` 各 7）在 D1 落库后调用 `notifyKeyPoolSync` → `/_internal/sync-keys` → `KeyPool.reload`。本文件 §2/§3 保留该名字仅用于描述"写后同步内存池"的意图。
+> `UpstreamKeyChanged` 只是语义标签，**不是**代码中的事件类型（无对应 symbol）：admin 的 14 处写命令（`tavily.ts` / `exa.ts` 各 7）在 D1 落库后调用 `notifyKeyPoolSync` → `/_internal/sync-keys` → `KeyPool.reload`。它是 **KeyPoolSync 推式同步端口（非领域事件）**。本文件 §2/§3 保留该名字仅用于描述"写后同步内存池"的意图。
 
 ## 3. 命令 × 事件追溯
 
@@ -47,9 +47,9 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 
 | 命令 | 产物事件 | 订阅者最终落点 |
 |---|---|---|
-| ExecuteProxyRequest | dist = 主 Worker 直达 +1（非事件）；每尝试 ≤1 × UpstreamAttemptSettled（client-error 不产） | usage_counts（dist 到达量）+ KeyPool 冷却 + usage_counts（upstream 按 cls） |
+| ExecuteProxyRequest | dist = 主 Worker 直达 +1（非事件）；每尝试 1 × UpstreamAttemptSettled（`outcome: success \| failure(cls)`，含 client-error——订阅者 no-op） | usage_counts（dist 到达量）+ KeyPool 冷却 + usage_counts（upstream 按 outcome） |
 | Generate/Toggle/DeleteDistributedKey | 无 | 纯 D1 写（+ Cache 失效） |
-| Add/Rename/Toggle/DeleteUpstreamKey（含批量） | 语义标签 UpstreamKeyChanged（无事件类型） | notifyKeyPoolSync → KeyPool.reload 全量重读合并 |
+| Add/Rename/Toggle/DeleteUpstreamKey（含批量） | 语义标签 UpstreamKeyChanged（KeyPoolSync 推式同步端口，非领域事件） | notifyKeyPoolSync → KeyPool.reload 全量重读合并 |
 | Update*Config | 无 | 纯 KV 写 + TTL 缓存失效 |
 | ScheduledPurgeUsage | 无 | 纯 D1 DELETE |
 
@@ -67,7 +67,8 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 - **选 key 硬闸门**：`enabled ∧ 未冷却` 才入候选；权重 1/(fail+1) 只调分布不判健康。
 - **内存权威 + D1 投影**：冷却/熔断写 KeyPool 内存，D1 低频 checkpoint；丢失方向安全（放宽非锁死）。
 - **队列背压**：一次在途 1 任务；maxDepth 拒入 / waitBudget 超时双路 429，不计 upstream 执行；
-  dist 请求到达已在主 Worker 计入。
+  dist 请求到达已在主 Worker 计入。全部 key 冷却时，在 `waitBudgetMs` 剩余预算内等待最早到期的
+  key 后重选；超预算 429 + Retry-After（不再 503）。
 - **单点写者**：per-provider KeyPool 仅其 QueueDO 写冷却（权威在内存）；
   D1 只承载投影 / checkpoint 备份 / usage_counts，不参与冷却决策。
 - **usage_counts 全 15 分钟桶**：`usage_counts` 全部行为 15 分钟桶；迁移 0007 已把历史小时行按等比

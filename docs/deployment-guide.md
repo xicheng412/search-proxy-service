@@ -1,6 +1,6 @@
 # 全新环境部署指南
 
-本文档描述如何在**另一个全新的 Cloudflare 环境/账号** 上完整部署一套 tavily-cf-proxy(Worker + KV),从零到线上可用。
+本文档描述如何在**另一个全新的 Cloudflare 环境/账号** 上完整部署一套 tavily-cf-proxy(Worker + D1 + KV + Durable Object),从零到线上可用。
 
 适用场景:换账号、换地区、或要与现有部署并存另开一套。
 
@@ -45,9 +45,27 @@ wrangler login
 wrangler whoami
 ```
 
-## 3. 创建 KV namespace
+## 3. 创建 D1 数据库与 KV namespace
 
-应用的所有数据(上游 key、分发 key、统计、会话)都存 KV,且**代码硬编码 binding 名为 `KV`**(`c.env.KV`),不能改名。
+实体数据(上游 key、分发 key、用量时间桶)存 **D1**;KV 只存运行时参数与会话。代码硬编码 binding 名为 `DB` / `KV`,不能改名。
+
+先创建 D1:
+
+```bash
+pnpm exec wrangler d1 create search-proxy
+```
+
+输出的 `database_id` 填进 `wrangler.toml` 的 `[[d1_databases]]`(`database_name = "search-proxy"` 已钉住):
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "search-proxy"
+database_id = "<上一步生成的 database_id>"   # 替换
+migrations_dir = "migrations"
+```
+
+再创建 KV:
 
 ```bash
 pnpm kv:create -- tavily-cf-proxy   # = wrangler kv namespace create tavily-cf-proxy
@@ -156,9 +174,9 @@ curl -i https://tavily-cf-proxy.<子域>.workers.dev/admin | head
 
 浏览器打开 `/admin` 登录(用第 4 步的密码)。
 
-## 8. 初始化数据(新环境 KV 是空的)
+## 8. 初始化数据(新环境 D1/KV 均为空)
 
-新环境 KV 不包含旧环境任何数据,需初始化:
+新环境 D1/KV 不包含旧环境任何数据,需初始化:
 
 1. **添加真实上游 key**:后台 → Tavily Keys / Exa Keys 页,录入真实 Tavily(`tvly-`) / Exa key(列表自动脱敏)。
 2. **生成分发 key**:后台 → 分发 Keys 页,为每个调用方生成一条,拿到组装好的调用凭据 `Bearer tavily-<key>` / `Bearer exa-<key>`。
@@ -171,7 +189,7 @@ curl -X POST https://tavily-cf-proxy.<子域>.workers.dev/search \
   -d '{"query":"What is AI?"}'
 ```
 
-> **数据迁移**:仓库没有内建的上游/分发 key 导出功能。若需要把旧环境的数据搬过来(而非重新录入),可用 `wrangler kv key list / key get / key put --binding=KV` 逐个导出倒入,注意这些数据含**真实上游 key**,迁移过程中需走安全通道。
+> **数据迁移**:上游/分发 key 在 D1,用 `wrangler d1 execute search-proxy --remote --command "SELECT ..."` 导出;KV 只有 `breaker_config` / `queue_config` / `dist_cache_config` / `session:*`,可用 `wrangler kv key list/get/put --binding=KV` 迁移。两者都含敏感数据,需走安全通道。
 
 ## 9. 可选:绑定自有域名
 
@@ -200,4 +218,4 @@ TLS 由 Cloudflare 自动签发。
 | `Ignored build scripts: esbuild, workerd` | pnpm 10 默认屏蔽构建脚本 | `pnpm approve-builds` 或已由 `package.json` 声明 |
 | 登录一直 401 | `ADMIN_PASSWORD` secret 未配置 | `wrangler secret put ADMIN_PASSWORD` |
 | `/admin` 不跳登录页 | 已登录会话存在(cookie 24h) | 清除 `admin_session` cookie 或 `/admin/logout` |
-| 数据为空 | 新环境 KV 独立,不随代码迁移 | 走第 8 步初始化/迁移 |
+| 数据为空 | 新环境 D1/KV 独立,不随代码迁移 | 走第 8 步初始化/迁移 |

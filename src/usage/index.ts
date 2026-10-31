@@ -58,7 +58,7 @@ export interface UsageStoreOpts {
   signalBaseTtlMs?: number;
   /** 权重信号滑动窗口（ms）；只影响热路径选 key 的信号，不影响展示口径。默认 30min。 */
   weightWindowMs?: number;
-  /** 跨 scope 小时序列缓存 TTL；默认 30min（每 isolate 每小时 ≤2 次历史读）。 */
+  /** 跨 scope 时间序列缓存 TTL；默认 30min（每 isolate 每小时 ≤2 次历史读）。 */
   seriesTtlMs?: number;
 }
 

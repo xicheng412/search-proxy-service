@@ -1,6 +1,7 @@
 // 领域服务·RetryStateMachine：通用重试状态机核（src/domain-services/retry-state-machine.ts）。
-// searchWithRetry 以声明式状态机驱动重试：状态（init/pick/in-flight + 终态）、
-// 扁平事件（RetryEvent：每个失败类一个 kind，无子分派）、迁移表（TRANSITIONS：
+// searchWithRetry 以声明式状态机驱动重试：状态（init/pick/in-flight/cooling + 终态）、
+// 扁平事件（RetryEvent：每次在飞结算一个 success / client-error / failed(cls)，
+// 全冷却走 cooling / cooling-out）、迁移表（TRANSITIONS：
 // key = `${state}:${kind}`，含可选 action）+ 少量行驱动器。读取进 emit、写副作用进
 // 迁移 action（发布领域事件）、请求级 bookkeeping 进 prologue。
 //
@@ -22,7 +23,7 @@
 
 import type { Env } from "../types";
 import type { ProviderConfig } from "../providers";
-import type { CoreKey, DomainEventSink, RetryClass } from "../domain";
+import type { AttemptOutcome, CoreKey, DomainEventSink, RetryClass } from "../domain";
 import type { UsageStore } from "../usage";
 import type { KeyPool } from "../key-pool";
 import { isCandidate, selectUpstreamKey } from "./selection";
@@ -43,13 +44,21 @@ export interface CoreDeps {
   transport: typeof upstreamFetch;
   /** 用量统计门面（实现见 src/usage；组合根注入——领域服务不直接取单例）。 */
   usage: UsageStore;
+  /** 全冷却时单次请求允许的等待预算（ms）；默认 0（不等待，直接 429）。 */
+  coolingWaitBudgetMs?: number;
+  /** 等待注入点（测试可替换假时钟）；默认 setTimeout。 */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+// ES2022 lib 无 Promise.withResolvers；setTimeout 单 resolve 用 executor 形态即可。
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 通用重试的结果，交给 onFailure 按协议渲染最终响应。 */
 export type RetryOutcome =
   | { kind: "success"; res: Response }
   | { kind: "no-keys"; lastRes: null } // 该 provider 未配置任何上游 key
-  | { kind: "unavailable"; lastRes: null } // 全部冷却/禁用
+  | { kind: "unavailable"; lastRes: null } // 全部禁用（无 key 可等的场景）
+  | { kind: "cooling"; retryAfterSec: number } // 全部冷却且超等待预算 → 429 + Retry-After
   | { kind: "client-error"; lastRes: Response } // 4xx 客户端确定性错误
   | { kind: "exhausted"; lastRes: Response | null }; // 重试耗尽（可能全是网络异常，null）
 
@@ -63,8 +72,8 @@ export interface RetryCallbacks {
 }
 
 // ---- 迁移 action：把"一次上游尝试结束"发布为领域事件（UpstreamAttemptSettled）----
-// 冷却/统计副作用由事件订阅者（组合根）按 ev.cls 路由——本 FSM 不内联任何持久化调用；
-// 六条在飞迁移共用 publishAttemptSettled，非重试/终止路径无 action（现状行为）。
+// 冷却/统计副作用由事件订阅者（组合根）按 ev.outcome 路由——本 FSM 不内联任何持久化调用；
+// 每条在飞结算迁移（success / client-error / failed）都发布事件，终止路径无 action。
 
 // ---- 重试状态机（FSM）：状态 / 事件 / 上下文 / 迁移表 / 读取 / 渲染 ----
 // 终态集合 = RetryOutcome 全部类别：success → res 直接返回；其余 → onFailure。
@@ -77,6 +86,7 @@ type RetryState =
   | "init"
   | "pick"
   | "in-flight"
+  | "cooling"
   | "success"
   | "no-keys"
   | "unavailable"
@@ -86,16 +96,14 @@ type RetryState =
 type RetryEvent =
   | { kind: "no-keys" }
   | { kind: "empty-candidates" }
+  | { kind: "cooling"; waitMs: number }
+  | { kind: "cooling-out"; retryAfterSec: number }
   | { kind: "ready" }
   | { kind: "picked"; key: CoreKey }
   | { kind: "depleted" }
   | { kind: "success"; res: Response }
-  | { kind: "unusable"; res: Response }
-  | { kind: "network" }
-  | { kind: "rate-limit"; res: Response }
   | { kind: "client-error"; res: Response }
-  | { kind: "auth-error"; res: Response }
-  | { kind: "server-error"; res: Response };
+  | { kind: "failed"; cls: Exclude<RetryClass, "client-error"> };
 
 interface RetryContext {
   deps: CoreDeps;
@@ -110,6 +118,8 @@ interface RetryContext {
   lastRes: Response | null;
   attempt: number;
   currentKey: CoreKey | null;
+  /** 是否已为本请求消费过一次冷却等待（冷却期间换 key 不重复等待）。 */
+  waitedForCooldown: boolean;
 }
 
 // type 擦除，运行时无面：仅供 tests 引用（见文件头注释）
@@ -125,6 +135,7 @@ const TERMINAL = new Set<RetryState>([
   "success",
   "no-keys",
   "unavailable",
+  "cooling",
   "client-error",
   "exhausted",
 ]);
@@ -133,37 +144,51 @@ function isTerminal(s: RetryState): boolean {
   return TERMINAL.has(s);
 }
 
-/** 发布一次上游尝试结束的领域事件：keyId/provider 取自身，时刻取当前；调用点只传族。 */
-function publishAttemptSettled(ctx: RetryContext, cls: RetryClass | "success"): void {
+/** 发布一次上游尝试结算的领域事件：keyId/provider 取自身，时刻取当前；调用点只传 outcome。 */
+function publishAttemptSettled(ctx: RetryContext, outcome: AttemptOutcome): void {
   ctx.deps.events.publish({
     type: "upstream-attempt-settled",
     keyId: ctx.currentKey!.id,
     provider: ctx.def.name,
-    cls,
+    outcome,
     at: Date.now(),
   });
 }
 
 /**
  * 迁移表：key = `${state}:${event.kind}`，每个可到事件必有迁移（缺配即驱动抛错）。
- * 在飞迁移的 action 统一发 UpstreamAttemptSettled（按族）；非重试性/终止路径无 action。
+ * 每条在飞结算迁移（success / client-error / failed）的 action 发布 UpstreamAttemptSettled；
+ * init:cooling 的 action 等待到最早到期的 key；终止路径无 action。
  */
 export const TRANSITIONS: Record<string, Transition> = {
   "init:no-keys": { to: "no-keys" },
   "init:empty-candidates": { to: "unavailable" },
+  "init:cooling": {
+    to: "init",
+    action: async (ctx, ev) => {
+      if (ev.kind === "cooling")
+        await (ctx.deps.sleep ?? defaultSleep)(ev.waitMs);
+    },
+  },
+  "init:cooling-out": { to: "cooling" },
   "init:ready": { to: "pick" },
   "pick:picked": { to: "in-flight" },
   "pick:depleted": { to: "exhausted" },
-  "in-flight:success": { to: "success", action: (ctx) => publishAttemptSettled(ctx, "success") },
-  // 2xx 但响应内容不可用（上游坏）：按 server-error 族处理（记失败 + 指数退避冷却）
-  "in-flight:unusable": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
-  // 网络异常/超时：同 server-error 族
-  "in-flight:network": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
-  // 限流：记失败 + 疑似失效长冷却（订阅者按 cls 落账）
-  "in-flight:rate-limit": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "rate-limit") },
-  "in-flight:client-error": { to: "client-error" },
-  "in-flight:auth-error": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "auth-error") },
-  "in-flight:server-error": { to: "pick", action: (ctx) => publishAttemptSettled(ctx, "server-error") },
+  "in-flight:success": {
+    to: "success",
+    action: (ctx) => publishAttemptSettled(ctx, { kind: "success" }),
+  },
+  "in-flight:client-error": {
+    to: "client-error",
+    action: (ctx) => publishAttemptSettled(ctx, { kind: "failure", cls: "client-error" }),
+  },
+  "in-flight:failed": {
+    to: "pick",
+    action: (ctx, ev) => {
+      if (ev.kind === "failed")
+        publishAttemptSettled(ctx, { kind: "failure", cls: ev.cls });
+    },
+  },
 };
 
 /**
@@ -178,13 +203,30 @@ export async function emit(state: RetryState, ctx: RetryContext): Promise<RetryE
 
       const now0 = Date.now();
       const candidates = ctx.keys.filter((k) => isCandidate(k, now0));
-      if (candidates.length === 0) return { kind: "empty-candidates" };
+      if (candidates.length > 0) {
+        ctx.statsMap =
+          candidates.length < 2
+            ? {}
+            : await ctx.store.readUpstreamWeightSignal(candidates.map((k) => k.id));
+        return { kind: "ready" };
+      }
 
-      ctx.statsMap =
-        candidates.length < 2
-          ? {}
-          : await ctx.store.readUpstreamWeightSignal(candidates.map((k) => k.id));
-      return { kind: "ready" };
+      // 无候选：若存在 enabled key 在冷却，尝试在预算内等到最早到期的那把
+      const enabled = ctx.keys.filter((k) => k.status === "enabled");
+      if (enabled.length === 0) return { kind: "empty-candidates" };
+
+      const earliest = Math.min(
+        ...enabled.map((k) => k.cooldown_until ?? Number.POSITIVE_INFINITY)
+      );
+      if (!Number.isFinite(earliest)) return { kind: "empty-candidates" };
+
+      const waitMs = Math.max(0, earliest - now0);
+      const budget = ctx.deps.coolingWaitBudgetMs ?? 0;
+      if (!ctx.waitedForCooldown && waitMs > 0 && waitMs <= budget) {
+        ctx.waitedForCooldown = true;
+        return { kind: "cooling", waitMs };
+      }
+      return { kind: "cooling-out", retryAfterSec: Math.max(1, Math.ceil(waitMs / 1000)) };
     }
 
     case "pick": {
@@ -211,29 +253,22 @@ export async function emit(state: RetryState, ctx: RetryContext): Promise<RetryE
           ctx.request.contentType
         );
       } catch {
-        // 网络异常/超时：lastRes 不变，交由 migration 按失败换 key
-        return { kind: "network" };
+        // 网络异常/超时：lastRes 不变，按 server-error 族结算换 key
+        return { kind: "failed", cls: "server-error" };
       }
 
       if (res.ok) {
         const out = await ctx.cb.onSuccess(res);
         if (out) return { kind: "success", res: out };
-        // 2xx 但响应不可用：视为失败换 key
+        // 2xx 但响应不可用：视为 server-error 族失败换 key
         ctx.lastRes = res;
-        return { kind: "unusable", res };
+        return { kind: "failed", cls: "server-error" };
       }
 
       ctx.lastRes = res;
-      switch (classifyStatus(ctx.def, res.status)) {
-        case "rate-limit":
-          return { kind: "rate-limit", res };
-        case "client-error":
-          return { kind: "client-error", res };
-        case "auth-error":
-          return { kind: "auth-error", res };
-        default:
-          return { kind: "server-error", res };
-      }
+      const cls = classifyStatus(ctx.def, res.status);
+      if (cls === "client-error") return { kind: "client-error", res };
+      return { kind: "failed", cls };
     }
 
     default:
@@ -265,6 +300,11 @@ function render(
       return cb.onFailure({ kind: "no-keys", lastRes: null });
     case "unavailable":
       return cb.onFailure({ kind: "unavailable", lastRes: null });
+    case "cooling":
+      return cb.onFailure({
+        kind: "cooling",
+        retryAfterSec: finalEvent.kind === "cooling-out" ? finalEvent.retryAfterSec : 1,
+      });
     case "client-error":
       return cb.onFailure({ kind: "client-error", lastRes: terminalRes(finalEvent) });
     case "exhausted":
@@ -281,7 +321,7 @@ function render(
  * 以声明式状态机驱动：读取进 emit、写副作用进迁移 action、请求级 bookkeeping 进
  * prologue（见 TRANSITIONS / emit / render）。
  * - 每次尝试选不同 key；命中"不可重试"分类提前返回，避免浪费配额/流量。
- * - 无 key 配置 / 全部冷却禁用 → 503（经 onFailure 渲染）。
+ * - 无 key 配置 / 全部禁用 → 503；全部冷却 → 预算内等待重选，超预算 429 + Retry-After（经 onFailure 渲染）。
  */
 export async function searchWithRetry(
   deps: CoreDeps,
@@ -292,7 +332,7 @@ export async function searchWithRetry(
 ): Promise<Response> {
   const store = deps.usage;
 
-  // 节流触发 upstream 统计 flush（退避到 waitUntil，双阈值 ≥30min/256 条；不阻塞本请求）。
+  // 节流触发 upstream 统计 flush（退避到 waitUntil，双阈值 ≥`BUCKET_MS`（15 分钟）/256 条；不阻塞本请求）。
   // dist 到达计数已在主 Worker 由 countDist 中间件完成，此处不再发布 dist 事件。
   store.flushSoon(deps.executionCtx);
 
@@ -309,6 +349,7 @@ export async function searchWithRetry(
     lastRes: null,
     attempt: 0,
     currentKey: null,
+    waitedForCooldown: false,
   };
 
   // 驱动器：迁移表 + isTerminal + render，表即文档

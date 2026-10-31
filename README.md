@@ -20,13 +20,13 @@ You hold real **Tavily** or **Exa** API keys for your team / customers, and you 
 - Visibility into **who is calling what, how often, and which upstream key is hot or failing**.
 - A way to **share** one upstream key budget across many callers without giving anyone the real key.
 
-`tavily-cf-proxy` does exactly that — and runs on a free-tier Cloudflare Worker with one KV namespace. No servers, no DB, no build pipeline.
+`tavily-cf-proxy` does exactly that — it runs on Cloudflare Workers with **D1** (entities), **KV** (runtime config/session) and one **Durable Object per provider** (in-memory key pool). No servers, no build pipeline.
 
 ## Features
 
-- **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`); `GET /reader/<url>` serves **Tavily Extract as plain text** (`Bearer reader-tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider or capability with a descriptor file.
+- **Multi-protocol, multi-provider, multi-capability.** `GET|POST /search` serves the **Search** ability (`Bearer tavily-…` native, `Bearer exa-…` native, or SearXNG-compatible `Bearer searxng-tavily-…`); `POST /extract` serves **Tavily Extract** (`Bearer tavily-…`); `GET /reader/<url>` serves **Tavily Extract as plain text** (`Bearer reader-tavily-…`). The prefix picks the provider, the endpoint picks the capability. Add a provider with a descriptor plus its admin/views registration (see `docs/architecture.md §4.2`); a wire protocol needs only an adapter + executor.
 - **Tavily Extract passthrough.** `POST /extract` with `Bearer tavily-…` transparently forwards to Tavily Extract, sharing the exact same retry/breaker/usage-accounting pipeline as `/search` (native-only by design).
-- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (today's failures + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed. Cooldown/breaker state is authoritative in the per-provider Durable Object's memory (D1 is a low-frequency checkpoint).
+- **Weighted random + circuit breaker.** Among enabled, non-cooldown upstream keys, each is picked with weight `1 / (failures in the last 30 min + 1)`. Three cooldown layers share one per-key field (whichever is longer wins): (1) post-use — every use gives a 10s cooldown; (2) breaker — non-429 failures escalate `10min × 2^consecutive_failures`, success resets the count; (3) suspected-invalid — `401/403` parks the key for 12h, auto-retried after. **All three cooldown params are runtime-adjustable** on the admin dashboard (defaults: 10s post-use, 10min breaker base, 12h invalid), stored in KV `breaker_config` — no redeploy needed. Cooldown/breaker state is authoritative in the per-provider Durable Object's memory (D1 is a low-frequency checkpoint).
 - **Automatic retry with key rotation.** Request attempts up to 3 different upstream keys. Retry classification (by descriptor-mapped family, not by raw status digit): `429` (rate-limit) → records a failure + a 12h suspected-invalid cooldown, then switches key; `400/404/422` client errors return immediately (no key burn, no failure record); `401/403` park the key with a 12h suspected-invalid cooldown (failure recorded) then switch; other failures / network errors trigger exponential cooldown and switch key. Tavily quota codes are handled without penalizing healthy keys: `432` (key/plan limit) retries like a rate-limit; `433` (PayGo limit) returns immediately with no retry/cooldown.
 - **Native passthrough.** `tavily-` / `exa-` requests flow through untouched — request / response bodies pass verbatim; only the `Authorization` header is swapped — across both capability endpoints (`/search`, `/extract`).
 - **SearXNG-compatible protocol adapter.** `searxng-tavily-<key>` speaks the standard SearXNG HTTP API (GET/POST query + `format=json`), translates to a Tavily Search request, reuses the same retry/circuit-breaker pipeline, and returns SearXNG-standard JSON (`query` / `results` / `answers` / `infoboxes` / `suggestions` / `unresponsive_engines`). Stats are still attributed to Tavily.
@@ -158,7 +158,7 @@ src/
 ├── domain-services/     # retry FSM, key selection, status classification, breaker policy
 ├── transport.ts         # upstream fetch port (30s timeout)
 ├── events.ts            # synchronous event axis (UpstreamAttemptSettled)
-├── storage/             # D1 entity layer (upstream registry, dist keys, usage hour buckets)
+├── storage/             # D1 entity layer (upstream registry, dist keys, usage 15-min time buckets)
 ├── usage/               # write-back stats: core (buffer/flush) + reads (today/weight/series)
 ├── key-pool.ts          # per-provider in-memory key pool (cooldown/breaker authority + checkpoint)
 ├── circuit-breaker.ts   # side-effect binder: policy → key-pool memory
@@ -181,6 +181,7 @@ Full directory + per-file responsibilities are in [`docs/architecture.md`](./doc
 | Doc | Purpose |
 |---|---|
 | [`docs/architecture.md`](./docs/architecture.md) | Concept distinctions, module layers, data model, behavior specs, "how to add a provider" |
+| [`docs/domain-concepts.md`](./docs/domain-concepts.md) | 命令→事件→聚合的 DDD 词典（写面模型） |
 | [`docs/deployment-guide.md`](./docs/deployment-guide.md) | Fresh-environment deploy (login, KV, secrets, custom domain, troubleshooting) |
 | [`docs/plan.md`](./docs/plan.md) | Original requirements + delivery plan (historical reference) |
 | [`docs/exa-key-support.md`](./docs/exa-key-support.md) | Exa integration design notes (historical reference) |

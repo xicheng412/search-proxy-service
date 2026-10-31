@@ -15,8 +15,8 @@ const config = cachedBreakerConfig();
 /**
  * 记录一次上游结果对某 key 的熔断/冷却副作用（写 KeyPool 内存）：
  * 读 KV 配置 → computeBreakerOutcome 算结局 → applyBreakerOutcome 落池。
- * result 与领域事件 cls 同源（"success" | RetryClass）；client-error 不入
- * computeBreakerOutcome（不换 key 不记账），进到由该策略抛错、被订阅者 .catch 兜住。
+ * result 与领域事件 outcome 同源（"success" | RetryClass）；client-error 在订阅者处
+ * 提前返回，不会进本函数（不换 key 不记账）。
  */
 export async function recordUpstreamOutcome(
   env: Env,

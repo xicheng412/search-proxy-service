@@ -7,7 +7,8 @@
 //   事件总线，不受影响）。故池经 poolOf 惰性解析（durable-object 的模块级 activePools），
 //   始终指向当前活跃实例的 KeyPool。
 //
-// 记账语义：成功 success；auth-error / server-error / rate-limit → fail；client-error 不入事件。
+// 记账语义：成功 success；auth-error / server-error / rate-limit → fail；
+// client-error 进事件但由本订阅者显式 no-op（不冷却、不记账）。
 
 import type { Env } from "../types";
 import type { Provider } from "../domain";
@@ -27,14 +28,20 @@ export function makeUpstreamSubscriber(env: Env, poolOf: PoolResolver): EventSub
     const pool = poolOf(ev.provider);
     if (!pool) return;
     const store = getUsageStore(env);
-    // 冷却：按 cls 走同一策略（client-error 不会被发事件，见 retry FSM）。
+    const outcome = ev.outcome;
+    // client-error：客户端确定性错误，不冷却、不记账——事件会到达，这里显式 no-op。
+    if (outcome.kind === "failure" && outcome.cls === "client-error") return;
+    // 冷却：成功与失败族走同一策略。
     // 返回 promise 供测试确定性 await（总线 publish 忽略返回值，不逃逸错误：内部已 .catch）。
-    const cooldown = recordUpstreamOutcome(env, pool, ev.keyId, ev.cls, ev.at).catch(() => {});
+    const cooldown =
+      outcome.kind === "success"
+        ? recordUpstreamOutcome(env, pool, ev.keyId, "success", ev.at).catch(() => {})
+        : recordUpstreamOutcome(env, pool, ev.keyId, outcome.cls, ev.at).catch(() => {});
     // usage 记账：success→success；auth/server-error 与 rate-limit→fail（rate-limit 视为 key 级
-    // 不可用，借失败会计入权重惩罚与当日失败）；client-error 不记（理论上不入事件，防御性忽略）。
-    if (ev.cls === "success") {
+    // 不可用，借失败会计入权重惩罚与当日失败）。
+    if (outcome.kind === "success") {
       store.recordUpstreamResult(ev.keyId, ev.provider, bucketKey(ev.at), "success");
-    } else if (ev.cls !== "client-error") {
+    } else {
       store.recordUpstreamResult(ev.keyId, ev.provider, bucketKey(ev.at), "fail");
     }
     return cooldown;

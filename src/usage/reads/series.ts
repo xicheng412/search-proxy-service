@@ -1,5 +1,5 @@
 // 基础设施层·日用量统计的"dashboard 序列"读产品（原 usage-store.ts 的读侧拆出）。
-// 全部分发 key 的上游真实调用尝试 / dist 小时序列：D1 base + core pending 叠加；TTL seriesTtlMs。
+// 全部分发 key 的上游真实调用尝试 / dist 时间序列：D1 base + core pending 叠加；TTL seriesTtlMs。
 // 依赖方向只向下：reads/ → core → storage/usage → domain；不 import proxy.ts / admin/*。
 
 import type { Env } from "../../types";

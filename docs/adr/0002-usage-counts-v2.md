@@ -2,6 +2,8 @@
 
 > **Status**: accepted（2026-09-13。记录 `migrations/0004_usage_counts_v2.sql` 及配套代码清理；正面推翻 ADR-0001 §5 对选 key 权重信号查询的"不扩覆盖索引"判据）
 
+> **注**：0007 起列名 `hour` 已改为 `bucket`。
+
 ## 决策
 
 1. 重建 `usage_counts`（0004）：PK 由 `(kind, scope, provider, hour)` 收紧为 `(kind, scope, hour)`；`provider` 改为可空——upstream 保留真实 provider，dist 不再写哨兵 `'*'` 而写 NULL。
