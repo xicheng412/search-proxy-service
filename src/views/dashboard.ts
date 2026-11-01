@@ -2,7 +2,9 @@
 // Dashboard 总览页
 // ---------------------------------------------------------------
 
-import { csrfField, layout } from "./index";
+import { csrfField } from "./html";
+import { layout } from "./index";
+import { card, field, icon, pageHeader, statCard } from "./ui";
 import type { DistSummaries } from "../usage";
 
 export interface DashboardData {
@@ -27,91 +29,99 @@ export interface DashboardData {
 
 export function adminPage(data: DashboardData): string {
   const body = `
-<section class="stats">
-  <div class="card stat">
-    <div class="stat-info">
-      <div class="stat-name">Tavily Keys</div>
-      <div class="stat-num">${data.tavilyTotal}</div>
-      <div class="muted">启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}</div>
-    </div>
-    <a class="btn" href="/admin/tavily">进入管理 →</a>
-  </div>
-  <div class="card stat">
-    <div class="stat-info">
-      <div class="stat-name">Exa Keys</div>
-      <div class="stat-num">${data.exaTotal}</div>
-      <div class="muted">启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}</div>
-    </div>
-    <a class="btn" href="/admin/exa">进入管理 →</a>
-  </div>
-  <div class="card stat">
-    <div class="stat-info">
-      <div class="stat-name">分发 Keys</div>
-      <div class="stat-num">${data.distTotal}</div>
-      <div class="muted">启用 ${data.distEnabled} · 停用 ${data.distTotal - data.distEnabled}</div>
-    </div>
-    <a class="btn" href="/admin/keys">进入管理 →</a>
-  </div>
+${pageHeader({
+  title: "总览",
+  description: "上游健康与分发用量 · 最近 5 天",
+  actions: `<a class="btn btn-secondary btn-sm" href="/admin">${icon("refresh")}重新整理</a>`,
+})}
+<section class="stats-grid">
+  ${statCard({
+    label: "Tavily Keys",
+    value: data.tavilyTotal,
+    meta: `启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}`,
+    href: "/admin/tavily",
+    tone: data.tavilyTotal === 0 ? "bad" : data.tavilyEnabled === data.tavilyTotal ? "ok" : "warn",
+  })}
+  ${statCard({
+    label: "Exa Keys",
+    value: data.exaTotal,
+    meta: `启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}`,
+    href: "/admin/exa",
+    tone: data.exaTotal === 0 ? "bad" : data.exaEnabled === data.exaTotal ? "ok" : "warn",
+  })}
+  ${statCard({
+    label: "分发 Keys",
+    value: data.distTotal,
+    meta: `启用 ${data.distEnabled} · 停用 ${data.distTotal - data.distEnabled}`,
+    href: "/admin/keys",
+    tone: data.distTotal === 0 ? "bad" : data.distEnabled === data.distTotal ? "ok" : "warn",
+  })}
 </section>
-<div class="dash-main">
-  <div class="dash-rail">
-    <div class="card stat">
-      <div class="stat-label">最近 24h</div>
-      <div class="stat-num" id="calls-24h">${data.distSummaries.last24h}</div>
-    </div>
-    <div class="card stat">
-      <div class="stat-label">昨日</div>
-      <div class="stat-num" id="calls-yesterday">${data.distSummaries.yesterday}</div>
-    </div>
-    <div class="card stat">
-      <div class="stat-label">今日</div>
-      <div class="stat-num" id="calls-today">${data.distSummaries.today}</div>
-    </div>
-    <div class="dash-rail-foot">分发请求量 · UTC 日 · 含当前桶</div>
-  </div>
-  <div class="card chart">
-    <h2 title="每个 UTC 时间桶（15 分钟）内上游官方 key 的真实调用尝试次数，按 Tavily / Exa 拆两条线">近 5 天调用趋势 <span class="muted" style="font-size:11px;">（上游真实调用 Tavily/Exa）</span></h2>
-    <div class="chart-box"><canvas id="calls-chart"></canvas></div>
-  </div>
+<div class="dashboard-grid">
+  ${card({
+    className: "chart-card",
+    title: "近 5 天调用趋势",
+    description: "上游真实调用 · 按小时聚合",
+    actions: `<div class="chart-legend" aria-hidden="true">
+      <span class="legend-item"><span class="legend-swatch legend-swatch-tavily"></span>Tavily</span>
+      <span class="legend-item"><span class="legend-swatch legend-swatch-exa"></span>Exa</span>
+    </div>`,
+    body: `<div class="chart-box"><canvas id="calls-chart" role="img" aria-label="近 5 天 Tavily 与 Exa 调用趋势"></canvas></div>`,
+  })}
+  ${card({
+    className: "signals-card",
+    title: "分发请求量",
+    description: "UTC 日 · 含当前桶",
+    body: `<div class="signal-list">
+      <div class="signal-row"><span class="signal-label">最近 24h</span><div class="stat-num" id="calls-24h">${data.distSummaries.last24h}</div></div>
+      <div class="signal-row"><span class="signal-label">昨日</span><div class="stat-num" id="calls-yesterday">${data.distSummaries.yesterday}</div></div>
+      <div class="signal-row"><span class="signal-label">今日</span><div class="stat-num" id="calls-today">${data.distSummaries.today}</div></div>
+    </div>`,
+  })}
 </div>
-<section class="card">
-  <h2>上游请求队列 · 参数</h2>
-  <p class="hint" style="margin:0 0 12px;">突发请求会被串行放行到上游（Tavily / Exa 各自独立队列）：每个任务处理完隔 <strong>intervalMs</strong> 再放下一个；等待中达到 <strong>maxDepth</strong> 时新请求返回 429；排队等待超过 <strong>waitBudgetMs</strong> 也会直接 429。改这里即生效（≤3s 内），无需重新部署。想在放开频率时调大数值即可。</p>
-  <form method="post" action="/admin/queue-config" class="row center">
-    ${csrfField(data.csrf)}
-    <label class="muted">间隔 (ms)</label>
-    <input type="number" name="intervalMs" min="100" value="${data.queueIntervalMs}" required style="max-width:140px;">
-    <label class="muted">最大等待数</label>
-    <input type="number" name="maxDepth" min="1" value="${data.queueMaxDepth}" required style="max-width:140px;">
-    <label class="muted">等待上限 (ms)</label>
-    <input type="number" name="waitBudgetMs" min="1000" value="${data.queueWaitBudgetMs}" required style="max-width:140px;">
-    <button type="submit" class="btn-sm">保存</button>
-  </form>
-</section>
-<section class="card">
-  <h2>冷却参数</h2>
-  <p class="hint" style="margin:0 0 12px;"><strong>post-use</strong> 每次使用后（无论成败）的固定冷却；<strong>熔断</strong> 每次非 429 失败后指数退避 <code>base × 2^连续失败次数</code>；<strong>疑似失效</strong> 401/403（key 级鉴权错误）与 429/432（限流/额度耗尽）后固定长冷却，到点重试一次，成功自动恢复。三者在同一把 key 上取较久者生效。改这里即生效（≤3s 内），无需重新部署。</p>
-  <form method="post" action="/admin/breaker-config" class="row center">
-    ${csrfField(data.csrf)}
-    <label class="muted">每次使用冷却 (秒)</label>
-    <input type="number" name="postUseCooldownSec" min="0" step="1" value="${data.postUseCooldownSec}" required style="max-width:140px;">
-    <label class="muted">熔断基数 (秒)</label>
-    <input type="number" name="breakerBaseSec" min="1" step="1" value="${data.breakerBaseSec}" required style="max-width:140px;">
-    <label class="muted">疑似失效 (秒)</label>
-    <input type="number" name="invalidCooldownSec" min="1" step="1" value="${data.invalidCooldownSec}" required style="max-width:140px;">
-    <button type="submit" class="btn-sm">保存</button>
-  </form>
-</section>
-<section class="card">
-  <h2>鉴权缓存参数</h2>
-  <p class="hint" style="margin:0 0 12px;">分发 key 鉴权结果缓存在 Cache API 中，命中时无需读取 D1。缓存 TTL 越长，D1 读越少；禁用/删除后的最坏生效延迟也越长。写路径会主动失效缓存。改这里即生效（≤3s 内），无需重新部署。</p>
-  <form method="post" action="/admin/dist-cache-config" class="row center">
-    ${csrfField(data.csrf)}
-    <label class="muted">鉴权缓存 TTL (秒)</label>
-    <input type="number" name="cacheTtlSec" min="1" step="1" value="${data.distCacheTtlSec}" required style="max-width:140px;">
-    <button type="submit" class="btn-sm">保存</button>
-  </form>
-</section>`;
+${card({
+  title: "运行参数",
+  description: "修改后 ≤3s 生效，无需重新部署。",
+  body: `<div class="settings-grid">
+    <form method="post" action="/admin/queue-config" class="settings-group">
+      ${csrfField(data.csrf)}
+      <div>
+        <h3 class="settings-title">上游请求队列</h3>
+        <p class="settings-desc">突发请求串行放行；超过 maxDepth 或 waitBudgetMs 返回 429。</p>
+      </div>
+      <div class="form-grid">
+        ${field({ label: "间隔", name: "intervalMs", type: "number", value: data.queueIntervalMs, min: 100, unit: "ms", required: true })}
+        ${field({ label: "最大等待数", name: "maxDepth", type: "number", value: data.queueMaxDepth, min: 1, required: true })}
+        ${field({ label: "等待上限", name: "waitBudgetMs", type: "number", value: data.queueWaitBudgetMs, min: 1000, unit: "ms", required: true })}
+      </div>
+      <div class="settings-actions"><button class="btn btn-primary btn-sm" type="submit">保存</button></div>
+    </form>
+    <form method="post" action="/admin/breaker-config" class="settings-group">
+      ${csrfField(data.csrf)}
+      <div>
+        <h3 class="settings-title">冷却与熔断</h3>
+        <p class="settings-desc">每次使用后固定冷却；非 429 失败指数退避；疑似失效长冷却。</p>
+      </div>
+      <div class="form-grid">
+        ${field({ label: "每次使用冷却", name: "postUseCooldownSec", type: "number", value: data.postUseCooldownSec, min: 0, step: 1, unit: "秒", required: true })}
+        ${field({ label: "熔断基数", name: "breakerBaseSec", type: "number", value: data.breakerBaseSec, min: 1, step: 1, unit: "秒", required: true })}
+        ${field({ label: "疑似失效", name: "invalidCooldownSec", type: "number", value: data.invalidCooldownSec, min: 1, step: 1, unit: "秒", required: true })}
+      </div>
+      <div class="settings-actions"><button class="btn btn-primary btn-sm" type="submit">保存</button></div>
+    </form>
+    <form method="post" action="/admin/dist-cache-config" class="settings-group">
+      ${csrfField(data.csrf)}
+      <div>
+        <h3 class="settings-title">鉴权缓存</h3>
+        <p class="settings-desc">命中缓存时不读 D1；写路径会主动失效。</p>
+      </div>
+      <div class="form-grid">
+        ${field({ label: "缓存 TTL", name: "cacheTtlSec", type: "number", value: data.distCacheTtlSec, min: 1, step: 1, unit: "秒", required: true })}
+      </div>
+      <div class="settings-actions"><button class="btn btn-primary btn-sm" type="submit">保存</button></div>
+    </form>
+  </div>`,
+})}`;
   return layout("总览 · Tavily Proxy", body, {
     active: "dashboard",
     scripts: dashboardScript(data.distSeries, data.upstreamSeries),

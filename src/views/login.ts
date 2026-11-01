@@ -1,21 +1,23 @@
 // 登录页模板：独立于 dashboard/keys 等 admin 页面；仅依赖公共 layout（header=false）。
+// 无任何 inline style（间距由 static/admin.css 的 .auth-card 规则负责）。
 
 import { layout } from "./index";
 
 export function loginPage(error: boolean): string {
-  const err = error
-    ? `<p class="err">密码错误，请重试</p>`
-    : "";
-  const body = `<div style="max-width:360px;margin:120px auto;background:var(--card);
-    border:1px solid var(--line);border-radius:12px;padding:24px;">
-    <h1 style="font-size:18px;margin:0 0 16px;">Tavily Proxy 管理后台</h1>
+  const err = error ? `<p class="form-error" role="alert">密码错误，请重试</p>` : "";
+  const body = `<div class="auth-card">
+    <div class="auth-brand"><span class="brand-mark" aria-hidden="true"></span>Tavily Proxy</div>
+    <h1 class="auth-title">Tavily Proxy 管理后台</h1>
+    <p class="auth-sub">使用管理员密码登录</p>
     ${err}
     <form method="post" action="/admin/login">
-      <label class="muted" style="font-size:13px;">管理员密码</label>
-      <input type="password" name="password" autofocus autocomplete="current-password"
-        style="margin:6px 0 12px;">
-      <button type="submit" style="width:100%;">登录</button>
+      <label class="field" for="admin-password">
+        <span class="field-label">管理员密码</span>
+        <input class="input" id="admin-password" type="password" name="password"
+               autofocus autocomplete="current-password" required>
+      </label>
+      <button class="btn btn-primary btn-block" type="submit">登录</button>
     </form>
   </div>`;
-  return layout("登录 · Tavily Proxy", body, { header: false });
+  return layout("登录 · Tavily Proxy", body, { header: false, bodyClass: "auth-page" });
 }

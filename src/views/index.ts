@@ -7,19 +7,8 @@ import {
   DistributedKey,
   maskKey,
 } from "../domain";
-
-export function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-export function csrfField(token: string): string {
-  return `<input type="hidden" name="csrf_token" value="${esc(token)}">`;
-}
+import { esc, csrfField } from "./html";
+import { card, emptyRow, icon, pageHeader } from "./ui";
 
 /**
  * 冷却剩余量的展示文案（Tavily/Exa 徽章共用；static/admin.js 的 cooldownText 保持逐字符一致）。
@@ -86,28 +75,40 @@ const NAV_ITEMS: { key: NavKey; href: string; label: string }[] = [
 ];
 
 function nav(active: NavKey): string {
-  return `<nav class="nav">${NAV_ITEMS.map(
+  return `<nav class="nav" aria-label="主导航">${NAV_ITEMS.map(
     (it) =>
-      `<a class="nav-item${active === it.key ? " active" : ""}" href="${it.href}">${it.label}</a>`
+      `<a class="nav-item${active === it.key ? " active" : ""}" href="${it.href}"${
+        active === it.key ? ` aria-current="page"` : ""
+      }>${it.label}</a>`
   ).join("")}</nav>`;
 }
 
 export function layout(
   title: string,
   body: string,
-  opts: { header?: boolean; active?: NavKey; scripts?: string } = {}
+  opts: { header?: boolean; active?: NavKey; scripts?: string; bodyClass?: string } = {}
 ): string {
   const showHeader = opts.header !== false;
   const active = opts.active ?? "dashboard";
   const header = showHeader
-    ? `<header>
-  <h1>Tavily Proxy · 管理后台</h1>
-  ${nav(active)}
-  <div class="header-actions">
-    <a class="header-help" href="/help" target="_blank" rel="noopener">使用说明</a>
-    <form method="post" action="/admin/logout" style="display:inline;">
-      <button class="ghost" type="submit">登出</button>
-    </form>
+    ? `<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/admin">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Tavily Proxy</span>
+      <span class="brand-tag">Admin</span>
+    </a>
+    ${nav(active)}
+    <div class="topbar-actions">
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="切换主题">
+        <span class="theme-icon theme-icon-moon">${icon("moon")}</span>
+        <span class="theme-icon theme-icon-sun">${icon("sun")}</span>
+      </button>
+      <a class="topbar-link" href="/help" target="_blank" rel="noopener">使用说明</a>
+      <form method="post" action="/admin/logout">
+        <button class="btn btn-ghost btn-sm" type="submit">登出</button>
+      </form>
+    </div>
   </div>
 </header>`
     : "";
@@ -116,14 +117,19 @@ export function layout(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>${esc(title)}</title>
+  <script>
+  (function(){try{var t=localStorage.getItem("tp-theme");if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme="light";}})();
+  </script>
   <link rel="stylesheet" href="/admin.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="/admin.js" defer></script>
 </head>
-<body>
+<body${opts.bodyClass ? ` class="${esc(opts.bodyClass)}"` : ""}>
 ${header}
-<main class="wrap">${body}</main>
+<main class="page">${body}</main>
+<div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 ${opts.scripts ?? ""}
 </body>
 </html>`;
@@ -133,14 +139,18 @@ ${opts.scripts ?? ""}
 // 分发 Keys 独立管理页（provider 无关，公共部分）
 // ---------------------------------------------------------------
 
-export function keysPage(csrf: string, fragment: string): string {
+export function keysPage(fragment: string): string {
   const body = `
-<section class="card">
-  <h2>分发 Keys · 管理</h2>
-  <p class="hint" style="margin:0 0 12px;">复制按钮复制的是<strong>调用本服务的凭据</strong> <code>Bearer tavily-&lt;key&gt;</code> / <code>Bearer exa-&lt;key&gt;</code>（前缀决定路由到 Tavily 还是 Exa），不是 Tavily/Exa 官方真实 key——官方 key 在 “Tavily Keys” / “Exa Keys” 页管理。</p>
-  <div id="keys-list">${fragment}</div>
-</section>
-<input type="hidden" id="csrf" value="${esc(csrf)}">`;
+${pageHeader({
+  title: "分发 Keys",
+  description: "生成、启停、删除分发 key；复制的是调用本服务的凭据。",
+  actions: `<a class="btn btn-secondary btn-sm" href="#generate-key">${icon("plus")}生成 Key</a>`,
+})}
+${card({
+  title: "Key 列表",
+  description: "调用时用 Bearer tavily-<key> / exa-<key>（前缀决定路由）；官方真实 key 在上游 Keys 页管理。",
+  body: `<div id="keys-list">${fragment}</div>`,
+})}`;
   return layout("分发 Keys · Tavily Proxy", body, { active: "keys" });
 }
 
@@ -164,61 +174,68 @@ export function distListFragment(
         .map((k) => {
           const st =
             k.status === "enabled"
-              ? `<span class="badge ok">enabled</span>`
-              : `<span class="badge off">disabled</span>`;
+              ? `<span class="badge badge-ok">enabled</span>`
+              : `<span class="badge badge-neutral">disabled</span>`;
           const s = callsMap[k.api_key] ?? { success: 0, fail: 0 };
           return `<tr>
-            <td>${esc(maskKey(k.api_key))}</td>
+            <td><code class="key-mask">${esc(maskKey(k.api_key))}</code></td>
             <td>${esc(k.note)}</td>
             <td>${st}</td>
             <td class="muted" data-local-time data-epoch="${k.created_at}">${esc(new Date(k.created_at).toISOString().slice(0, 19).replace("T", " "))} UTC</td>
-            <td title="该分发 key 最近24小时（15 分钟桶，含当前桶）的请求数">${s.success + s.fail}</td>
-            <td>
-              <div class="hstack">
+            <td class="num" title="该分发 key 最近24小时（15 分钟桶，含当前桶）的请求数">${s.success + s.fail}</td>
+            <td class="cell-actions">
+              <div class="row-actions">
                 <div class="menu-wrap">
-                  <button class="ghost btn-sm" type="button" data-menu-toggle title="复制调用凭据">复制 ▾</button>
-                  <div class="menu" hidden>
-                    <button class="ghost" type="button" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）">复制 tavily 调用key</button>
-                    <button class="ghost" type="button" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）">复制 exa 调用key</button>
-                    <button class="ghost" type="button" data-copy="searxng-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer searxng-tavily-&lt;key&gt;（SearXNG 协议，请求走 Tavily）">复制 searxng-tavily 调用key</button>
-                    <button class="ghost" type="button" data-copy="reader-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer reader-tavily-&lt;key&gt;（reader 协议，URL→文本，走 Tavily Extract）">复制 reader-tavily 调用key</button>
+                  <button class="btn btn-ghost btn-sm" type="button" data-menu-toggle aria-haspopup="menu" aria-expanded="false" title="复制调用凭据">复制 ${icon("chevron-down")}</button>
+                  <div class="menu" role="menu" hidden>
+                    <button class="menu-item" type="button" role="menuitem" data-copy="tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer tavily-&lt;key&gt;（请求走 Tavily）">复制 tavily 调用key</button>
+                    <button class="menu-item" type="button" role="menuitem" data-copy="exa-${esc(k.api_key)}" title="复制调用凭据：Bearer exa-&lt;key&gt;（请求走 Exa）">复制 exa 调用key</button>
+                    <button class="menu-item" type="button" role="menuitem" data-copy="searxng-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer searxng-tavily-&lt;key&gt;（SearXNG 协议，请求走 Tavily）">复制 searxng-tavily 调用key</button>
+                    <button class="menu-item" type="button" role="menuitem" data-copy="reader-tavily-${esc(k.api_key)}" title="复制调用凭据：Bearer reader-tavily-&lt;key&gt;（reader 协议，URL→文本，走 Tavily Extract）">复制 reader-tavily 调用key</button>
                   </div>
                 </div>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/toggle" hx-target="#keys-list"
-                      hx-swap="innerHTML" style="display:inline-block;">
+                      hx-swap="innerHTML">
                   ${csrfField(csrf)}
                   <input type="hidden" name="back" value="${esc(selfQuery)}">
-                  <button class="ghost btn-sm" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
+                  <button class="btn btn-ghost btn-sm" type="submit">${k.status === "enabled" ? "停用" : "启用"}</button>
                 </form>
                 <form hx-post="/admin/keys/${esc(k.api_key)}/delete" hx-target="#keys-list"
-                      hx-swap="innerHTML" hx-confirm="确认删除该分发 key？" style="display:inline-block;">
+                      hx-swap="innerHTML" hx-confirm="确认删除该分发 key？">
                   ${csrfField(csrf)}
                   <input type="hidden" name="back" value="${esc(selfQuery)}">
-                  <button class="danger btn-sm" type="submit">删除</button>
+                  <button class="btn btn-danger btn-sm" type="submit">删除</button>
                 </form>
               </div>
             </td>
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="6" class="muted">暂无分发 key，请先生成一个。</td></tr>`;
+    : emptyRow(6, "暂无分发 key，请先生成一个。");
 
   return `${flashHtml}
-  <form class="row" hx-post="/admin/keys/generate" hx-target="#keys-list" hx-swap="innerHTML">
+  <form id="generate-key" class="generate-row" hx-post="/admin/keys/generate" hx-target="#keys-list" hx-swap="innerHTML">
     ${csrfField(csrf)}
-    <input type="text" name="note" placeholder="备注（必填，给谁用）" required>
-    <button type="submit">生成新 Key</button>
+    <label class="field grow" for="key-note">
+      <span class="field-label">备注</span>
+      <input class="input" id="key-note" type="text" name="note" placeholder="给谁用（必填）" required>
+    </label>
+    <button class="btn btn-primary" type="submit">生成新 Key</button>
   </form>
-  <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 10px;">
-    ${publicBaseUrl ? `<span class="muted" style="font-size:11px;">${esc(publicBaseUrl)}</span>` : ""}
-    <button class="ghost btn-sm" type="button" data-copy="${esc(publicBaseUrl)}" title="复制调用基础地址">复制 base url</button>
-    <button class="ghost btn-sm" type="button" data-copy="${esc(publicBaseUrl + "/search")}" title="复制搜索端点：POST base/search">复制 /search</button>
+  <div class="toolbar">
+    <div class="toolbar-meta"><span class="muted">Base URL</span> <code class="mono">${esc(publicBaseUrl)}</code></div>
+    <div class="cluster">
+      <button class="btn btn-ghost btn-sm" type="button" data-copy="${esc(publicBaseUrl)}" title="复制调用基础地址">${icon("copy")}复制 base url</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-copy="${esc(publicBaseUrl + "/search")}" title="复制搜索端点：POST base/search">${icon("copy")}复制 /search</button>
+    </div>
   </div>
-  <table>
-    <thead><tr><th>Key</th><th>备注</th><th>状态</th><th>创建时间</th>
-      <th title="该分发 key 最近24小时（15 分钟桶，含当前桶）的请求数">最近24h请求</th><th>操作</th></tr>
-    <tbody>${rows}</tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th scope="col">Key</th><th scope="col">备注</th><th scope="col">状态</th><th scope="col">创建时间</th>
+        <th scope="col" title="该分发 key 最近24小时（15 分钟桶，含当前桶）的请求数">最近24h请求</th><th scope="col">操作</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
   ${paginationHtml(pagination, keys.length > 0, "#keys-list", total)}`;
 }
 
@@ -233,8 +250,8 @@ export function distGenerateResult(
   total: number | null = null,
   selfQuery: string = "?page=1"
 ): string {
-  const box = `<div class="plain">新 Key（请立即保存，只显示这一次）：<br>${esc(plainApiKey)}</div>
-<div class="hint" style="margin-bottom:8px;">新 key 是<strong>调用本服务的凭据</strong>（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）、<code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）、<code>Bearer searxng-tavily-${esc(plainApiKey)}</code>（SearXNG 协议，走 Tavily），或 <code>Bearer reader-tavily-${esc(plainApiKey)}</code>（reader 协议：GET /reader/&lt;url&gt; 拿页面文本，走 Tavily Extract）。</div>`;
+  const box = `<div class="plain"><div class="plain-label">新 Key（只显示这一次）</div><code>${esc(plainApiKey)}</code></div>
+<div class="card-note">新 key 是调用本服务的凭据（非外部服务 key）：请求时用 <code>Bearer tavily-${esc(plainApiKey)}</code>（走 Tavily）、<code>Bearer exa-${esc(plainApiKey)}</code>（走 Exa）、<code>Bearer searxng-tavily-${esc(plainApiKey)}</code>（SearXNG 协议，走 Tavily），或 <code>Bearer reader-tavily-${esc(plainApiKey)}</code>（reader 协议：GET /reader/&lt;url&gt; 拿页面文本，走 Tavily Extract）。</div>`;
   return box + distListFragment(keys, callsMap, csrf, pagination, undefined, publicBaseUrl, total, selfQuery);
 }
 
@@ -246,5 +263,5 @@ export function errorFragment(msg: string): string {
 
 /** 一次性 flash 报文（内联 toast，非弹窗）；无消息时返回空串。 */
 export function toast(flash?: string): string {
-  return flash ? `<div class="toast" style="margin-bottom:8px;">${esc(flash)}</div>` : "";
+  return flash ? `<div class="toast">${esc(flash)}</div>` : "";
 }

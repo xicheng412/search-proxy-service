@@ -10,11 +10,13 @@
 // （见 docs/architecture.md §4.2 已知例外）。
 (function () {
   // 图表配色从 admin.css 的 :root token 读取（canvas 不吃 CSS，需运行时取值再交给 Chart.js）：
-  // --accent（Tavily 系列线）/ --muted（坐标刻度）/ --line（网格线）/ --txt（图例文字）；
-  // 取不到时退回内置兜底值。Exa 系列色 #a78bfa 是数据专属编码色，不在主题 token 内，下方直用。
-  var styles = getComputedStyle(document.documentElement);
+  // --series-tavily（Tavily 线）/ --series-exa（Exa 线）/ --muted（坐标刻度）/ --border（网格）
+  // --text（tooltip 文字）/ --surface（tooltip 背景）；取不到时退回内置兜底值。
+  var styles = function () {
+    return getComputedStyle(document.documentElement);
+  };
   var readVar = function (name, fallback) {
-    var v = styles.getPropertyValue(name).trim();
+    var v = styles().getPropertyValue(name).trim();
     return v || fallback;
   };
   var upstreamEl = document.getElementById('upstream-series');
@@ -62,35 +64,69 @@
   }
   var pts = toHourly(upstream);
   if (pts.length === 0) return;
-  new Chart(canvas, {
+
+  var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var animation = reducedMotion ? false : { duration: 300 };
+
+  var chart = new Chart(canvas, {
     type: 'line',
     data: {
       // x 用真实时间（Chart.js time scale，需 chartjs-adapter-date-fns）：按小时聚合后每点代表一个
       // 整点小时的总量，坐标按真实时间等间隔、不跳格，无需 spanGaps。
       datasets: [
         { label: 'Tavily', data: pts.map(function (p) { return { x: p.t, y: p.tavily }; }),
-          borderColor: readVar('--accent', '#38bdf8'),
-          backgroundColor: readVar('--accent', '#38bdf8'), fill: false,
-          pointRadius: 1.5 },
+          borderColor: readVar('--series-tavily', '#0f766e'),
+          backgroundColor: readVar('--series-tavily', '#0f766e'),
+          borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },
         { label: 'Exa', data: pts.map(function (p) { return { x: p.t, y: p.exa }; }),
-          // Exa 数据系列专属色（非主题 token，数据编码而非主题）
-          borderColor: '#a78bfa', backgroundColor: '#a78bfa', fill: false,
-          pointRadius: 1.5 },
+          borderColor: readVar('--series-exa', '#7c3aed'),
+          backgroundColor: readVar('--series-exa', '#7c3aed'),
+          borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },
       ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
+      animation: animation,
       scales: {
         x: { type: 'time',
              time: { unit: 'hour', tooltipFormat: 'MM/dd HH:mm', displayFormats: { hour: 'MM/dd HH:mm' } },
-             ticks: { color: readVar('--muted', '#94a3b8'), maxTicksLimit: 10, maxRotation: 0 },
-             grid: { color: readVar('--line', '#334155') } },
-        y: { beginAtZero: true, ticks: { color: readVar('--muted', '#94a3b8'), precision: 0 },
-             grid: { color: readVar('--line', '#334155') } },
+             ticks: { color: readVar('--muted', '#6b7280'), maxTicksLimit: 8, maxRotation: 0 },
+             grid: { color: readVar('--border', '#e3e8ee'), drawTicks: false },
+             border: { display: false } },
+        y: { beginAtZero: true, ticks: { color: readVar('--muted', '#6b7280'), precision: 0 },
+             grid: { color: readVar('--border', '#e3e8ee'), drawTicks: false },
+             border: { display: false } },
       },
-      plugins: { legend: { labels: { color: readVar('--txt', '#e2e8f0') } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: readVar('--surface', '#ffffff'),
+          titleColor: readVar('--text', '#111827'),
+          bodyColor: readVar('--text', '#111827'),
+          borderColor: readVar('--border', '#e3e8ee'),
+          borderWidth: 1,
+          padding: 10,
+        },
+      },
     },
+  });
+
+  // 主题切换（admin.js 的 themechange 事件）时重读 tokens，更新两条线/刻度/网格/tooltip 后无动画刷新。
+  document.addEventListener('themechange', function () {
+    chart.options.scales.x.ticks.color = readVar('--muted', '#6b7280');
+    chart.options.scales.y.ticks.color = readVar('--muted', '#6b7280');
+    chart.options.scales.x.grid.color = readVar('--border', '#e3e8ee');
+    chart.options.scales.y.grid.color = readVar('--border', '#e3e8ee');
+    chart.options.plugins.tooltip.backgroundColor = readVar('--surface', '#ffffff');
+    chart.options.plugins.tooltip.titleColor = readVar('--text', '#111827');
+    chart.options.plugins.tooltip.bodyColor = readVar('--text', '#111827');
+    chart.options.plugins.tooltip.borderColor = readVar('--border', '#e3e8ee');
+    chart.data.datasets[0].borderColor = readVar('--series-tavily', '#0f766e');
+    chart.data.datasets[0].backgroundColor = readVar('--series-tavily', '#0f766e');
+    chart.data.datasets[1].borderColor = readVar('--series-exa', '#7c3aed');
+    chart.data.datasets[1].backgroundColor = readVar('--series-exa', '#7c3aed');
+    chart.update('none');
   });
 })();

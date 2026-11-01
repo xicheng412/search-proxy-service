@@ -1,7 +1,7 @@
 // 公开使用说明页：独立于管理后台的静态页面（自带样式，不依赖 admin 的 layout/CSS/htmx）。
 // 调用方 / 下游浏览 GET /help 即可看到前缀、端点、错误语义，无需登录。
 
-import { esc } from "./index";
+import { esc } from "./html";
 
 export function helpPage(publicBaseUrl: string = ""): string {
   const base = esc(publicBaseUrl);
@@ -10,7 +10,11 @@ export function helpPage(publicBaseUrl: string = ""): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>使用说明 · Tavily Proxy</title>
+<script>
+(function(){try{var t=localStorage.getItem("tp-theme");if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme="light";}})();
+</script>
 <link rel="stylesheet" href="/help.css">
 </head>
 <body>
