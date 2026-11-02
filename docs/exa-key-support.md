@@ -12,7 +12,7 @@ Tavily 代理跑稳后，需要把同样的"多 key + 加权随机 + 熔断 + �
 ### 1.1 关键决策
 
 1. **Exa 与 Tavily 独立 KV 数组 + 泛型 CRUD**：零迁移，向前兼容。
-2. **文件按 provider 拆分**：`admin/{tavily,exa,keys,index}.ts` 与 `views/{tavily,exa,index}.ts` 镜像；公共脚手架共享。
+2. **文件按 provider 拆分**：`admin/{tavily,exa,keys,index}.ts` 与 `views/{tavily,exa}.tsx` + 共享 `views/upstream-keys.tsx`；公共脚手架共享。
 3. **新增 provider 防腐层**：`src/providers/{tavily,exa,index}.ts` 描述符驱动泛型代码（proxy / storage / admin / views 都不写 `if (provider === "tavily")`）。
 4. **分发 Key 改为"纯字符串 + 前缀路由"**：Key 不绑 provider，请求时 `tavily-<key>` / `exa-<key>` 决定路由。
 5. **无前缀 / 裸 key / `tvly-` / `sk-` 一律 401**。
@@ -81,7 +81,7 @@ export interface Stats { success: number; fail: number; }  // 现行：calls = s
 | 应用编排 | `src/proxy/{authenticate,forward,handlers,executors}/` | 准入中间件 + 打装/转发 + 端点 handler + 执行器 |
 | Provider 防腐 | `src/providers/{tavily,exa,index}.ts` | 一个 provider 的全部事实 |
 | 管理路由 | `src/admin/{tavily,exa,keys,index}.ts` | 后台路由 + 鉴权 + 调 storage / usage |
-| 视图模板 | `src/views/{tavily,exa,index}.ts` | HTMX 片段 + 渲染函数 |
+| 视图模板 | `src/views/{tavily,exa}.tsx` + `src/views/upstream-keys.tsx` | Hono JSX 页面/片段；provider 配置 + 共享布局 |
 
 ---
 
@@ -140,7 +140,7 @@ Authorization: Bearer <proto?-><provider>-<key>
 
 - Exa key 无公开前缀 → 新增表单不做前缀校验，只做可选 test call（最小体 `{query:"test"}`，`/search` 有内容计费）。
 - 代理内错误体一律走 `PROVIDERS[provider].errorBody`，**禁止**在 proxy / admin 里硬编码 Tavily 格式。
-- `views/{tavily,exa}.ts` 两套列表模板按确认复制，**布局改动需同步两处**（未来若模板继续分化可考虑抽出公共部分）。
+- `views/{tavily,exa}.tsx` 只保留 provider 配置；列表/表单布局已抽到 `views/upstream-keys.tsx`，布局改动单点维护。
 
 ---
 

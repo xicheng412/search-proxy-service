@@ -5,8 +5,10 @@
 
 ## 适用范围
 
-- **适用**：`src/views/` 下用 `layout()` 渲染的后台页面（Tavily / Exa / 分发 Keys / Dashboard / 登录）。
+- **适用**：`src/views/` 下用 `layout()` 渲染的后台页面（`*.tsx`，Hono JSX SSR；Tavily / Exa / 分发 Keys / Dashboard / 登录）。
 - **不适用**：`src/views/help.ts` 是独立静态页、自带完整样式，自成一体；若要纳入本约定，需先把公共样式抽出来。
+
+JSX 只负责服务端 markup 组合：输出仍是一对一 HTML，不引入客户端运行时；不要用内联 `style` 或 JSX 事件处理器替代 CUBE 类。
 
 ## 分层（`static/admin.css` 内按此顺序分区块注释）
 
@@ -34,4 +36,4 @@
 
 ## 简约而不是教条
 
-规模到此为止不需要工具库级 composition（`.cluster/.switcher/.sidebar` 全家桶）或 utility-first 全覆盖。判据：**重复即抽，一次性也走类（不写内联）**。模板保持"直读 HTML"，抽象只落在确有成簇重复的地方。
+规模到此为止不需要工具库级 composition（`.cluster/.switcher/.sidebar` 全家桶）或 utility-first 全覆盖。判据：**重复即抽，一次性也走类（不写内联）**。JSX 模板保持一对一 HTML 结构，抽象只落在确有成簇重复的地方。

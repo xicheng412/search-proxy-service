@@ -1,4 +1,4 @@
-// Dashboard 图表渲染：读两个 DOM JSON（#dist-series / #upstream-series，由 src/views/index.ts
+// Dashboard 图表渲染：读两个 DOM JSON（#dist-series / #upstream-series，由 src/views/dashboard.tsx
 // 的 dashboardScript 注入 HTML）；依赖已先行加载的 Chart.js 全局 `Chart`；被 dashboardScript
 // 输出的 `<script src="/dashboard.js"></script>` 引用（在 chart.js CDN 之后）。
 // 近 5 天趋势图消费 upstream 序列（Tavily/Exa 两条真实调用尝试线）。24h/昨日/今日三张卡由

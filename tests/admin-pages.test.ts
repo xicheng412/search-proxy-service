@@ -102,7 +102,7 @@ function scriptBody(html: string, id: string): string {
   return html.slice(start + marker.length, html.indexOf("</script>", start));
 }
 
-describe("login 页（views/login.ts）", () => {
+describe("login 页（views/login.tsx）", () => {
   it("GET /admin/login 无 error → 无错误提示", async () => {
     const res = await get("/admin/login");
     expect(res.status).toBe(200);
@@ -122,7 +122,7 @@ describe("login 页（views/login.ts）", () => {
   });
 });
 
-describe("dashboard 总览页（views/dashboard.ts）", () => {
+describe("dashboard 总览页（views/dashboard.tsx）", () => {
   it("已登录 GET /admin → 统计卡、配置回填、图表 JSON、layout 外壳全要素渲染", async () => {
     // 会话格式与 src/auth.ts createSession 的 KV 写入一致
     kvStore.set(

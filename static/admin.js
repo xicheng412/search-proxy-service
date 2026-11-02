@@ -1,4 +1,4 @@
-// 后台公共脚本：被 src/views/index.ts 的 layout() 以 `<script src="/admin.js" defer>` 引用。
+// 后台公共脚本：被 src/views/index.tsx 的 layout() 以 `<script src="/admin.js" defer>` 引用。
 // 覆盖登录/管理页全部后台页面，负责主题切换、一键复制+全屏 toast、操作列下拉菜单、
 // 本地时区渲染与冷却倒计时、批量操作守卫。
 
@@ -119,7 +119,7 @@ function formatLocalTimes() {
 document.addEventListener('DOMContentLoaded', formatLocalTimes);
 document.addEventListener('htmx:afterSwap', formatLocalTimes);
 
-// ---------- 冷却倒计时：读 data-cooldown-until（服务端 SSR 的绝对 ms 截止戳，见 src/views/index.ts
+// ---------- 冷却倒计时：读 data-cooldown-until（服务端 SSR 的绝对 ms 截止戳，见 src/views/index.tsx
 // formatRemaining，文案保持逐字符一致）。单一全局 setInterval，每次 tick 重新 querySelectorAll——
 // HTMX 换片段后新行天然被下一拍扫到（无需重挂），脱离 DOM 的元素不再返回（无定时器泄漏）。
 // 到 0 时整格替换为 `<span class="muted">-</span>`，与 SSR 空态一致。 ----------
@@ -174,12 +174,21 @@ document.addEventListener('DOMContentLoaded', updateBatchCount);
 document.addEventListener('htmx:afterSwap', updateBatchCount);
 
 // ---------- 提交守卫：切换须至少选中一个；删除为破坏性操作，确认数量后放行 ----------
-window.requireSelection = function () {
+function requireSelection() {
   if (batchSelectedCount() === 0) { alert('未选择任何 key'); return false; }
   return true;
-};
-window.confirmDeleteBatch = function () {
+}
+function confirmDeleteBatch() {
   var n = batchSelectedCount();
   if (n === 0) { alert('未选择任何 key'); return false; }
   return confirm('确认删除选中的 ' + n + ' 个 key？');
-};
+}
+// 批量按钮用 data-batch-submit 标记（模板不再写行内 onclick）；守卫失败时阻止表单提交。
+document.addEventListener('click', function (e) {
+  var btn = e.target && e.target.closest ? e.target.closest('[data-batch-submit]') : null;
+  if (!btn) return;
+  var ok = btn.getAttribute('data-batch-submit') === 'delete'
+    ? confirmDeleteBatch()
+    : requireSelection();
+  if (!ok) e.preventDefault();
+});

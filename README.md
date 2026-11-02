@@ -146,7 +146,7 @@ Full step-by-step (new Cloudflare account, custom domain, troubleshooting) is in
 | Framework | [Hono](https://hono.dev/) 4.x |
 | Language | TypeScript 5.7 (strict) |
 | Storage | Cloudflare D1 (entities) + Workers KV (runtime config/session) + Durable Objects (key pool memory) |
-| Admin UI | HTMX 1.9 + native HTML (no SPA, no bundler) |
+| Admin UI | HTMX 1.9 + Hono JSX (SSR) — no SPA, no separate frontend build |
 | CLI | Wrangler 4.x |
 
 ## Project layout
@@ -171,7 +171,7 @@ src/
 ├── adapters/            # consumer-side protocol ACL (searxng ↔ Tavily; reader ↔ Tavily Extract)
 ├── providers/           # one descriptor per upstream (tavily / exa / index)
 ├── admin/               # /admin/* routes (per-provider files + shared)
-└── views/               # HTMX templates
+└── views/               # HTMX + Hono JSX (SSR) pages/fragments
 ```
 
 Full directory + per-file responsibilities are in [`docs/architecture.md`](./docs/architecture.md).

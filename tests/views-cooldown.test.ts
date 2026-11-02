@@ -8,6 +8,9 @@ import { tavilyListFragment } from "../src/views/tavily";
 import { exaListFragment } from "../src/views/exa";
 import type { CoreKey } from "../src/domain";
 
+/** JSX 视图返回 HtmlEscapedString 对象；测试统一转成字符串再断言。 */
+const render = (node: unknown) => String(node);
+
 describe("formatRemaining（≥100s→min / <100s→s，ceil 取整；0→-）", () => {
   it("≥100s 进分钟档，ceil 到整数分钟", () => {
     expect(formatRemaining(100_000)).toBe("冷却：2min"); // 100s → 2min（估算）
@@ -52,8 +55,8 @@ describe("Tavily/Exa 列表冷却徽章 SSR", () => {
 
   it("冷却中输出 data-cooldown-until 绝对戳 + 倒计时文案", () => {
     for (const fragment of [
-      tavilyListFragment(keys, {}, "csrf", now, pagination),
-      exaListFragment(keys, {}, "csrf", now, pagination),
+      render(tavilyListFragment(keys, {}, "csrf", now, pagination)),
+      render(exaListFragment(keys, {}, "csrf", now, pagination)),
     ]) {
       expect(fragment).toContain(`data-cooldown-until="${now + 150_000}"`);
       expect(fragment).toContain("冷却：3min");
@@ -63,8 +66,8 @@ describe("Tavily/Exa 列表冷却徽章 SSR", () => {
 
   it("非冷却行仍为 <span class=\"muted\">-</span>", () => {
     for (const fragment of [
-      tavilyListFragment(keys, {}, "csrf", now, pagination),
-      exaListFragment(keys, {}, "csrf", now, pagination),
+      render(tavilyListFragment(keys, {}, "csrf", now, pagination)),
+      render(exaListFragment(keys, {}, "csrf", now, pagination)),
     ]) {
       expect(fragment).toContain('<span class="muted">-</span>');
       expect(fragment.match(/data-cooldown-until/g)?.length).toBe(keys.length - 1);

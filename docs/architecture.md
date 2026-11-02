@@ -248,7 +248,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 │ admin/ + views/ + auth.ts + config.ts                   │
 │  - 后台路由（tavily/exa/keys + Dashboard + Help）        │
 │  - 登录会话 (KV) / CSRF                                  │
-│  - HTMX 渲染；PUBLIC_BASE_URL 唯一取值                  │
+│  - HTMX+JSX SSR；PUBLIC_BASE_URL 唯一取值              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -285,7 +285,7 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 | `routes/` | 子应用装配（public / proxy 数据面 / admin-auth） | 不含业务逻辑 |
 | `auth.ts` | 登录 / 会话（KV）/ CSRF / 登出 | 不写业务数据 |
 | `admin/` | 路由 + 鉴权校验 + 调 storage / usage / 三组参数 | 不直接拼 HTML；视图在 views/ |
-| `views/` | 模板片段（HTMX 友好）+ 渲染函数；样式组织见 [views-cube-css.md](./views-cube-css.md) | 不写 IO |
+| `views/` | Hono JSX（SSR）页面/片段组件；HTMX 友好；样式组织见 [views-cube-css.md](./views-cube-css.md) | 不写 IO |
 | `config.ts` | `PUBLIC_BASE_URL` 唯一取值点（缓存） | 不参与请求热路径 |
 | `scripts/deploy.sh` | 注入 `PUBLIC_BASE_URL` → `wrangler deploy` | 不存任何真实域名 |
 
@@ -299,12 +299,12 @@ Extract 能力的 **reader 协议**入口：把 `GET /reader/<url>` 转成一次
 2. `src/providers/index.ts`：把它注册到 `PROVIDERS`。
 3. `src/domain.ts`：`Provider` 联合类型加成员，`parseDistKey` 注册 `<name>-` 前缀。
 4. `src/admin/index.ts`：`adminSubPages` 注册后台子应用，Dashboard 的 provider 计数同步。
-5. `src/views/index.ts`：`NAV_ITEMS` 加导航项。
-6. 按 provider 复制的 `src/admin/<name>.ts` 与 `src/views/<name>.ts`（每个 provider 各有一份路由/视图文件）。
+5. `src/views/index.tsx`：`NAV_ITEMS` 加导航项。
+6. `src/admin/<name>.ts` + `src/views/<name>.tsx`：provider 专属路由与视图配置（`UpstreamKeysViewConfig`，`active` 复用 `index.tsx` 的 `NavKey`）；列表/表单布局由 `src/views/upstream-keys.tsx` 共享。
 
 其余所有代码（proxy / storage / usage / admin / views）都消费 `PROVIDERS[name]`，无任何 `if (provider === "tavily")` 分支。
 
-> **已知例外（Dashboard 上游趋势图序列）**：`usage/reads/series.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.ts` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面清单外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
+> **已知例外（Dashboard 上游趋势图序列）**：`usage/reads/series.ts` 的 `readUpstreamSeries` + `UpstreamSeriesPoint` 与 `views/dashboard.tsx` 的 `dashboardScript` 刻意固化为 **tavily/exa 两条线**（计划审批的展示契约），按 provider 名硬编码——**新增 provider 时除上面清单外，还必须同步这三处**：`UpstreamSeriesPoint` 类型、`readUpstreamSeries` 内两处 `if (provider === ...)` 折叠（D1 base 与 pending）、`dashboardScript` 的 Chart datasets（加一条线 + 配色）。（Dashboard 24h/昨日卡与 keys 页消费 dist 序列——按 scope 汇总的次数、不落 provider 维度，新增 provider 无须改动。）保持该固定形状是有意为之（图即 Tavily vs Exa 对比），勿在未同步这三处的情况下发布新 provider。
 
 > **协议与 provider 正交**：线协议（native / searxng / reader）不是 provider，不需要走上面的 provider 清单。新增一个调用侧协议只需：注册复合前缀（`domain.ts:parseDistKey`）+ 在 `adapters/` 写纯转换函数 + 在 `proxy/executors/` 加一个执行器（经 `searchWithRetry` callbacks 注入）+ 在 `queue/durable-object.ts` 分派 + 在 `proxy/handlers/` 与 `routes/proxy.ts` 接入端点。例见 `searxng`、`reader`。
 
@@ -556,7 +556,7 @@ cooling/exhausted → onFailure（透传最后响应、429+Retry-After 或 503/5
 │   ├── 可靠性             # key-pool.ts + circuit-breaker.ts + breaker-config.ts
 │   ├── 调用面             # routes/ + proxy/（authenticate/forward/handlers/executors）+ queue/（task + QueueDO + subscriber）
 │   ├── 扩展点             # providers/（防腐层）+ adapters/（协议转换）
-│   └── 管理面             # admin/ + views/（HTMX）+ auth.ts + config.ts
+│   └── 管理面             # admin/ + views/（HTMX + Hono JSX SSR）+ auth.ts + config.ts
 ├── static/                # admin.css / admin.js / dashboard.js / help.css（CDN 静态资源）
 ├── tests/                 # vitest 单测/集成测（helpers/ 为 fake D1/Cache/Workers 桩）
 ├── migrations/            # D1 迁移
@@ -573,6 +573,6 @@ cooling/exhausted → onFailure（透传最后响应、429+Retry-After 或 503/5
 ## 8. 一些刻意的"不做"
 
 - **不做 quota**：分发 key 不带配额/过期/限速字段；按需可加。
-- **不做 SPA**：后台是 HTMX + 原生 HTML，CDN 加载 htmx，零构建步骤。
+- **不做 SPA**：后台是 HTMX + Hono JSX（纯 SSR，无客户端 hydration），CDN 加载 htmx；TSX 由 wrangler/esbuild 编译，无独立前端构建步骤。
 - **不做精确统计**：见 §5.2；这是一笔明确的复杂度交换。
 - **不做迁移工具**：换账号时上游 key / 分发 key 都需要重新录入（见 deployment-guide §8）。

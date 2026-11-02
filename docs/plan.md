@@ -44,7 +44,7 @@
 - 运行时：Cloudflare Workers
 - 部署/CLI：Wrangler（V3+，实际锁定 v4，部署用 `pnpm run deploy:cf` 而非 `pnpm deploy`）
 - 存储：Cloudflare Workers KV
-- 管理后台前端：HTMX + 原生 HTML（无 SPA 框架）
+- 管理后台前端：HTMX + Hono JSX（纯 SSR，无 SPA 框架 / 无客户端 hydration）
 
 ## 3. 系统架构
 

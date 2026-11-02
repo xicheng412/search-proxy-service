@@ -10,7 +10,7 @@ import { BUCKET_MS, bucketKey, utcTodayStart } from "../../domain";
 /**
  * dashboard 近5天趋势图单个数据点：某 UTC 时间桶 × provider 的上游真实调用尝试次数（success+fail）。
  * 刻意固化为 tavily/exa 两个字段（计划审批"两条线"展示，见 docs/architecture.md §4.2 已知例外）。
- * 新增 provider 时须同步扩展：本类型、upstream() 内两处 provider 折叠、views/dashboard.ts dashboardScript。
+ * 新增 provider 时须同步扩展：本类型、upstream() 内两处 provider 折叠、views/dashboard.tsx dashboardScript。
  */
 export interface UpstreamSeriesPoint {
   bucket: string;
@@ -72,7 +72,7 @@ export function makeSeriesRead(env: Env, core: UsageCore, opts: SeriesOpts = {})
    * 全部分发 key 的上游真实调用尝试序列（D1 base + pending 叠加；TTL seriesTtlMs）。
    * 下方两处 `if (provider === ...)` 折叠（D1 base 与 pending）按 provider 名硬编码 tavily/exa，
    * 属 docs/architecture.md §4.2 的已知例外：新增 provider 时须扩展 UpstreamSeriesPoint、
-   * 本函数两处折叠与 views/dashboard.ts dashboardScript（dist 序列无须参与）。
+   * 本函数两处折叠与 views/dashboard.tsx dashboardScript（dist 序列无须参与）。
    * 返回 `minBucket..当前桶` 完整时间序列，空桶补 0（原因见 `fillRange` 注释）。
    */
   async function upstream(minBucket: string): Promise<UpstreamSeriesPoint[]> {
