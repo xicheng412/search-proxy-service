@@ -16,10 +16,10 @@ JSX 只负责服务端 markup 组合：输出仍是一对一 HTML，不引入客
 |---|---|---|
 | **Theme tokens** | 颜色/字号唯一事实源（CSS 变量） | `:root` / `:root[data-theme="dark"]`：`--bg/--surface/--surface-2/--surface-3/--border/--border-strong/--text/--text-secondary/--muted/--accent/--accent-contrast/--accent-soft/--ok/--warn/--bad(各带 -soft)/--focus/--series-tavily/--series-exa/--radius-*/--shadow-sm/--shadow-md/--font-*/--page-max/--topbar-h` |
 | **Base elements** | 原生元素默认（无类） | `*`, `body`, `a`, `button`, `input[...]`, `select`, `textarea`, `table`, `code`, `pre`, `::selection`, `:focus-visible`, `[hidden]`, `@media (prefers-reduced-motion)` |
-| **Composition** | 元素间布局关系（flex/grid/gap/wrap） | `.page`, `.page > .card + .card`（块间 20px 节奏）, `.page [id]`（锚点 scroll-margin）, `.page-header`, `.page-actions`, `.stats-grid`, `.dashboard-grid`, `.settings-grid`, `.form-grid`, `.signal-list`, `.toolbar`, `.toolbar-meta`, `.cluster`, `.row-actions`, `.inline-form`, `.table-wrap` |
-| **Block** | 组件骨架（结构 + 自有视觉） | `.topbar/.topbar-inner`, `.brand/.brand-mark/.brand-name/.brand-tag`, `.nav/.nav-item`, `.topbar-actions`, `.icon-btn`, `.page-title/.page-desc`, `.card/.card-header/.card-actions/.card-title/.card-desc/.card-body/.card-note`, `.stat-card/.stat-top/.stat-name/.stat-num/.stat-meta/.stat-link`, `.signal-row/.signal-label`, `.status-dot`, `.badge`, `.btn`, `.field/.field-label/.input-wrap/.input/.field-unit/.field-hint`, `.data-table`, `.key-mask`, `.empty`, `.menu-wrap/.menu`, `.toast/.toast-region`, `.chart-card/.chart-box/.chart-legend/.legend-item/.legend-swatch*`, `.signals-card`, `.settings-group/.settings-title/.settings-desc/.settings-actions`, `.generate-row`, `.checkbox-field`, `.batch-bar`, `details.batch-add`, `.pagination/.page-btn`, `.auth-card/.auth-brand/.auth-title/.auth-sub`, `.plain/.plain-label`, `.form-error`, `.err` |
+| **Composition** | 元素间布局关系（flex/grid/gap/wrap） | `.page`, `.page > .card + .card`（块间 20px 节奏）, `.page [id]`（锚点 scroll-margin）, `.page-header`, `.page-actions`, `.stats-grid`, `.dashboard-grid`, `.settings-grid`, `.form-grid`, `.form-stack`, `.add-methods`, `.add-fields`, `.add-method-actions`, `.signal-list`, `.toolbar`, `.toolbar-meta`, `.cluster`, `.row-actions`, `.inline-form`, `.table-wrap` |
+| **Block** | 组件骨架（结构 + 自有视觉） | `.topbar/.topbar-inner`, `.brand/.brand-mark/.brand-name/.brand-tag`, `.nav/.nav-item`, `.topbar-actions`, `.icon-btn`, `.page-title/.page-desc`, `.card/.card-header/.card-actions/.card-title/.card-desc/.card-body/.card-note`, `.stat-card/.stat-top/.stat-name/.stat-num/.stat-meta/.stat-link`, `.signal-row/.signal-label`, `.status-dot`, `.badge`, `.btn`, `.field/.field-label/.input-wrap/.input/.field-unit/.field-hint`, `.data-table`, `.key-mask`, `.empty`, `.menu-wrap/.menu`, `.toast/.toast-region`, `.chart-card/.chart-box/.chart-legend/.legend-item/.legend-swatch*`, `.signals-card`, `.settings-group/.settings-title/.settings-desc/.settings-actions`, `.generate-row`, `.generate-result`, `.checkbox-field`, `.add-method/.add-method-head/.add-method-title/.add-method-desc`, `.batch-bar`, `.pagination/.page-btn`, `.auth-card/.auth-brand/.auth-title/.auth-sub/.auth-form`, `.plain/.plain-label`, `.form-error`, `.err` |
 | **Utility** | 单一视觉、跨组件复用的原子类 | `.muted`, `.mono`, `.text-sm` |
-| **Exception** | Block 的上下文变体 / 修饰 | `.nav-item.active`, `.badge-{neutral,ok,warn,bad}`, `.btn-{primary,secondary,ghost,danger}`, `.btn-sm`, `.btn-block`, `.input.input-sm`, `.theme-icon(-sun/-moon)`, `.status-dot.{ok,warn,bad}`, `.topbar-link`, `.settings-group + .settings-group` |
+| **Exception** | Block 的上下文变体 / 修饰 | `.nav-item.active`, `.badge-{neutral,ok,warn,bad}`, `.btn-{primary,secondary,ghost,danger}`, `.btn-sm`, `.btn-block`, `.input.input-sm`, `.theme-icon(-sun/-moon)`, `.status-dot.{ok,warn,bad}`, `.topbar-link`, `.settings-group + .settings-group`, `.add-prefix` |
 | **Responsive** | 窄屏变体，**恒在样式末尾** | `@media (max-width:900px)`、`@media (max-width:640px)` |
 
 ## 维护规则（硬性）
@@ -28,6 +28,8 @@ JSX 只负责服务端 markup 组合：输出仍是一对一 HTML，不引入客
    - `.row-actions` / `.inline-form`：行内控件组（gap 6px、垂直居中）。
    - `.toolbar` / `.cluster`：信息行 + 操作按钮组。
    - `.form-grid`：`auto-fit, minmax(150px,1fr)` 表单字段网格。
+   - `.form-stack`：纵向表单节奏（`gap:16px`）；登录表单与添加 Key 的两个表单共用。
+   - `.add-fields` / `.add-method-actions`：添加 Key 面板内的字段网格与底部操作行（按钮右对齐、不拉伸）。
 2. **新增单一视觉 → Utility 类**：例如按钮尺寸统一走 `.btn-sm`（min-height 28px、padding 4px 9px），禁止再内联 `style`。
 3. **新组件骨架 → Block 类**；**变体 → Exception 类**，用增类而非写死结构。
 4. **内联 `style` 一律禁止**（`grep -R 'style="' src/views` 必须为 0）；一次性特殊布局若确需要，先加自定义 Utility/Block 类，不写内联。

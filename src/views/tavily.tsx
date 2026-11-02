@@ -15,6 +15,7 @@ const TAVILY_VIEW: UpstreamKeysViewConfig = {
   pageTitle: "Tavily Keys",
   description: "管理上游 Tavily 官方 key · 列表始终脱敏",
   keyPlaceholder: "tvly-xxx",
+  batchKeyPlaceholder: "tvly-xxx\ntvly-yyy\n也可写成 tvly-xxx, tvly-yyy",
   errorsNote: "当日成功/失败为上游调用尝试次数，UTC 00:00 起；429 与 400/404/422 不记。",
   listId: "tavily-list",
   basePath: "/admin/tavily",

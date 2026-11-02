@@ -21,6 +21,7 @@ export interface UpstreamKeysViewConfig {
   pageTitle: string;
   description: string;
   keyPlaceholder: string;
+  batchKeyPlaceholder: string;
   errorsNote: string;
   listId: string;
   basePath: string;
@@ -53,6 +54,7 @@ export function upstreamKeysPage(
       {card({
         id: "add-key",
         title: `添加 ${cfg.label} Key`,
+        description: "支持单个添加与批量添加；批量导入会自动跳过已存在的 key。",
         body: upstreamEditFragment(cfg, csrf),
       })}
     </>
@@ -230,50 +232,85 @@ export function upstreamListFragment(
 
 export function upstreamEditFragment(cfg: UpstreamKeysViewConfig, csrf: string) {
   return (
-    <>
-      <form
-        class="form-grid"
-        hx-post={`${cfg.basePath}/add`}
-        hx-target={`#${cfg.listId}`}
-        hx-swap="innerHTML"
-      >
-        {csrfField(csrf)}
-        {field({
-          label: "Key",
-          name: "key",
-          placeholder: cfg.keyPlaceholder,
-          required: true,
-        })}
-        {field({ label: "备注（可选）", name: "name" })}
-        <label class="checkbox-field">
-          <input type="checkbox" name="test" value="1" /> 加入时验证
-        </label>
-        <button class="btn btn-primary btn-sm" type="submit">
-          添加
-        </button>
-      </form>
-      <details class="batch-add">
-        <summary>批量添加</summary>
+    <div class="add-methods">
+      <section class="add-method" aria-labelledby="add-single-title">
+        <div class="add-method-head">
+          <h3 class="add-method-title" id="add-single-title">
+            单个添加
+          </h3>
+          <p class="add-method-desc">粘贴一个官方 key，可先验证再保存。</p>
+        </div>
         <form
+          class="form-stack"
+          hx-post={`${cfg.basePath}/add`}
+          hx-target={`#${cfg.listId}`}
+          hx-swap="innerHTML"
+        >
+          {csrfField(csrf)}
+          <div class="add-fields">
+            {field({
+              label: "Key",
+              name: "key",
+              placeholder: cfg.keyPlaceholder,
+              required: true,
+            })}
+            {field({ label: "备注（可选）", name: "name" })}
+          </div>
+          <div class="add-method-actions">
+            <label class="checkbox-field">
+              <input type="checkbox" name="test" value="1" /> 添加前验证
+              <span class="field-hint">（消耗一次上游请求）</span>
+            </label>
+            <button class="btn btn-primary" type="submit">
+              添加
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section class="add-method" aria-labelledby="add-batch-title">
+        <div class="add-method-head">
+          <h3 class="add-method-title" id="add-batch-title">
+            批量添加
+          </h3>
+          <p class="add-method-desc">
+            每行一个 key，也支持逗号分隔；已存在的 key 会自动跳过。
+          </p>
+        </div>
+        <form
+          class="form-stack"
           hx-post={`${cfg.basePath}/add/batch`}
           hx-target={`#${cfg.listId}`}
           hx-swap="innerHTML"
         >
           {csrfField(csrf)}
-          <textarea
-            name="keys"
-            placeholder="多个 key 用逗号或换行分隔"
-            rows={4}
-            required
-          ></textarea>
-          <div class="inline-form">
-            <input class="input" type="text" name="name" placeholder="备注前缀（可选）" />
-            <button class="btn btn-secondary btn-sm" type="submit">
+          <label class="field" for="batch-keys">
+            <span class="field-label">Keys</span>
+            <textarea
+              id="batch-keys"
+              name="keys"
+              rows={5}
+              placeholder={cfg.batchKeyPlaceholder}
+              required
+            ></textarea>
+          </label>
+          <div class="add-method-actions">
+            <label class="field add-prefix" for="batch-name-prefix">
+              <span class="field-label">备注前缀（可选）</span>
+              <input
+                class="input"
+                id="batch-name-prefix"
+                type="text"
+                name="name"
+                placeholder="prod，按顺序自动编号"
+              />
+            </label>
+            <button class="btn btn-secondary" type="submit">
               批量添加
             </button>
           </div>
         </form>
-      </details>
-    </>
+      </section>
+    </div>
   );
 }

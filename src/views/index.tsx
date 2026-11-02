@@ -171,7 +171,7 @@ export function layout(
 // 分发 Keys 独立管理页（provider 无关，公共部分）
 // ---------------------------------------------------------------
 
-export function keysPage(fragment: Child) {
+export function keysPage(csrf: string, fragment: Child) {
   const body = (
     <>
       {pageHeader({
@@ -179,7 +179,7 @@ export function keysPage(fragment: Child) {
         description: "生成、启停、删除分发 key；复制的是调用本服务的凭据。",
         actions: (
           <a class="btn btn-secondary btn-sm" href="#generate-key">
-            {icon("plus")}生成 Key
+            {icon("plus")}创建 Key
           </a>
         ),
       })}
@@ -188,6 +188,38 @@ export function keysPage(fragment: Child) {
         description:
           "调用时用 Bearer tavily-<key> / exa-<key>（前缀决定路由）；官方真实 key 在上游 Keys 页管理。",
         body: <div id="keys-list">{fragment}</div>,
+      })}
+      {card({
+        id: "generate-key",
+        title: "创建新的 Key",
+        description: "备注用于区分使用者；明文只显示一次，生成后请立即复制。",
+        body: (
+          <>
+            <form
+              class="generate-row"
+              hx-post="/admin/keys/generate"
+              hx-target="#generate-result"
+              hx-swap="innerHTML"
+            >
+              {csrfField(csrf)}
+              <label class="field grow" for="key-note">
+                <span class="field-label">备注</span>
+                <input
+                  class="input"
+                  id="key-note"
+                  type="text"
+                  name="note"
+                  placeholder="给谁用（必填）"
+                  required
+                />
+              </label>
+              <button class="btn btn-primary" type="submit">
+                生成新 Key
+              </button>
+            </form>
+            <div id="generate-result" class="generate-result" aria-live="polite"></div>
+          </>
+        ),
       })}
     </>
   );
@@ -318,29 +350,6 @@ export function distListFragment(
   return (
     <>
       {toast(flash)}
-      <form
-        id="generate-key"
-        class="generate-row"
-        hx-post="/admin/keys/generate"
-        hx-target="#keys-list"
-        hx-swap="innerHTML"
-      >
-        {csrfField(csrf)}
-        <label class="field grow" for="key-note">
-          <span class="field-label">备注</span>
-          <input
-            class="input"
-            id="key-note"
-            type="text"
-            name="note"
-            placeholder="给谁用（必填）"
-            required
-          />
-        </label>
-        <button class="btn btn-primary" type="submit">
-          生成新 Key
-        </button>
-      </form>
       <div class="toolbar">
         <div class="toolbar-meta">
           <span class="muted">Base URL</span> <code class="mono">{publicBaseUrl}</code>
@@ -419,16 +428,18 @@ export function distGenerateResult(
   return (
     <>
       {box}
-      {distListFragment(
-        keys,
-        callsMap,
-        csrf,
-        pagination,
-        undefined,
-        publicBaseUrl,
-        total,
-        selfQuery
-      )}
+      <div id="keys-list" hx-swap-oob="innerHTML">
+        {distListFragment(
+          keys,
+          callsMap,
+          csrf,
+          pagination,
+          undefined,
+          publicBaseUrl,
+          total,
+          selfQuery
+        )}
+      </div>
     </>
   );
 }

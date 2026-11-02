@@ -102,6 +102,7 @@ keysAdmin.get("/", async (c) => {
   );
   return c.html(
     keysPage(
+      csrf,
       distListFragment(distPage.keys, callsMap, csrf, pagination, undefined, base, total, selfQuery)
     )
   );

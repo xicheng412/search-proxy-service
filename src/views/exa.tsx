@@ -15,6 +15,7 @@ const EXA_VIEW: UpstreamKeysViewConfig = {
   pageTitle: "Exa Keys",
   description: "管理上游 Exa 官方 key · 列表始终脱敏",
   keyPlaceholder: "Exa API key",
+  batchKeyPlaceholder: "Exa key 1\nExa key 2\n也可用逗号分隔",
   errorsNote: "当日成功/失败为上游调用尝试次数，UTC 00:00 起；429 与 400/404/422 不记。",
   listId: "exa-list",
   basePath: "/admin/exa",

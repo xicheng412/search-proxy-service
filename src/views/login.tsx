@@ -1,5 +1,5 @@
 // 登录页模板：独立于 dashboard/keys 等 admin 页面；仅依赖公共 layout（header=false）。
-// 无任何 inline style（间距由 static/admin.css 的 .auth-card 规则负责）。
+// 无任何 inline style（间距由 static/admin.css 的 .auth-form / .form-stack 规则负责）。
 
 import { layout } from "./index";
 
@@ -17,7 +17,7 @@ export function loginPage(error: boolean) {
       <h1 class="auth-title">Tavily Proxy 管理后台</h1>
       <p class="auth-sub">使用管理员密码登录</p>
       {err}
-      <form method="post" action="/admin/login">
+      <form class="form-stack auth-form" method="post" action="/admin/login">
         <label class="field" for="admin-password">
           <span class="field-label">管理员密码</span>
           <input
