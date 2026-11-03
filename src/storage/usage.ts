@@ -43,9 +43,10 @@ export async function mergeUsage(env: Env, rows: UsageIncrement[]): Promise<void
       `INSERT INTO usage_counts(kind,scope,provider,bucket,success,fail)
        VALUES(?1,?2,?3,?4,?5,?6)
        ON CONFLICT(kind,scope,bucket) DO UPDATE SET
+         provider = excluded.provider,
          success = success + excluded.success,
          fail    = fail + excluded.fail`
-    ).bind(r.kind, r.scope, r.provider, r.bucket, r.success, r.fail)
+    ).bind(r.kind, r.scope, r.provider === "" ? null : r.provider, r.bucket, r.success, r.fail)
   );
   await env.DB.batch(stmts);
 }

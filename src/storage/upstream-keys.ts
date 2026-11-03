@@ -92,6 +92,14 @@ export async function cachedUpstreamKeyCount(env: Env, def: UpstreamDef): Promis
   return r.total;
 }
 
+/** 上游 key 值已存在（并发添加的冲突信号；调用方转成用户可见提示）。 */
+export class DuplicateUpstreamKeyError extends Error {
+  constructor() {
+    super("upstream key already exists");
+    this.name = "DuplicateUpstreamKeyError";
+  }
+}
+
 /** 按 provider + id 单行读取（管理页 name/toggle 用，避免为一条 key 拉全量列表）。 */
 export async function getUpstreamKey(
   env: Env,
@@ -204,11 +212,15 @@ export async function addUpstreamKey(
   now: number = Date.now()
 ): Promise<CoreKey> {
   const item = newUpstreamItem(def, key, name, now);
-  await env.DB.prepare(
-    "INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,suspended_cause,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)"
+  // key 值在 provider 内唯一（0009 唯一索引）；并发重复时由数据库兜底。
+  const res = await env.DB.prepare(
+    `INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,suspended_cause,created_at)
+     VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+     ON CONFLICT(provider,key) DO NOTHING`
   )
     .bind(def.provider, item.id, item.key, item.name, item.status, item.cooldown_until, item.suspended_cause, item.created_at)
     .run();
+  if ((res.meta.changes ?? 0) === 0) throw new DuplicateUpstreamKeyError();
   clearUpstreamKeyCountCache(def.provider);
   return item;
 }
@@ -226,6 +238,29 @@ export async function updateUpstreamKey(
     `UPDATE upstream_keys SET ${sets.join(", ")} WHERE provider = ?${whereIdx} AND id = ?${whereIdx + 1} RETURNING id, key, name, status, cooldown_until, suspended_cause, created_at`;
   const row = await env.DB.prepare(sql).bind(...binds, def.provider, id).first();
   return row ? toCoreKey(row as Record<string, unknown>) : null;
+}
+
+/**
+ * 单行原子翻转 status（与批量同一条 CASE 语义）：不先读状态再写绝对目标，
+ * 双击/并发点击按数据库串行结果各翻一次。返回翻转后的状态；key 不存在返回 null。
+ * 翻成 enabled 时清 cooldown_until/suspended_cause；翻成 disabled 保留机器冷却。
+ */
+export async function toggleUpstreamKey(
+  env: Env,
+  def: UpstreamDef,
+  id: string
+): Promise<{ status: KeyStatus } | null> {
+  const row = await env.DB.prepare(
+    `UPDATE upstream_keys
+     SET status = CASE WHEN status = 'enabled' THEN 'disabled' ELSE 'enabled' END,
+         cooldown_until  = CASE WHEN status = 'enabled' THEN cooldown_until  ELSE NULL END,
+         suspended_cause = CASE WHEN status = 'enabled' THEN suspended_cause ELSE NULL END
+     WHERE provider = ?1 AND id = ?2
+     RETURNING status`
+  )
+    .bind(def.provider, id)
+    .first();
+  return row ? { status: row.status as KeyStatus } : null;
 }
 
 export async function deleteUpstreamKey(
@@ -334,10 +369,10 @@ export async function checkpointCooldowns(
 }
 
 // ---------------------------------------------------------------
-// 防重/批量添加——写入期软去重（不建唯一索引，key 天然唯一）
+// 防重/批量添加——写入期软去重 + 0009 唯一索引兜底并发
 // ---------------------------------------------------------------
 
-/** 该 provider 下 key 是否已存在（写期软去重用；key 列天然唯一，无需唯一索引）。 */
+/** 该 provider 下 key 是否已存在（写入期友好提示；唯一性由 0009 唯一索引兜底）。 */
 export async function keyValueExists(
   env: Env,
   def: UpstreamDef,
@@ -368,23 +403,45 @@ export async function addUpstreamKeysBatch(
   const added: CoreKey[] = [];
   const duplicates: UpstreamBatchResult["duplicates"] = [];
   const insertStmts: D1PreparedStatement[] = [];
+  const pending: { item: CoreKey; index: number }[] = [];
+  const seen = new Set<string>();
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
+    // 同一次提交内的重复先跳过（否则两次查重都在 INSERT 之前，会各插一行）。
+    if (seen.has(e.key)) {
+      duplicates.push({ index: i + 1, key: e.key, maskedKey: maskKey(e.key), name: e.name });
+      continue;
+    }
+    seen.add(e.key);
     if (await keyValueExists(env, def, e.key)) {
       duplicates.push({ index: i + 1, key: e.key, maskedKey: maskKey(e.key), name: e.name });
     } else {
       const item = newUpstreamItem(def, e.key, e.name, now);
-      added.push(item);
+      pending.push({ item, index: i + 1 });
       insertStmts.push(
         env.DB.prepare(
-          "INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,suspended_cause,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)"
+          `INSERT INTO upstream_keys(provider,id,key,name,status,cooldown_until,suspended_cause,created_at)
+           VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+           ON CONFLICT(provider,key) DO NOTHING`
         ).bind(def.provider, item.id, item.key, item.name, item.status, item.cooldown_until, item.suspended_cause, item.created_at)
       );
     }
   }
   if (insertStmts.length > 0) {
-    await env.DB.batch(insertStmts);
-    clearUpstreamKeyCountCache(def.provider);
+    const results = await env.DB.batch(insertStmts);
+    for (let i = 0; i < pending.length; i++) {
+      const { item, index } = pending[i];
+      // 并发提交可能先落同一 key：冲突忽略时 changes=0，按重复反馈。
+      const changes = results[i]?.meta?.changes;
+      if (changes === undefined) throw new Error("D1 batch result missing meta.changes");
+      if (changes > 0) {
+        added.push(item);
+      } else {
+        duplicates.push({ index, key: item.key, maskedKey: maskKey(item.key), name: item.name });
+      }
+    }
+    duplicates.sort((a, b) => a.index - b.index);
+    if (added.length > 0) clearUpstreamKeyCountCache(def.provider);
   }
   return { added, duplicates };
 }

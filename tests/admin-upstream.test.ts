@@ -1,7 +1,6 @@
 // admin 上游 key 启用/停用单测（直接驱动 tavilyAdmin 子应用，绕过挂载层的 session/CSRF）：
-// - enabled→disabled：UPDATE 只写 status='disabled'，不触发 activate。
-// - disabled→enabled：UPDATE 写 status='enabled' 且清 cooldown_until/suspended_cause，
-//   并触发 DO `/_internal/activate`（清内存冷却），随后 notifyKeyPoolSync 全量合并。
+// - disabled→enabled：原子 CASE UPDATE 翻成 enabled，并触发 DO `/_internal/activate`；
+// - enabled→disabled：原子 CASE UPDATE 翻成 disabled，不触发 activate。
 // 断言经脚本式 fake D1 的 SQL/binds 与 QUEUE stub 的 fetch URL/body。
 
 import { describe, it, expect } from "vitest";
@@ -9,9 +8,6 @@ import type { Env } from "../src/types";
 import { TAVILY } from "../src/providers";
 import { tavilyAdmin } from "../src/admin/tavily";
 import { makeScriptedD1, type D1Call } from "./helpers/fake-d1";
-
-const disabledRow = { id: "k1", key: "tvly-k1", name: "", status: "disabled", cooldown_until: 5000, suspended_cause: "breaker", created_at: 1 };
-const enabledRow = { id: "k1", key: "tvly-k1", name: "", status: "enabled", cooldown_until: null, suspended_cause: null, created_at: 1 };
 
 interface QueueCall {
   url: string;
@@ -34,21 +30,23 @@ function makeQueue() {
 }
 
 describe("admin /:id/toggle 冷却统一", () => {
-  it("disabled→enabled：UPDATE 清 cooldown_until/suspended_cause，并触发 /_internal/activate", async () => {
-    const { db, log } = makeScriptedD1([{ results: [disabledRow] }, { results: [enabledRow] }]);
+  it("disabled→enabled：原子 CASE UPDATE 翻成 enabled 并触发 /_internal/activate", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ status: "enabled" }] }]);
     const { calls, queue } = makeQueue();
     const env = { DB: db, QUEUE: queue } as unknown as Env;
 
     const res = await tavilyAdmin.request("/k1/toggle", { method: "POST" }, env as Env, { waitUntil: () => {} } as ExecutionContext);
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/admin/tavily/list");
+    expect(res.headers.get("location")).toBe(
+      "/admin/tavily/list?flash=" + encodeURIComponent("已启用")
+    );
 
-    // 取 UPDATE RETURNING 调用
+    // 单条原子 UPDATE：不先读状态，直接 CASE 翻转 + RETURNING 新状态
     const update = log().find((c) => c.sql.includes("UPDATE upstream_keys"));
     expect(update).toBeDefined();
-    expect(update!.sql).toContain("SET status = ?1, cooldown_until = ?2, suspended_cause = ?3");
-    expect(update!.sql).toContain("RETURNING");
-    expect(update!.binds).toEqual(["enabled", null, null, TAVILY.name, "k1"]);
+    expect(update!.sql).toContain("CASE WHEN status = 'enabled'");
+    expect(update!.sql).toContain("RETURNING status");
+    expect(update!.binds).toEqual([TAVILY.name, "k1"]);
 
     // 已触发 activate（清内存冷却）：URL 与 body
     const activate = calls.find((c) => c.url.includes("/_internal/activate"));
@@ -58,33 +56,31 @@ describe("admin /:id/toggle 冷却统一", () => {
     expect(calls.some((c) => c.url.includes("/_internal/sync-keys"))).toBe(true);
   });
 
-  it("enabled→disabled：UPDATE 只写 status，不触发 activate", async () => {
-    const enabledForDisable = { ...enabledRow, status: "enabled" };
-    const disabledAfter = { ...enabledRow, status: "disabled" };
-    const { db, log } = makeScriptedD1([
-      { results: [enabledForDisable] },
-      { results: [disabledAfter] },
-    ]);
+  it("enabled→disabled：原子 CASE UPDATE 翻成 disabled，不触发 activate", async () => {
+    const { db, log } = makeScriptedD1([{ results: [{ status: "disabled" }] }]);
     const { calls, queue } = makeQueue();
     const env = { DB: db, QUEUE: queue } as unknown as Env;
 
     const res = await tavilyAdmin.request("/k1/toggle", { method: "POST" }, env as Env, { waitUntil: () => {} } as ExecutionContext);
     expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(
+      "/admin/tavily/list?flash=" + encodeURIComponent("已停用")
+    );
     const update = log().find((c: D1Call) => c.sql.includes("UPDATE upstream_keys"));
-    expect(update!.sql).toContain("SET status = ?1");
-    expect(update!.binds).toEqual(["disabled", TAVILY.name, "k1"]);
+    expect(update!.sql).toContain("CASE WHEN status = 'enabled'");
+    expect(update!.binds).toEqual([TAVILY.name, "k1"]);
     expect(calls.some((c) => c.url.includes("/_internal/activate"))).toBe(false);
     // 停用不属「启用」，无需清内存冷却，但仍全量合并采纳 status
     expect(calls.some((c) => c.url.includes("/_internal/sync-keys"))).toBe(true);
   });
 
-  it("未找到 key：返回错误片段，不发任何 UPDATE/QUEUE 调用", async () => {
+  it("未找到 key：返回错误片段，只有一次 RETURNING 查询且不发 QUEUE 调用", async () => {
     const { db, log } = makeScriptedD1([{ results: [] }]);
     const { calls, queue } = makeQueue();
     const env = { DB: db, QUEUE: queue } as unknown as Env;
     const res = await tavilyAdmin.request("/k1/toggle", { method: "POST" }, env as Env, { waitUntil: () => {} } as ExecutionContext);
     expect(res.status).toBe(200); // errorFragment（与其它 admin 错误一致，无显式状态码）
-    expect(log().filter((c) => c.sql.includes("UPDATE"))).toHaveLength(0);
+    expect(log().filter((c) => c.op === "first")).toHaveLength(1);
     expect(calls).toHaveLength(0);
   });
 });

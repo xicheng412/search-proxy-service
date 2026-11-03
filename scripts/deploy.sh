@@ -24,4 +24,13 @@ fi
 # 迁移失败（有 pending 残留）时脚本以非零退出，冒烟阻止部署。
 "$(dirname "$0")/migrate.sh" remote
 
-wrangler deploy "${extra_vars[@]}"
+if ! wrangler deploy "${extra_vars[@]}"; then
+  cat >&2 <<'EOF'
+❌ 迁移已应用，但 Worker 部署失败。
+   不要停在「新 schema + 旧代码」状态：立即修复并重新部署，或从
+   `wrangler d1 time-travel info search-proxy` /
+   `wrangler d1 time-travel restore search-proxy --timestamp=<RFC3339>` 恢复到本次迁移前快照。
+   （0007/0008/0009 这类重建/回填迁移与旧代码不兼容，旧 isolate 的读路径会报错。）
+EOF
+  exit 1
+fi

@@ -11,6 +11,7 @@ import {
   listUpstreamKeysPage,
   updateUpstreamKey,
   addUpstreamKey,
+  DuplicateUpstreamKeyError,
   keyValueExists,
   addUpstreamKeysBatch,
 } from "../src/storage/upstream-keys";
@@ -199,6 +200,14 @@ describe("addUpstreamKey 落库", () => {
     // provider,id,key,name,status,cooldown_until(null),suspended_cause(null),created_at
     expect(call.binds).toEqual([def.provider, r.id, "tvly-1", "备注", "enabled", null, null, now]);
   });
+
+  it("唯一索引冲突（并发重复）时抛 DuplicateUpstreamKeyError", async () => {
+    const { db, log } = makeScriptedD1([{ changes: 0 }]);
+    await expect(
+      addUpstreamKey({ DB: db } as unknown as Env, def, "tvly-1", "备注", 1)
+    ).rejects.toBeInstanceOf(DuplicateUpstreamKeyError);
+    expect(log()[0].sql).toContain("ON CONFLICT(provider,key) DO NOTHING");
+  });
 });
 
 describe("keyValueExists 写期软去重查重", () => {
@@ -264,6 +273,40 @@ describe("addUpstreamKeysBatch 批量软去重", () => {
     expect(res.added).toEqual([]);
     expect(res.duplicates.map((d) => d.index)).toEqual([1, 2]);
     expect(log().filter((c) => c.op === "batch")).toHaveLength(0); // 无 insert 不调 batch
+  });
+
+  it("同一批输入内重复：第二次出现按重复反馈，只执行一次 INSERT", async () => {
+    const { db, log } = makeScriptedD1([
+      { results: [] }, // keyValueExists("a") → 未命中
+      { changes: 1 }, // 唯一的 INSERT
+    ]);
+    const res = await addUpstreamKeysBatch(
+      { DB: db } as unknown as Env,
+      def,
+      [
+        { key: "a", name: "n-a-1" },
+        { key: "a", name: "n-a-2" },
+      ]
+    );
+    expect(res.added.map((k) => k.name)).toEqual(["n-a-1"]);
+    expect(res.duplicates).toEqual([{ index: 2, key: "a", maskedKey: "****", name: "n-a-2" }]);
+    const insert = log().find((c) => c.op === "run");
+    expect(insert!.sql).toContain("ON CONFLICT(provider,key) DO NOTHING");
+    expect(log().filter((c) => c.op === "run")).toHaveLength(1);
+  });
+
+  it("并发冲突（batch 返回 changes=0）按重复反馈，不进入 added", async () => {
+    const { db } = makeScriptedD1([
+      { results: [] },
+      { changes: 0 },
+    ]);
+    const res = await addUpstreamKeysBatch(
+      { DB: db } as unknown as Env,
+      def,
+      [{ key: "a", name: "n-a" }]
+    );
+    expect(res.added).toEqual([]);
+    expect(res.duplicates).toEqual([{ index: 1, key: "a", maskedKey: "****", name: "n-a" }]);
   });
 
   it("空 entries：直接返回空结果，不执行任何 DB 调用", async () => {

@@ -78,27 +78,39 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
   }
 
   async function reload(): Promise<void> {
+    // 读发起前的 dirty 快照：本次读可能与在途 checkpoint 并发——D1 可能返回提交前的旧值，
+    // 而 checkpoint 的后续清理又已把该 id 移出 dirty；只看读发起后的 dirty 会采纳旧冷却。
+    const dirtyBeforeRead = new Set(dirty);
     const rows = await listUpstreamKeys(env, def);
     const byId = new Map(rows.map((r) => [r.id, r]));
     const old = new Map(keys.map((k) => [k.id, k]));
-    // 合并重建：id 已在旧内存 → 复用同一对象，采纳 D1 的 name/status（admin 写后需生效），
-    // 保留内存 cooldown_until 与 suspended_cause（内存永远更新）；id 不在 → 用 D1 行新建（取自 D1，通常 null）。
+    // 合并重建：id 已在旧内存 → 复用同一对象，采纳 D1 的 name/status（admin 写后需生效）。
+    // 冷却/因由的取舍按 dirty 判定：
+    //   - dirty：内存有尚未 checkpoint 的新冷却，必须保留，否则会提前放行；
+    //   - 非 dirty：D1 就是最新快照，采纳它（含 admin 启用写入的 NULL），
+    //     使 activate 推送失败也能在 60s 陈旧兜底重读时自愈。
     keys = rows.map((row) => {
       const existing = old.get(row.id);
       if (existing) {
         existing.name = row.name;
         existing.status = row.status;
+        if (!dirtyBeforeRead.has(row.id) && !dirty.has(row.id)) {
+          existing.cooldown_until = row.cooldown_until;
+          existing.suspended_cause = row.suspended_cause;
+        }
         return existing;
       }
       return { ...row };
     });
-    // 熔断计数只保留仍存在的 id（已删 key 的计数一并清理）；cooldown 已随 keys 重建生效。
+    // 熔断计数与 dirty 都只保留仍存在的 id（已删 key 的冷却不再有落库目标）。
     for (const id of breaker.keys()) {
       if (!byId.has(id)) breaker.delete(id);
     }
+    for (const id of dirty) {
+      if (!byId.has(id)) dirty.delete(id);
+    }
     loaded = true;
     loadedAt = Date.now();
-    // 不清 dirty：未落库的冷却仍要补写；checkpoint 只写「dirty ∩ 当前存在」的 id。
   }
 
   async function maybeReload(): Promise<void> {
@@ -120,12 +132,36 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
     checkpointing = true;
     try {
       if (dirty.size === 0) return;
-      const entries = [...dirty]
-        .map((id) => keys.find((k) => k.id === id))
-        .filter((k): k is CoreKey => Boolean(k))
-        .map((k) => ({ id: k.id, cooldown_until: k.cooldown_until, suspended_cause: k.suspended_cause }));
+      const entries: { id: string; cooldown_until: number | null; suspended_cause: CooldownCause | null }[] = [];
+      for (const id of dirty) {
+        const k = keys.find((candidate) => candidate.id === id);
+        if (!k) {
+          dirty.delete(id); // 已删 key：不再有落库目标
+          continue;
+        }
+        entries.push({ id: k.id, cooldown_until: k.cooldown_until, suspended_cause: k.suspended_cause });
+      }
+      if (entries.length === 0) {
+        lastCheckpointAt = Date.now();
+        return;
+      }
       await checkpointCooldowns(env, def, entries);
-      for (const e of entries) dirty.delete(e.id);
+      // 只清「写完后仍与快照一致」的 dirty：await 期间可能又发生了新失败/activate，
+      // 那些更新的值必须留在 dirty 里等下一轮写回。
+      const currentById = new Map(keys.map((k) => [k.id, k]));
+      for (const e of entries) {
+        const current = currentById.get(e.id);
+        if (!current) {
+          dirty.delete(e.id);
+          continue;
+        }
+        if (
+          current.cooldown_until === e.cooldown_until &&
+          current.suspended_cause === e.suspended_cause
+        ) {
+          dirty.delete(e.id);
+        }
+      }
       lastCheckpointAt = Date.now();
     } catch {
       // 写失败静默：保留 dirty，下轮（下次任务后或 drain 收尾）重试
@@ -162,28 +198,47 @@ export function createKeyPool(env: Env, def: UpstreamDef, seed?: CoreKey[]): Key
  *       未显式建模，经本函数推送到 DO）
  *     → 订阅者 KeyPool.reload（QueueDO `/_internal/sync-keys` 全量重读合并）
  * 本函数即该语义的收口辅助：任何 upstream key 写操作在持久化（D1）后经它同步内存池。
- * 尽力而为，调用方接 .catch(noop)，失败由 RELOAD_FLOOR_MS（60s）陈旧兜底重读覆盖。
+ * 失败重试一次；仍失败则抛出，由调用方决定是否提示（60s 陈旧重读只是兜底，不是同步成功）。
  */
 export async function notifyKeyPoolSync(env: Env, provider: Provider): Promise<void> {
-  const id = env.QUEUE.idFromName(provider);
-  const stub = env.QUEUE.get(id);
-  await stub.fetch("https://queue.internal/_internal/sync-keys", {
-    method: "POST",
-    body: JSON.stringify({ provider }),
-  });
+  await postQueueInternal(env, provider, "/_internal/sync-keys", { provider });
 }
 
 /**
  * admin 启用某 key 后推送：经 DO `/_internal/activate` 清掉该 key 的内存冷却
- * （cooldown 与 suspended_cause），令其立即可选。内存对 cooldown 是权威、reload 刻意保留
- * 内存冷却，故启用必须先清内存，再由 notifyKeyPoolSync 全量合并采纳 D1 的 status。
- * 尽力而为，调用方接 .catch(noop)；失败时内存冷却残留，由下次 applyBreakerOutcome / reload 兜底。
+ * （cooldown 与 suspended_cause），令其立即可选。内存对 cooldown 是权威，reload 仅在
+ * 该 id 非 dirty 时采纳 D1，故启用要先清内存，再由 notifyKeyPoolSync 全量合并采纳 status。
+ * 失败重试一次；仍失败则抛出，由 admin 路由提示。即使推送彻底失败，reload 在无 dirty
+ * 时会采纳 D1 的 NULL 冷却，60s 内自愈。
  */
 export async function notifyKeyPoolActivate(env: Env, provider: Provider, id: string): Promise<void> {
-  const doId = env.QUEUE.idFromName(provider);
-  const stub = env.QUEUE.get(doId);
-  await stub.fetch("https://queue.internal/_internal/activate", {
-    method: "POST",
-    body: JSON.stringify({ provider, id }),
-  });
+  await postQueueInternal(env, provider, "/_internal/activate", { provider, id });
+}
+
+/** 推送内部同步命令：失败重试一次，仍失败抛出（调用方决定提示）。 */
+async function postQueueInternal(
+  env: Env,
+  provider: Provider,
+  path: string,
+  body: Record<string, string>
+): Promise<void> {
+  const stub = env.QUEUE.get(env.QUEUE.idFromName(provider));
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await stub.fetch(`https://queue.internal${path}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (res.ok) return;
+      lastError = new Error(`queue internal ${path} failed: HTTP ${res.status}`);
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt === 0) {
+      // Workers 的 tsconfig lib 未声明 Promise.withResolvers；这里只需要一次固定退避。
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw lastError;
 }

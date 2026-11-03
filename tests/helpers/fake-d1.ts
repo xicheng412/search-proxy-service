@@ -114,11 +114,11 @@ export function makeScriptedD1(steps: D1Step[]): ScriptedD1 {
     },
     async batch(stmts: { sql: string; binds: unknown[] }[]) {
       log.push({ sql: "", binds: [], op: "batch" });
-      for (const s of stmts) {
-        take();
+      return stmts.map((s) => {
+        const step = take();
         log.push({ sql: s.sql, binds: s.binds, op: "run" });
-      }
-      return stmts.map(() => ({ results: [], success: true }));
+        return { results: step.results ?? [], success: true, meta: { changes: step.changes ?? 0 } };
+      });
     },
   };
 

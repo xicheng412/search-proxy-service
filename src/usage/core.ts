@@ -72,6 +72,9 @@ export interface UsageCore {
 const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "bucket">) =>
   `${r.kind}\u0000${r.scope}\u0000${r.provider ?? ""}\u0000${r.bucket}`;
 
+/** 内存键里的空串只表示「无 provider 维度」，落库/读侧必须还原成 NULL。 */
+const unpackProvider = (provider: string): string | null => (provider === "" ? null : provider);
+
 export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
   // flushIntervalMs 默认 BUCKET_MS：与桶宽同量级（15 分钟），跨 isolate 最多 1 个桶不可见。
   const flushIntervalMs = opts.flushIntervalMs ?? BUCKET_MS;
@@ -96,7 +99,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
         rows.push({
           kind: kind as UsageIncrement["kind"],
           scope,
-          provider,
+          provider: unpackProvider(provider),
           bucket,
           success: v.success,
           fail: v.fail,
@@ -167,7 +170,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
       entry.kind = kind as UsageKind;
       entry.scope = scope;
       // dist 行 provider 为空串：归一为 null，与读侧 "无 provider 维度" 的口径一致。
-      entry.provider = provider === "" ? null : provider;
+      entry.provider = unpackProvider(provider);
       entry.bucket = bucket;
       entry.success = v.success;
       entry.fail = v.fail;
@@ -194,7 +197,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
       if (kKind !== kind) continue;
       if (scopes.size !== 0 && !scopes.has(scope)) continue;
       if (minBucket !== null && bucket < minBucket) continue;
-      acc(scope, provider === "" ? null : provider, bucket, v.success, v.fail);
+      acc(scope, unpackProvider(provider), bucket, v.success, v.fail);
     }
   }
 

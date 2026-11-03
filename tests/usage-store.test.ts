@@ -169,6 +169,17 @@ describe("flush 双阈值 + flushNow", () => {
     // pending 已清空：信号只来自 flush 内刷新的 base（D1 fail=3）
     await expect(store.readUpstreamWeightSignal(["key-a"])).resolves.toEqual({ "key-a": 3 });
   });
+
+  it("dist 增量落库时 provider 绑定为 NULL，不是空串", async () => {
+    const { db, log } = makeScriptedD1([]);
+    const store = createUsageStore({ DB: db } as unknown as Env, { flushIntervalMs: 0 });
+    store.recordDistCall("dist-key", bucketKey());
+    await store.flushNow();
+    const insert = log().find((c) => c.op === "run");
+    expect(insert).toBeDefined();
+    expect(insert!.binds[0]).toBe("dist");
+    expect(insert!.binds[2]).toBeNull();
+  });
 });
 
 describe("权重信号窗口过滤 + 独立刷新", () => {

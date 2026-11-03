@@ -10,10 +10,12 @@ import {
   addUpstreamKeysBatch,
   deleteUpstreamKey,
   deleteUpstreamKeysBatch,
+  DuplicateUpstreamKeyError,
   getUpstreamKey,
   keyValueExists,
   listUpstreamKeysPage,
   missingUpstreamKeyIds,
+  toggleUpstreamKey,
   toggleUpstreamKeysBatch,
   UpstreamKeyPage,
   updateUpstreamKey,
@@ -117,7 +119,14 @@ tavilyAdmin.post("/add", async (c) => {
     return c.html(errorFragment("该 key 已存在，未添加"));
   }
 
-  await addUpstreamKey(env, TAVILY.upstream, key, name);
+  try {
+    await addUpstreamKey(env, TAVILY.upstream, key, name);
+  } catch (err) {
+    if (err instanceof DuplicateUpstreamKeyError) {
+      return c.html(errorFragment("该 key 已存在，未添加"));
+    }
+    throw err;
+  }
   await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect("/admin/tavily/list", 303);
 });
@@ -162,17 +171,27 @@ tavilyAdmin.post("/:id/name", async (c) => {
 
 tavilyAdmin.post("/:id/toggle", async (c) => {
   const id = c.req.param("id");
-  const cur = await getUpstreamKey(c.env, TAVILY.upstream, id);
-  if (!cur) return c.html(errorFragment("未找到该 key"));
-  const disabling = cur.status === "enabled";
-  await updateUpstreamKey(c.env, TAVILY.upstream, id,
-    disabling
-      ? { status: "disabled" }
-      : { status: "enabled", cooldown_until: null, suspended_cause: null });
-  // 启用：先清内存冷却（reload 刻意保留内存冷却，故须显式 activate），再全量合并采纳 status。
-  if (!disabling) await notifyKeyPoolActivate(c.env, TAVILY.name, id).catch(() => {});
-  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
-  return c.redirect("/admin/tavily/list", 303);
+  // 原子翻转，不先读状态再写绝对目标：双击/并发点击按数据库串行结果各翻一次。
+  const toggled = await toggleUpstreamKey(c.env, TAVILY.upstream, id);
+  if (!toggled) return c.html(errorFragment("未找到该 key"));
+  const warnings: string[] = [];
+  // 启用：先清内存冷却（reload 只在无 dirty 时才采纳 D1），再全量合并采纳 status。
+  if (toggled.status === "enabled") {
+    try {
+      await notifyKeyPoolActivate(c.env, TAVILY.name, id);
+    } catch {
+      warnings.push("内存冷却清除失败，请重新停用再启用");
+    }
+  }
+  try {
+    await notifyKeyPoolSync(c.env, TAVILY.name);
+  } catch {
+    warnings.push("内存池同步失败，将在 60s 内重试");
+  }
+  const msg = `已${toggled.status === "enabled" ? "启用" : "停用"}${
+    warnings.length > 0 ? `；${warnings.join("；")}` : ""
+  }`;
+  return c.redirect(`/admin/tavily/list?flash=${encodeURIComponent(msg)}`, 303);
 });
 
 tavilyAdmin.post("/:id/delete", async (c) => {
@@ -202,12 +221,26 @@ tavilyAdmin.post("/batch-toggle", async (c) => {
     );
   }
   const changed = await toggleUpstreamKeysBatch(env, TAVILY.upstream, ids);
-  for (const id of ids) await notifyKeyPoolActivate(c.env, TAVILY.name, id).catch(() => {});
-  await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
-  return c.redirect(
-    `/admin/tavily?flash=${encodeURIComponent(`已切换 ${changed} 个 key`)}`,
-    303
-  );
+  let activateFailed = 0;
+  for (const id of ids) {
+    try {
+      await notifyKeyPoolActivate(c.env, TAVILY.name, id);
+    } catch {
+      activateFailed += 1;
+    }
+  }
+  let syncFailed = false;
+  try {
+    await notifyKeyPoolSync(c.env, TAVILY.name);
+  } catch {
+    syncFailed = true;
+  }
+  const warnings = [
+    activateFailed > 0 ? `${activateFailed} 个内存冷却清除失败，请重新启用对应 key` : "",
+    syncFailed ? "内存池同步失败（60s 内重试）" : "",
+  ].filter(Boolean);
+  const msg = `已切换 ${changed} 个 key${warnings.length > 0 ? `；${warnings.join("；")}` : ""}`;
+  return c.redirect(`/admin/tavily?flash=${encodeURIComponent(msg)}`, 303);
 });
 
 // 批量删除：存在性预查，缺失即整批拒绝；单条 DELETE；全量合并 status。

@@ -65,12 +65,15 @@ type 判定由订阅者 switch，勿建事件层级；事件类型定义在 `dom
 - **冷却分层**：post-use / 熔断（指数退避 + 10min 空窗复位）/ 疑似失效三层共用 `cooldown_until`；
   server-error 才驱动连续计数，auth / rate-limit 不碰。
 - **选 key 硬闸门**：`enabled ∧ 未冷却` 才入候选；权重 1/(fail+1) 只调分布不判健康。
-- **内存权威 + D1 投影**：冷却/熔断写 KeyPool 内存，D1 低频 checkpoint；丢失方向安全（放宽非锁死）。
+- **内存权威 + D1 投影**：冷却/熔断写 KeyPool 内存，D1 低频 checkpoint；dirty 中的 id 保留内存值，
+  非 dirty 时采纳 D1（含 admin 启用清空）；丢失方向安全（放宽非锁死）。
+- **上游 key 值唯一**：同一 provider 内 `key` 值唯一（0009 唯一索引）；并发/同批重复由数据库兜底。
 - **队列背压**：一次在途 1 任务；maxDepth 拒入 / waitBudget 超时双路 429，不计 upstream 执行；
   dist 请求到达已在主 Worker 计入。全部 key 冷却时，在 `waitBudgetMs` 剩余预算内等待最早到期的
   key 后重选；超预算 429 + Retry-After（不再 503）。
 - **单点写者**：per-provider KeyPool 仅其 QueueDO 写冷却（权威在内存）；
-  D1 只承载投影 / checkpoint 备份 / usage_counts，不参与冷却决策。
+  D1 只承载投影 / checkpoint 备份 / usage_counts，热路径不读 D1；冷启动与 60s 兜底重载
+  按 dirty 合并采纳 D1 的冷却值（非 dirty 时才采纳）。
 - **usage_counts 全 15 分钟桶**：`usage_counts` 全部行为 15 分钟桶；迁移 0007 已把历史小时行按等比
   拆为 4 个桶（余数归最后一段），总量严格守恒。读取侧不区分历史与新增行。
 

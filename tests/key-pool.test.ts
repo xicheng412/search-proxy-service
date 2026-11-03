@@ -1,5 +1,5 @@
 // KeyPool 内存池单测：冷却/熔断权威态的原地生效、checkpoint 批量 SQL 与 dirty 生命周期、
-// reload 合并（保留内存冷却、采纳 admin 的 name/status、清理已删 id）、失败保留 dirty。
+// reload 合并（dirty 保留内存冷却 / 非 dirty 采纳 D1、清理已删 id）、失败保留 dirty。
 // 读论断一律走 pool 公开接口，不 assert 内部闭包结构。
 
 import { describe, it, expect } from "vitest";
@@ -60,7 +60,7 @@ describe("KeyPool", () => {
     expect(log().length).toBe(count);
   });
 
-  it("4. reload 合并：保留内存 cooldown、采纳 admin 的 name/status、清理已删 id 及其计数", async () => {
+  it("4. reload：dirty 中的 id 保留内存冷却、采纳 admin 的 name/status、清理已删 id", async () => {
     const { db } = makeScriptedD1([
       {
         results: [
@@ -73,12 +73,13 @@ describe("KeyPool", () => {
       key("k1", { cooldown_until: 5000, suspended_cause: "breaker" }),
       key("k2"),
     ]);
+    pool.applyBreakerOutcome("k1", 5000, "breaker", 0, 1000); // k1 dirty：未落库，保留
     pool.applyBreakerOutcome("k2", 7000, "breaker", 1, 1000); // 将随 k2 删除一并清理
     await pool.reload();
     expect(pool.getKeys().map((k) => k.id)).toEqual(["k1", "k3"]);
     const k1 = pool.getKeys()[0];
-    expect(k1.cooldown_until).toBe(5000); // 内存冷却永远优先（DB 为 null 不覆盖）
-    expect(k1.suspended_cause).toBe("breaker"); // 内存 cause 同样优先
+    expect(k1.cooldown_until).toBe(5000); // dirty：内存冷却优先（DB 为 null 不覆盖）
+    expect(k1.suspended_cause).toBe("breaker");
     expect(k1.name).toBe("renamed"); // 采纳 admin 改名
     expect(k1.status).toBe("disabled"); // 采纳 admin 停用
     const k3 = pool.getKeys()[1];
@@ -87,8 +88,88 @@ describe("KeyPool", () => {
     expect(pool.getBreakerState("k2")).toBeNull(); // 已删 key 的计数清理
   });
 
+  it("4b. reload：非 dirty 的 id 采纳 D1 快照（admin 启用清空冷却可自愈）", async () => {
+    const { db } = makeScriptedD1([
+      {
+        results: [
+          { id: "k1", key: "tvly-k1", name: "", status: "enabled", cooldown_until: null, suspended_cause: null, created_at: 1 },
+        ],
+      },
+    ]);
+    const pool = createKeyPool({ DB: db } as unknown as Env, def, [
+      key("k1", { cooldown_until: 5000, suspended_cause: "breaker" }),
+    ]);
+    await pool.reload();
+    expect(pool.getKeys()[0].cooldown_until).toBeNull();
+    expect(pool.getKeys()[0].suspended_cause).toBeNull();
+  });
+
+  it("4c. checkpoint 期间产生的新冷却留在 dirty，下一轮补写", async () => {
+    let batches = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const stmt = { bind: () => ({ run: async () => ({ meta: { changes: 1 } }) }) };
+    const env = {
+      DB: {
+        prepare: () => stmt,
+        batch: async (stmts: unknown[]) => {
+          batches += 1;
+          await gate;
+          return stmts.map(() => ({ results: [] }));
+        },
+      },
+    } as unknown as Env;
+    const pool = createKeyPool(env, def, [key("k1")]);
+    pool.applyBreakerOutcome("k1", 1000, "breaker", 1, 0);
+    const first = pool.flushNow(); // 快照 cooldown=1000，挂在 batch 上
+    pool.applyBreakerOutcome("k1", 2000, "breaker", 2, 1); // await 期间更新
+    release();
+    await first;
+    await pool.flushNow(); // 新值仍在 dirty，应再写一次
+    expect(batches).toBe(2);
+  });
+
+  it("4d. reload 与在途 checkpoint 并发：读到的旧 D1 不覆盖刚写入的冷却", async () => {
+    let releaseBatch!: () => void;
+    let releaseAll!: () => void;
+    const batchGate = new Promise<void>((resolve) => (releaseBatch = resolve));
+    const allGate = new Promise<void>((resolve) => (releaseAll = resolve));
+    const stmt = {
+      bind: () => ({
+        run: async () => ({ meta: { changes: 1 } }),
+        all: async () => {
+          await allGate;
+          return {
+            results: [
+              { id: "k1", key: "tvly-k1", name: "", status: "enabled", cooldown_until: null, suspended_cause: null, created_at: 1 },
+            ],
+          };
+        },
+      }),
+    };
+    const env = {
+      DB: {
+        prepare: () => stmt,
+        batch: async (stmts: unknown[]) => {
+          await batchGate;
+          return stmts.map(() => ({ results: [], success: true, meta: { changes: 1 } }));
+        },
+      },
+    } as unknown as Env;
+    const pool = createKeyPool(env, def, [key("k1", { cooldown_until: 5000, suspended_cause: "breaker" })]);
+    pool.applyBreakerOutcome("k1", 5000, "breaker", 0, 1000); // dirty
+    const flush = pool.flushNow();
+    const reload = pool.reload(); // 读发起时 k1 仍 dirty
+    releaseBatch();
+    await flush; // checkpoint 成功并清 dirty
+    releaseAll();
+    await reload;
+    expect(pool.getKeys()[0].cooldown_until).toBe(5000);
+    expect(pool.getKeys()[0].suspended_cause).toBe("breaker");
+  });
+
   it("5. checkpoint 写失败静默保留 dirty，恢复后补写", async () => {
-    const holder = {
+    const holder: { DB: unknown } = {
       DB: {
         prepare() {
           return {
@@ -102,13 +183,13 @@ describe("KeyPool", () => {
         },
         db: "broken",
       },
-    } as unknown as Env;
-    const pool = createKeyPool(holder, def, [key("k1")]);
+    };
+    const pool = createKeyPool(holder as unknown as Env, def, [key("k1")]);
     pool.applyBreakerOutcome("k1", 5000, "breaker", 0, 1000);
     await expect(pool.flushNow()).resolves.toBeUndefined(); // 失败不抛
     // dirty 保留：切回可用 DB 后同一批补写成功
     const { db: newDb, log } = makeScriptedD1([]);
-    (holder as { DB: unknown }).DB = newDb;
+    holder.DB = newDb;
     await pool.flushNow();
     const l = log();
     expect(l[0].op).toBe("batch");

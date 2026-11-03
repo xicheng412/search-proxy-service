@@ -155,9 +155,14 @@ Current Version ID: <hex>
 - **应用迁移**：`scripts/migrate.sh [local|remote]`（默认 `remote`）——先 `wrangler d1 migrations apply`，再断言 `migrations list` 无 `pending` 残留（有残留 = 某条迁移失败，脚本以非零退出阻止继续）。
 - **部署自动迁移**：`scripts/deploy.sh`（即 `pnpm run deploy:cf`）已在 `wrangler deploy` 之前执行 `scripts/migrate.sh remote`——保证新代码依赖的表结构（如 0007 起 `usage_counts.bucket`）先于代码上库就位。
 - **查迁移状态**：`wrangler d1 migrations list search-proxy --local|--remote`，逐条显示 applied / pending。
-- **故障恢复**：D1 每次 `migrations apply` 前会自动备份，写迁移失败时从 `wrangler d1 backup list` / `restore` 恢复到 apply 前快照，再排查修正后重跑迁移。**勿在未确认迁移就位前部署**——新代码会在旧表结构（如仍为 `hour` 列）下写失败（既有「写失败静默」语义，统计有损但主流程不受影响）。
+- **上游 key 重复预检**：0009 唯一索引前先跑只读预检
+  `wrangler d1 execute search-proxy --remote --file=scripts/preflight-upstream-key-duplicates.sql`。
+  有结果说明同一 provider 内存在重复 key 值，先人工决定保留哪一行；**不要直接 apply**——唯一索引会中止迁移。
+- **故障恢复**：D1 每次 `migrations apply` 前会自动备份，写迁移失败时用 `wrangler d1 time-travel info search-proxy` / `wrangler d1 time-travel restore search-proxy --timestamp=<RFC3339>` 恢复到 apply 前快照，再排查修正后重跑迁移。**勿在未确认迁移就位前部署**——新代码会在旧表结构（如仍为 `hour` 列）下写失败（既有「写失败静默」语义，统计有损但主流程不受影响）。
+- **部署失败不要停在半迁移状态**：`deploy.sh` 先迁移后部署。若迁移成功而 `wrangler deploy` 失败，旧代码会对着新 schema 继续跑（0007 删 `hour` 列后旧读路径会直接报错）。脚本会提示 roll-forward 或从 D1 备份恢复；不要忽略该提示继续重试旧版本。
+- **未来迁移范式**：0007 这类「建新表 → 搬迁 → 删旧表」的切换已发生，保留现状；后续需要改列名/重建表时优先 expand/contract（先加新列、代码双写、部署、再删旧列），避免迁移与部署之间的读写窗口。
 
-本地验证迁移（首次）可用 `npx wrangler d1 execute search-proxy --local --file=migrations/0001_init.sql` 建库并依次应用 0001–0007，再 `bash scripts/migrate.sh local`。
+本地验证迁移（首次）可用 `npx wrangler d1 execute search-proxy --local --file=migrations/0001_init.sql` 建库并依次应用 0001–0009，再 `bash scripts/migrate.sh local`。
 
 ## 7. 验证线上
 

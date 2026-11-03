@@ -328,6 +328,7 @@ distributed_keys(api_key, note, status, created_at)      -- PK api_key
 usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15min）
               PK (kind, scope, bucket); provider 可空（dist 无 provider 维度写 NULL，见 0004）
 索引：idx_upstream_keys_provider_created_id (keyset 分页)
+     idx_upstream_keys_provider_key (provider + key 唯一，0009；并发添加兜底)
      idx_usage_scope  (kind, scope, bucket, provider)
      idx_usage_window (kind, bucket, provider)
      idx_usage_signal (kind, bucket, scope, fail)  -- 选 key 权重信号 index-only（见 0004）
@@ -410,7 +411,7 @@ usage_counts(kind, scope, provider, bucket, success, fail) -- UTC 时间桶（15
 - 429/432 → 疑似失效长冷却 + 记失败，不碰连续失败计数。
 - breaker 计数有 10 分钟空窗——10 分钟内无新失败（`updated_at` 落后超窗）则视为"该 key 已恢复"。
 - **post-use / base / invalid 三个时长存 KV `breaker_config`，可在 admin dashboard"冷却参数"卡片运行时调整（≤3s 生效），无需重新部署**（见 `src/breaker-config.ts`）。
-- **权威态落点**：冷却与熔断计数的唯一写者是持有该 key 池的单点进程（per-provider `QueueDO` 内存，`key-pool.ts`），选 key 读到的即最新值；D1 仅为低频 checkpoint（`CHECKPOINT_INTERVAL_MS` 30s / `CHECKPOINT_MIN_DIRTY` 16 条双阈值）。冷启动/60s 兜底从 D1 重读并**合并**（保留内存冷却）；管理页「冷却」徽章读 D1 快照，最多滞后 30s（展示路径，非放行判据）。
+- **权威态落点**：冷却与熔断计数的唯一写者是持有该 key 池的单点进程（per-provider `QueueDO` 内存，`key-pool.ts`），选 key 读到的即最新值；D1 仅为低频 checkpoint（`CHECKPOINT_INTERVAL_MS` 30s / `CHECKPOINT_MIN_DIRTY` 16 条双阈值）。checkpoint 只在内存值与写入快照仍一致时清 dirty；`await` 期间产生的新冷却保留到下一轮。冷启动/60s 兜底从 D1 重读并**按 dirty 合并**：dirty 中的 id 保留内存冷却（未落库，不能提前放行）；非 dirty 的 id 采纳 D1 快照（admin 启用写入的 NULL 因此能自愈 activate 推送失败）。管理页「冷却」徽章读 D1 快照，最多滞后 30s（展示路径，非放行判据）。
 
 ### 6.3 自动重试（`searchWithRetry` 核，位于 `src/domain-services/retry-state-machine.ts`）
 
