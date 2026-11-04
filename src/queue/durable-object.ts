@@ -16,8 +16,8 @@
 //   - 连接断开：任务仍未轮到、或正处于冷却等待（signal aborted）→ 直接丢弃，不烧上游配额。
 
 import { DurableObject } from "cloudflare:workers";
-import { Env } from "../types";
-import { Provider } from "../domain";
+import type { Env } from "../types";
+import type { Provider } from "../domain";
 import { PROVIDERS } from "../providers";
 import type { ProviderConfig } from "../providers";
 import { runNativeTask } from "../proxy/executors/native";
@@ -27,7 +27,7 @@ import { getUsageStore } from "../usage";
 import { getEventBus, type DomainEventBus } from "../events";
 import { upstreamFetch } from "../transport";
 import { makeUpstreamSubscriber } from "./upstream-subscriber";
-import { QueueTask } from "./task";
+import { parseQueueTask, type QueueTask } from "./task";
 import { searxngError } from "../adapters/searxng";
 import { readerError } from "../adapters/reader";
 import { cachedQueueConfig } from "./config";
@@ -108,7 +108,7 @@ export class QueueDO extends DurableObject<Env> {
     return this.events;
   }
 
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     // admin 变更推式同步：全量重读合并（保留内存冷却）。body 非法/provider 未知 → 400。
     if (new URL(request.url).pathname === "/_internal/sync-keys") {
       const body = (await request.json().catch(() => null)) as { provider?: string } | null;
@@ -130,23 +130,28 @@ export class QueueDO extends DurableObject<Env> {
       return new Response("ok");
     }
 
-    let payload: { provider: Provider; apiKey: string; task: QueueTask };
-    try {
-      payload = (await request.json()) as typeof payload;
-    } catch {
-      return Response.json(
-        { detail: { error: "malformed queue task" } },
-        { status: 400 }
-      );
+    const rawBody = await request.json().catch(() => null);
+    const body = typeof rawBody === "object" && rawBody !== null ? (rawBody as Record<string, unknown>) : null;
+    if (!body) {
+      return Response.json({ detail: { error: "malformed queue task" } }, { status: 400 });
     }
-
-    const def = PROVIDERS[payload.provider];
-    if (!def) {
-      return Response.json(
-        { detail: { error: `unknown provider: ${payload.provider}` } },
-        { status: 400 }
-      );
+    const provider = body["provider"];
+    if (typeof provider !== "string") {
+      return Response.json({ detail: { error: "bad sync provider" } }, { status: 400 });
     }
+    // hasOwn 而非真值查找：PROVIDERS 是普通对象字面量，真值查找会放过 toString/constructor 等继承键。
+    if (!Object.hasOwn(PROVIDERS, provider)) {
+      return Response.json({ detail: { error: `unknown provider: ${provider}` } }, { status: 400 });
+    }
+    const apiKey = body["apiKey"];
+    if (typeof apiKey !== "string" || apiKey === "") {
+      return Response.json({ detail: { error: "bad api key" } }, { status: 400 });
+    }
+    const task = parseQueueTask(body["task"]);
+    if (!task) {
+      return Response.json({ detail: { error: "malformed queue task" } }, { status: 400 });
+    }
+    const def = PROVIDERS[provider as Provider];
 
     const cfg = await this.config.get(this.env.KV);
 
@@ -159,15 +164,15 @@ export class QueueDO extends DurableObject<Env> {
         // 拒入：等待中已满。错误体按线协议渲染（searxng→{error}；native→provider 官方格式），
         // Retry-After 按当前间隔给调用方退避提示。dist 请求到达已在主 Worker 由 countDist
         // 计数，此处只回 429，不发布任何事件。
-        resolve(rateLimitResponse(def, payload.task, cfg,
+        resolve(rateLimitResponse(def, task, cfg,
           `too many queued requests (max ${cfg.maxDepth}); retry later`));
         return;
       }
 
       const item: QueuedRequest = {
-        provider: payload.provider,
-        apiKey: payload.apiKey,
-        task: payload.task,
+        provider: provider as Provider,
+        apiKey,
+        task,
         signal: request.signal,
         timer: null,
         settled: false,
@@ -186,7 +191,7 @@ export class QueueDO extends DurableObject<Env> {
         // 排队超时（等待过长）：与拒入同语义——dist 请求到达已由主 Worker countDist 计数，
         // 此处只回 429，不发布任何事件。
         resolve(
-          rateLimitResponse(def, payload.task, cfg,
+          rateLimitResponse(def, task, cfg,
             `request waited too long (max ${cfg.waitBudgetMs}ms); retry later`)
         );
       }, cfg.waitBudgetMs);

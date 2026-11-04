@@ -43,7 +43,7 @@ export default {
   async scheduled(
     _event: ScheduledEvent,
     env: Env,
-    ctx: ExecutionContext
+    _ctx: ExecutionContext
   ): Promise<void> {
     const cutoff = bucketKey(Date.now() - USAGE_RETENTION_DAYS * 86_400_000);
     // 先定位最早的历史桶：从最早处向前推进，避免历史不足/远超批次窗口时的空删或久拖。

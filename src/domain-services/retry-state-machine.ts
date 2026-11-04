@@ -326,7 +326,7 @@ function render(
 export async function searchWithRetry(
   deps: CoreDeps,
   def: ProviderConfig,
-  apiKey: string,
+  _apiKey: string,
   request: { path: string; body: string; contentType: string },
   cb: RetryCallbacks
 ): Promise<Response> {

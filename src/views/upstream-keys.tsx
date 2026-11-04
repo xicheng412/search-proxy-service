@@ -3,16 +3,12 @@
 // 新增 provider 时仍按 architecture §4.2 增加 admin 路由 + provider 配置，不改本文件的分支。
 
 import type { Child } from "hono/jsx";
-import { CoreKey, Stats, maskKey } from "../domain";
+import type { CoreKey, Stats } from "../domain";
+import { maskKey } from "../domain";
 import { csrfField } from "./html";
 import { badge, card, emptyRow, field, icon, pageHeader } from "./ui";
-import {
-  Pagination,
-  formatRemaining,
-  layout,
-  paginationHtml,
-  toast,
-} from "./index";
+import type { Pagination } from "./index";
+import { formatRemaining, layout, paginationHtml, toast } from "./index";
 import type { NavKey } from "./index";
 
 export interface UpstreamKeysViewConfig {

@@ -1,7 +1,7 @@
 // 管理后台根路由：鉴权中间件 + Dashboard 总览 + 挂载各业务子路由。
 
 import { Hono } from "hono";
-import { Env, AppVariables } from "../types";
+import type { Env, AppVariables } from "../types";
 import { getCsrfToken } from "../auth";
 import { bucketKey } from "../domain";
 import { countDistributedKeys } from "../storage/dist-keys";

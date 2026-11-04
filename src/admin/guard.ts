@@ -1,8 +1,8 @@
 // 管理后台鉴权中间件：会话守卫 + CSRF 收口。feature 内聚（对齐 src/proxy/authenticate.ts
 // 先例），由 src/admin/index.ts 装配；isPagePath 以谓词注入，避免与装配层循环依赖。
 
-import { MiddlewareHandler } from "hono";
-import { Env, AppVariables } from "../types";
+import type { MiddlewareHandler } from "hono";
+import type { Env, AppVariables } from "../types";
 import { getSession, validateCsrf } from "../auth";
 import { errorFragment } from "../views";
 
@@ -18,6 +18,7 @@ export const sessionGuard =
     }
     c.set("admin", true);
     await next();
+    return;
   };
 
 /** CSRF 收口：所有 admin POST 写操作统一校验 token；失败 errorFragment("CSRF 校验失败") 403。 */
@@ -29,4 +30,5 @@ export const csrfGuard: MiddlewareHandler<{ Bindings: Env; Variables: AppVariabl
     return c.html(errorFragment("CSRF 校验失败"), 403);
   }
   await next();
+  return;
 };

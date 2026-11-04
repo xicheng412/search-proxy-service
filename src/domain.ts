@@ -113,8 +113,8 @@ export function randomToken(len = 24): string {
   const buf = new Uint8Array(len);
   crypto.getRandomValues(buf);
   let s = "";
-  for (let i = 0; i < buf.length; i++) {
-    s += buf[i].toString(16).padStart(2, "0");
+  for (const byte of buf) {
+    s += byte.toString(16).padStart(2, "0");
   }
   return s;
 }

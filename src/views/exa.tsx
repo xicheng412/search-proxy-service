@@ -1,13 +1,10 @@
 // Exa Keys 管理页：provider 专属文案/路径配置；布局与行为在 upstream-keys.tsx 共享。
 
 import type { Child } from "hono/jsx";
-import { CoreKey, Stats } from "../domain";
-import { Pagination } from "./index";
-import {
-  UpstreamKeysViewConfig,
-  upstreamKeysPage,
-  upstreamListFragment,
-} from "./upstream-keys";
+import type { CoreKey, Stats } from "../domain";
+import type { Pagination } from "./index";
+import type { UpstreamKeysViewConfig } from "./upstream-keys";
+import { upstreamKeysPage, upstreamListFragment } from "./upstream-keys";
 
 const EXA_VIEW: UpstreamKeysViewConfig = {
   label: "Exa",

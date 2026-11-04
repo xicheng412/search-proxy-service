@@ -2,8 +2,8 @@
 // 成功 → 注入 c.var.auth（AuthContext）；失败 → 直接写 c.res 并短路（后续 handler 不执行）。
 // 由路由层 proxyApp 挂载在数据面端点前。原 src/proxy.ts 的 parseBearer + authenticate 逻辑原样搬迁。
 
-import { MiddlewareHandler, Context } from "hono";
-import { Env, AppVariables } from "../types";
+import type { MiddlewareHandler, Context } from "hono";
+import type { Env, AppVariables } from "../types";
 import type { AuthContext } from "../types";
 import { PROVIDERS } from "../providers";
 import { getDistributedKey } from "../storage/dist-keys";
@@ -21,7 +21,7 @@ type Ctx = Context<{ Bindings: Env; Variables: AppVariables }>;
 function parseBearer(auth: string): string {
   const m = /^bearer\s*:?\s+(.+)$/i.exec(auth.trim());
   if (!m) return "";
-  return m[1].trim().split(/\s+/)[0];
+  return m[1]!.trim().split(/\s+/)[0]!;
 }
 
 /**

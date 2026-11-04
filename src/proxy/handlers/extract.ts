@@ -6,8 +6,8 @@
 //   重试/熔断/用量统计链路（上游 key 成败 + 冷却 + 分发 key 调用计数自动落账）。
 // 前置门禁（405/404/401）不触达重试核 → 不计调用、不耗上游配额。
 
-import { Context } from "hono";
-import { Env, AppVariables } from "../../types";
+import type { Context } from "hono";
+import type { Env, AppVariables } from "../../types";
 import { PROVIDERS } from "../../providers";
 import { runNative } from "../forward";
 

@@ -1,8 +1,8 @@
 // 管理员认证模块：密码登录、KV 会话、CSRF 防护、登出。
 
-import { Context } from "hono";
+import type { Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { Env, AppVariables } from "./types";
+import type { Env, AppVariables } from "./types";
 import { randomToken } from "./domain";
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 小时
@@ -95,7 +95,7 @@ export async function validateCsrf(
   const b = new TextEncoder().encode(session.csrf);
   if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
   return diff === 0;
 }
 

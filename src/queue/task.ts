@@ -11,7 +11,7 @@ export interface NativeTask {
 export interface SearxngTask {
   kind: "searxng";
   query: string;
-  topic?: "news" | "general";
+  topic?: "news" | "general" | undefined;
   body: string;
   contentType: string;
   // searxng 协议仅服务 Search 能力（无 path 字段：协议层绑定 Search，上游 path 由 provider 描述符决定）。
@@ -23,3 +23,26 @@ export interface ReaderTask {
   // reader 协议仅服务 Extract 能力（无 path/body 字段：协议层绑定 Extract，上游 path/请求体由 provider 描述符 + adapters/reader 决定）。
 }
 export type QueueTask = NativeTask | SearxngTask | ReaderTask;
+
+/** 入站任务边界解析:未知 kind 或字段类型不符一律返回 null(调用方按 400 拒绝)。
+ *  结构校验替代 durable-object 的 `as typeof payload` 强转,杜绝未知 kind 静默落到 SearXNG。 */
+export function parseQueueTask(raw: unknown): QueueTask | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const t = raw as Record<string, unknown>;
+  if (t["kind"] === "native") {
+    if (typeof t["path"] !== "string" || typeof t["body"] !== "string" || typeof t["contentType"] !== "string") return null;
+    return { kind: "native", path: t["path"], body: t["body"], contentType: t["contentType"] };
+  }
+  if (t["kind"] === "searxng") {
+    if (typeof t["query"] !== "string" || typeof t["body"] !== "string" || typeof t["contentType"] !== "string") return null;
+    const topic = t["topic"];
+    if (topic !== undefined && topic !== "news" && topic !== "general") return null;
+    return { kind: "searxng", query: t["query"], topic: topic as "news" | "general" | undefined, body: t["body"], contentType: t["contentType"] };
+  }
+  if (t["kind"] === "reader") {
+    const depth = t["depth"];
+    if (typeof t["url"] !== "string" || (depth !== "basic" && depth !== "advanced")) return null;
+    return { kind: "reader", url: t["url"], depth };
+  }
+  return null;
+}

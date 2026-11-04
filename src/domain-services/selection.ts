@@ -32,8 +32,8 @@ export function selectUpstreamKey(
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
   for (let i = 0; i < candidates.length; i++) {
-    r -= weights[i];
-    if (r <= 0) return candidates[i];
+    r -= weights[i]!;
+    if (r <= 0) return candidates[i]!;
   }
-  return candidates[candidates.length - 1];
+  return candidates[candidates.length - 1]!;
 }

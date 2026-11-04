@@ -27,15 +27,15 @@ export interface PendingFilter {
 export interface PendingEntry {
   kind: UsageKind;
   scope: string;
-  provider: string | null; // dist 无 provider 维度：解包时把空串归一为 null
+  provider: Provider | null; // dist 无 provider 维度：解包时把空串归一为 null
   bucket: string;
   success: number;
   fail: number;
 }
 
 export interface CoreOpts {
-  flushIntervalMs?: number;
-  flushMaxPending?: number;
+  flushIntervalMs?: number | undefined;
+  flushMaxPending?: number | undefined;
 }
 
 export interface UsageCore {
@@ -58,7 +58,7 @@ export interface UsageCore {
     minBucket: string | null,
     acc: (
       scope: string,
-      provider: string | null,
+      provider: Provider | null,
       bucket: string,
       success: number,
       fail: number
@@ -73,7 +73,11 @@ const bufKey = (r: Pick<UsageIncrement, "kind" | "scope" | "provider" | "bucket"
   `${r.kind}\u0000${r.scope}\u0000${r.provider ?? ""}\u0000${r.bucket}`;
 
 /** 内存键里的空串只表示「无 provider 维度」，落库/读侧必须还原成 NULL。 */
-const unpackProvider = (provider: string): string | null => (provider === "" ? null : provider);
+const unpackProvider = (provider: string): Provider | null => (provider === "" ? null : (provider as Provider));
+
+/** bufKey 逆解析:写入方保证恰 4 段(见 bufKey),解构按契约取 tuple。 */
+const splitBufKey = (key: string): [string, string, string, string] =>
+  key.split("\u0000") as [string, string, string, string];
 
 export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
   // flushIntervalMs 默认 BUCKET_MS：与桶宽同量级（15 分钟），跨 isolate 最多 1 个桶不可见。
@@ -95,7 +99,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     try {
       const rows: UsageIncrement[] = [];
       for (const [key, v] of batch) {
-        const [kind, scope, provider, bucket] = key.split("\u0000");
+        const [kind, scope, provider, bucket] = splitBufKey(key);
         rows.push({
           kind: kind as UsageIncrement["kind"],
           scope,
@@ -164,7 +168,7 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
       fail: 0,
     };
     for (const [k, v] of pending) {
-      const [kind, scope, provider, bucket] = k.split("\u0000");
+      const [kind, scope, provider, bucket] = splitBufKey(k);
       if (filter.kind !== undefined && filter.kind !== (kind as UsageKind)) continue;
       if (filter.minBucket !== undefined && bucket < filter.minBucket) continue;
       entry.kind = kind as UsageKind;
@@ -186,14 +190,14 @@ export function createCore(env: Env, opts: CoreOpts = {}): UsageCore {
     minBucket: string | null,
     acc: (
       scope: string,
-      provider: string | null,
+      provider: Provider | null,
       bucket: string,
       success: number,
       fail: number
     ) => void
   ): void {
     for (const [k, v] of pending) {
-      const [kKind, scope, provider, bucket] = k.split("\u0000");
+      const [kKind, scope, provider, bucket] = splitBufKey(k);
       if (kKind !== kind) continue;
       if (scopes.size !== 0 && !scopes.has(scope)) continue;
       if (minBucket !== null && bucket < minBucket) continue;

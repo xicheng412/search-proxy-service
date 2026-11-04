@@ -33,7 +33,7 @@ export interface DistSummaries {
 
 export interface SeriesOpts {
   /** 跨 scope 时间序列缓存 TTL；默认 30min（每 isolate ≤2 次历史读/窗口）。 */
-  seriesTtlMs?: number;
+  seriesTtlMs?: number | undefined;
 }
 
 export function makeSeriesRead(env: Env, core: UsageCore, opts: SeriesOpts = {}) {

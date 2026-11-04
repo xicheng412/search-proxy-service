@@ -7,10 +7,10 @@
 
 export interface SearxngParams {
   query: string;
-  format?: string; // searxng format 参数（仅支持 json）
-  categories?: string; // 逗号分隔，如 "general,news"
-  pageno?: number;
-  timeRange?: "day" | "month" | "year";
+  format?: string | undefined; // searxng format 参数（仅支持 json）
+  categories?: string | undefined; // 逗号分隔，如 "general,news"
+  pageno?: number | undefined;
+  timeRange?: "day" | "month" | "year" | undefined;
 }
 
 export interface SearxngError {

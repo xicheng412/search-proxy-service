@@ -2,8 +2,8 @@
 // 任务打装与转发——searxng 分支（参数归一化+校验+打装 SearxngTask）与 native 分支（runNative 透传）。
 // 原 src/proxy.ts 的 handleSearch / collectSearxngParams 搬迁，随中间件化的契约调整。
 
-import { Context } from "hono";
-import { Env, AppVariables } from "../../types";
+import type { Context } from "hono";
+import type { Env, AppVariables } from "../../types";
 import { PROVIDERS } from "../../providers";
 import { forwardToQueue, runNative } from "../forward";
 import {

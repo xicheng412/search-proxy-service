@@ -4,11 +4,8 @@
 
 import type { Child } from "hono/jsx";
 import { raw } from "hono/html";
-import {
-  Stats,
-  DistributedKey,
-  maskKey,
-} from "../domain";
+import type { Stats, DistributedKey } from "../domain";
+import { maskKey } from "../domain";
 import { csrfField } from "./html";
 import { card, emptyRow, icon, pageHeader } from "./ui";
 

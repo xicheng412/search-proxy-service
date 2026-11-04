@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { Env, AppVariables } from "../types";
+import type { Env, AppVariables } from "../types";
 import { getCsrfToken } from "../auth";
 import { autoKeyName, utcTodayStart } from "../domain";
 import {
@@ -17,9 +17,9 @@ import {
   missingUpstreamKeyIds,
   toggleUpstreamKey,
   toggleUpstreamKeysBatch,
-  UpstreamKeyPage,
   updateUpstreamKey,
 } from "../storage/upstream-keys";
+import type { UpstreamKeyPage } from "../storage/upstream-keys";
 import { getUsageStore } from "../usage";
 import { notifyKeyPoolActivate, notifyKeyPoolSync } from "../key-pool";
 import { TAVILY } from "../providers";
@@ -153,7 +153,7 @@ tavilyAdmin.post("/add/batch", async (c) => {
   );
   let msg = `添加 ${res.added.length} 个`;
   if (res.duplicates.length)
-    msg += `，跳过 ${res.duplicates.length} 个重复：第 ${res.duplicates.map((d) => d.index).join("、")} 行（${res.duplicates[0].maskedKey} 等已存在）`;
+    msg += `，跳过 ${res.duplicates.length} 个重复：第 ${res.duplicates.map((d) => d.index).join("、")} 行（${res.duplicates[0]!.maskedKey} 等已存在）`;
   await notifyKeyPoolSync(c.env, TAVILY.name).catch(() => {});
   return c.redirect(`/admin/tavily/list?flash=${encodeURIComponent(msg)}`, 303);
 });

@@ -6,6 +6,7 @@
 // 所有函数以 env: Env 为句柄。
 
 import type { Env } from "../types";
+import type { Provider } from "../domain";
 
 export type UsageKind = "upstream" | "dist";
 
@@ -13,7 +14,7 @@ export type UsageKind = "upstream" | "dist";
 export interface UsageIncrement {
   kind: UsageKind;
   scope: string; // upstream key id | dist api_key
-  provider: string | null; // upstream: 'tavily' | 'exa' | future；dist 无 provider 维度，恒 null
+  provider: Provider | null; // upstream: 'tavily' | 'exa' | future；dist 无 provider 维度，恒 null
   bucket: string; // 'YYYY-MM-DDTHH:MM' UTC
   success: number;
   fail: number;
@@ -27,7 +28,7 @@ export interface UsageWindow {
 /** 某个时间桶 × provider 的聚合行（跨全部 scope）。dist 无 provider 维度，provider 为 null。 */
 export interface BucketRow {
   bucket: string;
-  provider: string | null;
+  provider: Provider | null;
   success: number;
   fail: number;
 }
@@ -46,7 +47,7 @@ export async function mergeUsage(env: Env, rows: UsageIncrement[]): Promise<void
          provider = excluded.provider,
          success = success + excluded.success,
          fail    = fail + excluded.fail`
-    ).bind(r.kind, r.scope, r.provider === "" ? null : r.provider, r.bucket, r.success, r.fail)
+    ).bind(r.kind, r.scope, r.provider, r.bucket, r.success, r.fail)
   );
   await env.DB.batch(stmts);
 }
@@ -64,11 +65,11 @@ export async function sumUsageByScopes(
   const out: Record<string, Record<string, UsageWindow>> = {};
   const mergeRows = (results: unknown[]) => {
     for (const r of results as Record<string, unknown>[]) {
-      const scope = r.scope as string;
+      const scope = r["scope"] as string;
       // dist 行 provider 为 NULL：归一为空串组键，避免 JS 把 null 转成 "null" 组名。
-      (out[scope] ??= {})[(r.provider as string | null) ?? ""] = {
-        success: (r.success as number) ?? 0,
-        fail: (r.fail as number) ?? 0,
+      (out[scope] ??= {})[(r["provider"] as string | null) ?? ""] = {
+        success: (r["success"] as number) ?? 0,
+        fail: (r["fail"] as number) ?? 0,
       };
     }
   };
@@ -121,9 +122,9 @@ export async function readSeriesByProvider(
     .bind(kind, minBucket)
     .all();
   return (results as Record<string, unknown>[]).map((r) => ({
-    bucket: r.bucket as string,
-    provider: r.provider as string | null,
-    success: (r.success as number) ?? 0,
-    fail: (r.fail as number) ?? 0,
+    bucket: r["bucket"] as string,
+    provider: r["provider"] as Provider | null,
+    success: (r["success"] as number) ?? 0,
+    fail: (r["fail"] as number) ?? 0,
   }));
 }

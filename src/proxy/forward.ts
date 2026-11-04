@@ -2,8 +2,8 @@
 // 原 src/proxy.ts 的 forwardToQueue / runNative 原样搬迁；runNative 的 auth 参数收口为 AuthContext
 //（auth.credential.protocol / auth.credential.provider 用于门禁，auth.distKey.api_key 传给 forwardToQueue）。
 
-import { Context } from "hono";
-import { Env, AppVariables } from "../types";
+import type { Context } from "hono";
+import type { Env, AppVariables } from "../types";
 import type { AuthContext } from "../types";
 import type { ProviderConfig } from "../providers";
 import type { Capability } from "../domain";

@@ -9,25 +9,19 @@
 // 所有函数以 env: Env 为句柄（同时携带 KV 与 DB），实体走 DB，配置/会话走 KV。
 
 import type { Env } from "../types";
-import {
-  CoreKey,
-  KeyStatus,
-  UpstreamDef,
-  CooldownCause,
-  newUpstreamId,
-  maskKey,
-} from "../domain";
+import type { CoreKey, KeyStatus, UpstreamDef, CooldownCause } from "../domain";
+import { newUpstreamId, maskKey } from "../domain";
 import { buildSetClause } from "./patch";
 
 function toCoreKey(r: Record<string, unknown>): CoreKey {
   return {
-    id: r.id as string,
-    key: r.key as string,
-    name: r.name as string,
-    status: r.status as KeyStatus,
-    cooldown_until: r.cooldown_until as number | null,
-    suspended_cause: r.suspended_cause as CooldownCause | null,
-    created_at: r.created_at as number,
+    id: r["id"] as string,
+    key: r["key"] as string,
+    name: r["name"] as string,
+    status: r["status"] as KeyStatus,
+    cooldown_until: r["cooldown_until"] as number | null,
+    suspended_cause: r["suspended_cause"] as CooldownCause | null,
+    created_at: r["created_at"] as number,
   };
 }
 
@@ -70,7 +64,7 @@ export async function countUpstreamKeys(
             COALESCE(SUM(CASE WHEN status = 'enabled' THEN 1 ELSE 0 END), 0) AS enabled
      FROM upstream_keys WHERE provider = ?1`
   ).bind(def.provider).first();
-  return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
+  return { total: Number(row?.["total"] ?? 0), enabled: Number(row?.["enabled"] ?? 0) };
 }
 
 // 惰性总数缓存：总量基本不变，低频读「共 N 条」，随 add/delete（总量变动）时同 isolate 立即失效，
@@ -179,15 +173,15 @@ export async function listUpstreamKeysPage(
     };
   }
   const cursorOf = (r: Record<string, unknown>): UpstreamKeyCursor => ({
-    createdAt: r.created_at as number,
-    id: r.id as string,
+    createdAt: r["created_at"] as number,
+    id: r["id"] as string,
   });
   return {
     keys: pageRows.map(toCoreKey),
     hasPrevious: hasPreviousPage,
     hasNext: hasNextPage,
-    previousCursor: hasPreviousPage ? cursorOf(pageRows[0]) : null,
-    nextCursor: hasNextPage ? cursorOf(pageRows[pageRows.length - 1]) : null,
+    previousCursor: hasPreviousPage ? cursorOf(pageRows[0]!) : null,
+    nextCursor: hasNextPage ? cursorOf(pageRows[pageRows.length - 1]!) : null,
   };
 }
 
@@ -260,7 +254,7 @@ export async function toggleUpstreamKey(
   )
     .bind(def.provider, id)
     .first();
-  return row ? { status: row.status as KeyStatus } : null;
+  return row ? { status: row["status"] as KeyStatus } : null;
 }
 
 export async function deleteUpstreamKey(
@@ -300,7 +294,7 @@ export async function missingUpstreamKeyIds(
   )
     .bind(def.provider, ...ids)
     .all();
-  const found = new Set((results as Record<string, unknown>[]).map((r) => r.id as string));
+  const found = new Set((results as Record<string, unknown>[]).map((r) => r["id"] as string));
   return ids.filter((id) => !found.has(id));
 }
 
@@ -406,7 +400,7 @@ export async function addUpstreamKeysBatch(
   const pending: { item: CoreKey; index: number }[] = [];
   const seen = new Set<string>();
   for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
+    const e = entries[i]!;
     // 同一次提交内的重复先跳过（否则两次查重都在 INSERT 之前，会各插一行）。
     if (seen.has(e.key)) {
       duplicates.push({ index: i + 1, key: e.key, maskedKey: maskKey(e.key), name: e.name });
@@ -430,7 +424,7 @@ export async function addUpstreamKeysBatch(
   if (insertStmts.length > 0) {
     const results = await env.DB.batch(insertStmts);
     for (let i = 0; i < pending.length; i++) {
-      const { item, index } = pending[i];
+      const { item, index } = pending[i]!;
       // 并发提交可能先落同一 key：冲突忽略时 changes=0，按重复反馈。
       const changes = results[i]?.meta?.changes;
       if (changes === undefined) throw new Error("D1 batch result missing meta.changes");

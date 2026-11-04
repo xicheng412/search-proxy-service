@@ -6,11 +6,8 @@
 // 所有函数以 env: Env 为句柄（同时携带 KV 与 DB）。
 
 import type { Env } from "../types";
-import {
-  DistributedKey,
-  KeyStatus,
-  newDistApiKey,
-} from "../domain";
+import type { DistributedKey, KeyStatus } from "../domain";
+import { newDistApiKey } from "../domain";
 import { cachedDistCacheConfig } from "../dist-cache-config";
 import { buildSetClause } from "./patch";
 
@@ -44,10 +41,10 @@ const distCacheConfig = cachedDistCacheConfig();
 
 function toDistKey(r: Record<string, unknown>): DistributedKey {
   return {
-    api_key: r.api_key as string,
-    note: r.note as string,
-    status: r.status as KeyStatus,
-    created_at: r.created_at as number,
+    api_key: r["api_key"] as string,
+    note: r["note"] as string,
+    status: r["status"] as KeyStatus,
+    created_at: r["created_at"] as number,
   };
 }
 
@@ -129,15 +126,15 @@ export async function listDistributedKeysPage(
     };
   }
   const cursorOf = (r: Record<string, unknown>): DistributedKeyCursor => ({
-    createdAt: r.created_at as number,
-    apiKey: r.api_key as string,
+    createdAt: r["created_at"] as number,
+    apiKey: r["api_key"] as string,
   });
   return {
     keys: pageRows.map(toDistKey),
     hasPrevious: hasPreviousPage,
     hasNext: hasNextPage,
-    previousCursor: hasPreviousPage ? cursorOf(pageRows[0]) : null,
-    nextCursor: hasNextPage ? cursorOf(pageRows[pageRows.length - 1]) : null,
+    previousCursor: hasPreviousPage ? cursorOf(pageRows[0]!) : null,
+    nextCursor: hasNextPage ? cursorOf(pageRows[pageRows.length - 1]!) : null,
   };
 }
 
@@ -150,7 +147,7 @@ export async function countDistributedKeys(
             COALESCE(SUM(CASE WHEN status = 'enabled' THEN 1 ELSE 0 END), 0) AS enabled
      FROM distributed_keys`
   ).first();
-  return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
+  return { total: Number(row?.["total"] ?? 0), enabled: Number(row?.["enabled"] ?? 0) };
 }
 
 // 惰性总数缓存：总量基本不变，低频读「共 N 条」，变动（generate/delete）时同 isolate 立即失效，

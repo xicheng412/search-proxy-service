@@ -9,7 +9,7 @@ import type { UsageCore } from "../core";
 
 export interface TodayOpts {
   /** 当日读缓存 TTL；默认 30s。 */
-  readCacheMs?: number;
+  readCacheMs?: number | undefined;
 }
 
 export function makeTodayRead(env: Env, core: UsageCore, opts: TodayOpts = {}) {

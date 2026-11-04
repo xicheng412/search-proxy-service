@@ -26,11 +26,11 @@ const breakerConfig = defineKvConfig<BreakerConfig>({
   /** postUse 允许 0（= 关闭每次冷却），其余只校验有限且为正。 */
   parse(o) {
     const postUseCooldownSec =
-      typeof o.postUseCooldownSec === "number" ? o.postUseCooldownSec : Number.NaN;
+      typeof o["postUseCooldownSec"] === "number" ? o["postUseCooldownSec"] : Number.NaN;
     const breakerBaseSec =
-      typeof o.breakerBaseSec === "number" ? o.breakerBaseSec : Number.NaN;
+      typeof o["breakerBaseSec"] === "number" ? o["breakerBaseSec"] : Number.NaN;
     const invalidCooldownSec =
-      typeof o.invalidCooldownSec === "number" ? o.invalidCooldownSec : Number.NaN;
+      typeof o["invalidCooldownSec"] === "number" ? o["invalidCooldownSec"] : Number.NaN;
     return {
       postUseCooldownSec:
         Number.isFinite(postUseCooldownSec) && postUseCooldownSec >= 0

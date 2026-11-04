@@ -17,7 +17,7 @@ const distCacheConfig = defineKvConfig<DistCacheConfig>({
   defaults: DEFAULT_DIST_CACHE_CONFIG,
   /** 只校验数值有限且为正。 */
   parse(o) {
-    const cacheTtlSec = typeof o.cacheTtlSec === "number" ? o.cacheTtlSec : Number.NaN;
+    const cacheTtlSec = typeof o["cacheTtlSec"] === "number" ? o["cacheTtlSec"] : Number.NaN;
     return {
       cacheTtlSec:
         Number.isFinite(cacheTtlSec) && cacheTtlSec > 0

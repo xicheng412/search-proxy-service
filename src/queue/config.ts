@@ -25,9 +25,9 @@ const queueConfig = defineKvConfig<QueueConfig>({
   defaults: DEFAULT_QUEUE_CONFIG,
   /** 只校验数值有限且为正。 */
   parse(o) {
-    const intervalMs = typeof o.intervalMs === "number" ? o.intervalMs : Number.NaN;
-    const maxDepth = typeof o.maxDepth === "number" ? o.maxDepth : Number.NaN;
-    const waitBudgetMs = typeof o.waitBudgetMs === "number" ? o.waitBudgetMs : Number.NaN;
+    const intervalMs = typeof o["intervalMs"] === "number" ? o["intervalMs"] : Number.NaN;
+    const maxDepth = typeof o["maxDepth"] === "number" ? o["maxDepth"] : Number.NaN;
+    const waitBudgetMs = typeof o["waitBudgetMs"] === "number" ? o["waitBudgetMs"] : Number.NaN;
     return {
       intervalMs:
         Number.isFinite(intervalMs) && intervalMs > 0

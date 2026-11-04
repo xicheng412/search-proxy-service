@@ -5,7 +5,7 @@
 // 口径：队列拒入 429 / 客户端断连发生在转发之后（请求确已到达）→ 计入；
 // 鉴权失败在 authenticate 短路，不会到达本中间件 → 不计。
 
-import { MiddlewareHandler } from "hono";
+import type { MiddlewareHandler } from "hono";
 import type { Env, AppVariables } from "../types";
 import { getUsageStore } from "../usage";
 import { bucketKey } from "../domain";

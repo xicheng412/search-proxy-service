@@ -11,9 +11,9 @@ import type { UsageCore } from "../core";
 
 export interface WeightOpts {
   /** 权重信号滑动窗口（ms）；只影响热路径选 key 的信号，不影响展示口径。默认 30min。 */
-  weightWindowMs?: number;
+  weightWindowMs?: number | undefined;
   /** 后台统计信号快照最大陈旧时长；默认 120s，测试可缩短窗口。 */
-  signalBaseTtlMs?: number;
+  signalBaseTtlMs?: number | undefined;
 }
 
 export function makeWeightSignal(env: Env, core: UsageCore, opts: WeightOpts = {}) {
@@ -36,7 +36,7 @@ export function makeWeightSignal(env: Env, core: UsageCore, opts: WeightOpts = {
        FROM usage_counts WHERE kind = ?1 AND bucket >= ?2 GROUP BY scope`
     ).bind("upstream", minBucket).all();
     const fail: Record<string, number> = {};
-    for (const r of results as Record<string, unknown>[]) fail[r.scope as string] = (r.fail as number) ?? 0;
+    for (const r of results as Record<string, unknown>[]) fail[r["scope"] as string] = (r["fail"] as number) ?? 0;
     signalBase = { minBucket, at: now, fail };
   }
 
@@ -49,7 +49,7 @@ export function makeWeightSignal(env: Env, core: UsageCore, opts: WeightOpts = {
       out[id] = signalBase && signalBase.minBucket === minBucket ? (signalBase.fail[id] ?? 0) : 0;
     }
     core.collapsePending("upstream", new Set(ids), minBucket, (scope, _p, _b, _s, fail) => {
-      out[scope] += fail;
+      out[scope] = (out[scope] ?? 0) + fail;
     });
     return out;
   }

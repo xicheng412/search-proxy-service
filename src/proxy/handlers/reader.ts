@@ -8,8 +8,8 @@
 //   重试/熔断/用量统计链路；响应由 runReaderTask 转成 text/plain。
 // 前置门禁（405/400/401）不触达重试核 → 不计调用、不耗上游配额。
 
-import { Context } from "hono";
-import { Env, AppVariables } from "../../types";
+import type { Context } from "hono";
+import type { Env, AppVariables } from "../../types";
 import { PROVIDERS } from "../../providers";
 import { forwardToQueue } from "../forward";
 import {
