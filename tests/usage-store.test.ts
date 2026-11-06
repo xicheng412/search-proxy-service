@@ -182,6 +182,68 @@ describe("flush 双阈值 + flushNow", () => {
   });
 });
 
+describe("真实默认阈值（BUCKET_MS=15min / 256）", () => {
+  it("默认 flushMaxPending=256：255 条不落库，256 条落库", async () => {
+    const { db, batchCalls } = makeConstantD1([]);
+    const store = createUsageStore({ DB: db } as unknown as Env); // 无注入 = 真实默认
+    const h = bucketKey();
+
+    // 首次 flush 推进 lastFlushAt（此后 15min 内年龄分支不再满足）
+    store.recordUpstreamResult("prime", "tavily", h, "fail");
+    let first: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (first = p) } as never);
+    expect(first).toBeDefined();
+    await first;
+    expect(batchCalls()).toBe(1);
+
+    for (let i = 0; i < 255; i++) {
+      store.recordUpstreamResult("k" + i, "tavily", h, "fail");
+    }
+    let second: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (second = p) } as never);
+    expect(second).toBeUndefined(); // 255 < 256 且年龄未到 → 不落库
+
+    store.recordUpstreamResult("k255", "tavily", h, "fail");
+    let third: Promise<unknown> | undefined;
+    store.flushSoon({ waitUntil: (p) => (third = p) } as never);
+    expect(third).toBeDefined(); // 256 >= 256 → 落库
+    await third;
+    expect(batchCalls()).toBe(2);
+  });
+
+  it("默认 flushIntervalMs=BUCKET_MS(15min)：14min 不落库，16min 落库", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+    try {
+      const { db, batchCalls } = makeConstantD1([]);
+      const store = createUsageStore({ DB: db } as unknown as Env);
+      const h = bucketKey();
+
+      store.recordUpstreamResult("a", "tavily", h, "fail");
+      let first: Promise<unknown> | undefined;
+      store.flushSoon({ waitUntil: (p) => (first = p) } as never);
+      expect(first).toBeDefined();
+      await first; // lastFlushAt=00:00
+      expect(batchCalls()).toBe(1);
+
+      store.recordUpstreamResult("a", "tavily", h, "fail");
+      vi.setSystemTime(new Date("2026-09-01T00:14:00Z"));
+      let second: Promise<unknown> | undefined;
+      store.flushSoon({ waitUntil: (p) => (second = p) } as never);
+      expect(second).toBeUndefined(); // 14min < 15min 且 1 < 256
+
+      vi.setSystemTime(new Date("2026-09-01T00:16:00Z"));
+      let third: Promise<unknown> | undefined;
+      store.flushSoon({ waitUntil: (p) => (third = p) } as never);
+      expect(third).toBeDefined(); // 16min >= 15min
+      await third;
+      expect(batchCalls()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("权重信号窗口过滤 + 独立刷新", () => {
   it("pending 中窗口外小时桶的 fail 不计入权重", async () => {
     const { db, allCalls } = makeConstantD1([]);

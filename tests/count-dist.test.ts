@@ -17,15 +17,14 @@ import { makeConstantD1 } from "./helpers/fake-d1";
 
 const fakeKV = { get: async () => null, put: async () => {} };
 
-function makeQueue() {
-  return {
-    fetch: vi.fn(async () => {
-      return new Response('{"results":[],"failed_results":[]}', {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }),
-  };
+function makeQueue(
+  fetchImpl: () => Promise<Response> = async () =>
+    new Response('{"results":[],"failed_results":[]}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+) {
+  return { fetch: vi.fn(fetchImpl) };
 }
 
 function makeEnv(queue: { fetch: Mock }, distRows: Record<string, unknown>[]) {
@@ -58,8 +57,12 @@ const enabledRow = (apiKey: string, status: string = "enabled") => ({
   created_at: Date.now(),
 });
 
-function buildFor(apiKey: string, rows: Record<string, unknown>[]) {
-  const queue = makeQueue();
+function buildFor(
+  apiKey: string,
+  rows: Record<string, unknown>[],
+  fetchImpl?: () => Promise<Response>
+) {
+  const queue = makeQueue(fetchImpl);
   const env = makeEnv(queue, rows);
   // proxyApp 已内建 cors + authenticate + countDist + handler
   return { app: proxyApp, env, queue };
@@ -83,6 +86,17 @@ function postExtract(
     env,
     { waitUntil: () => {} } as unknown as ExecutionContext
   );
+}
+
+function callSearch(
+  app: Hono<{ Bindings: Env; Variables: AppVariables }>,
+  env: Env,
+  path: string,
+  init: RequestInit
+) {
+  return app.request(path, init, env, {
+    waitUntil: () => {},
+  } as unknown as ExecutionContext);
 }
 
 describe("countDist 请求到达计数", () => {
@@ -132,5 +146,90 @@ describe("countDist 请求到达计数", () => {
     expect(res.status).toBe(401);
     const stats = await getUsageStore(env).readDistCallsByScopes([apiKey], h);
     expect(stats[apiKey]).toEqual({ success: 0, fail: 0 });
+  });
+
+  it("队列拒入 429：请求已到达，dist 仍 +1", async () => {
+    const apiKey = "cnt5";
+    const { app, env } = buildFor(apiKey, [enabledRow(apiKey)], async () =>
+      new Response('{"error":"too many queued requests"}', {
+        status: 429,
+        headers: { "retry-after": "1" },
+      })
+    );
+    const h = bucketKey();
+
+    const res = await postExtract(app, env, `tavily-${apiKey}`);
+
+    expect(res.status).toBe(429);
+    const stats = await getUsageStore(env).readDistCallsByScopes([apiKey], h);
+    expect(stats[apiKey]).toEqual({ success: 1, fail: 0 });
+  });
+
+  it("排队超时 429（与拒入同线协议）：dist 仍 +1", async () => {
+    const apiKey = "cnt6";
+    const { app, env } = buildFor(apiKey, [enabledRow(apiKey)], async () =>
+      new Response('{"error":"request waited too long"}', {
+        status: 429,
+        headers: { "retry-after": "3" },
+      })
+    );
+    const h = bucketKey();
+
+    const res = await postExtract(app, env, `tavily-${apiKey}`);
+
+    expect(res.status).toBe(429);
+    const stats = await getUsageStore(env).readDistCallsByScopes([apiKey], h);
+    expect(stats[apiKey]).toEqual({ success: 1, fail: 0 });
+  });
+
+  it("客户端断连（队列 fetch 抛错）：dist 仍 +1", async () => {
+    const apiKey = "cnt7";
+    const { app, env } = buildFor(apiKey, [enabledRow(apiKey)], async () => {
+      throw new Error("client disconnected");
+    });
+    const h = bucketKey();
+
+    const res = await postExtract(app, env, `tavily-${apiKey}`);
+
+    expect(res.status).toBe(502); // handleExtract catch → 502
+    const stats = await getUsageStore(env).readDistCallsByScopes([apiKey], h);
+    expect(stats[apiKey]).toEqual({ success: 1, fail: 0 });
+  });
+
+  it("/search 门禁 405（reader 前缀）：dist 仍 +1", async () => {
+    const apiKey = "cnt8";
+    const { app, env } = buildFor(apiKey, [enabledRow(apiKey)]);
+    const h = bucketKey();
+
+    const res = await callSearch(app, env, "/search", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer reader-tavily-${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+
+    expect(res.status).toBe(405);
+    const stats = await getUsageStore(env).readDistCallsByScopes([apiKey], h);
+    expect(stats[apiKey]).toEqual({ success: 1, fail: 0 });
+  });
+
+  it("/search pageno>1 空结果短路：dist +1 且不转发队列", async () => {
+    const apiKey = "cnt9";
+    const { app, env, queue } = buildFor(apiKey, [enabledRow(apiKey)]);
+    const h = bucketKey();
+
+    const res = await callSearch(
+      app,
+      env,
+      "/search?q=hello&pageno=2",
+      { method: "GET", headers: { authorization: `Bearer searxng-tavily-${apiKey}` } }
+    );
+
+    expect(res.status).toBe(200);
+    expect(queue.fetch).not.toHaveBeenCalled();
+    const stats = await getUsageStore(env).readDistCallsByScopes([apiKey], h);
+    expect(stats[apiKey]).toEqual({ success: 1, fail: 0 });
   });
 });

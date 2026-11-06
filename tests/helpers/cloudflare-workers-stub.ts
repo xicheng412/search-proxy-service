@@ -1,8 +1,13 @@
 // vitest（node 环境）用的 Cloudflare 专属模块桩：
-// 把 `cloudflare:workers` 解析到本地类，让整包引入 src/index 的冒烟测试能加载
-//（durable-object.ts 继承 DurableObject；测试不实例化 QueueDO，桩只需类存在）。
-// 本目录不进 tsconfig include，无需 @cloudflare/workers-types 即可编译。
+// 把 `cloudflare:workers` 解析到本地类，让整包引入 src/index 的冒烟测试能加载。
+// 测试直接实例化 QueueDO 时需要 base 类把 (state, env) 挂到 this.ctx / this.env
+// （QueueDO 读 this.env 的 KV/DB，并在 drain 里调用 this.ctx.waitUntil）。
 
 export class DurableObject<Env = unknown> {
-  constructor(_state: unknown, _env: Env) {}
+  ctx: { waitUntil(p: Promise<unknown>): void };
+  env: Env;
+  constructor(state: unknown, env: Env) {
+    this.ctx = state as { waitUntil(p: Promise<unknown>): void };
+    this.env = env;
+  }
 }

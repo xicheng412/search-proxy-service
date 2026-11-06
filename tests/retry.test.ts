@@ -1,7 +1,7 @@
 // retry 重试矩阵单测：直接调用 searchWithRetry（src/domain-services/retry-state-machine.ts），
 // 配 fake D1(+fake KV) 环境，
 // 断言 callback 入参（onFailure 的 outcome.kind / lastRes.status）与 fetch 次数/去重 key。
-// 不 assert 内部实现：熔断写入细节由 tests/breaker.test.ts 覆盖；选 key 权重/统计不在本矩阵。
+// 不 assert 内部实现：熔断写入细节由 tests/circuit-breaker.test.ts 覆盖；选 key 权重/统计不在本矩阵。
 
 import { describe, it, expect, vi, afterEach, type Mock } from "vitest";
 import type { Env } from "../src/types";
@@ -213,6 +213,37 @@ describe("searchWithRetry 重试矩阵", () => {
     }
   );
 
+  it.each([407, 408, 428])(
+    "4b. 未知码 %s → 兜底 server-error：换 key 重试并发布 cls=server-error",
+    async (status) => {
+      const fetchMock = fetchMockWith(status, status);
+      vi.stubGlobal("fetch", fetchMock);
+      const onSuccess = vi.fn(async () => new Response("ok"));
+      const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+      const publish = vi.fn();
+
+      await searchWithRetry(
+        makeDeps([keyRow("k-t4b-a"), keyRow("k-t4b-b")], {
+          events: { publish },
+        }),
+        TAVILY,
+        "api-t4b-" + status,
+        req,
+        { onSuccess, onFailure }
+      );
+
+      expect(onFailure.mock.calls[0][0]).toMatchObject({ kind: "exhausted" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(bearerSet(fetchMock).size).toBe(2);
+      expect(publish).toHaveBeenCalledTimes(2);
+      for (const call of publish.mock.calls) {
+        expect(call[0]).toMatchObject({
+          outcome: { kind: "failure", cls: "server-error" },
+        });
+      }
+    }
+  );
+
   it("5. 401 → 换 key（key 级错误，非 client-error），试遍 2 把 → exhausted", async () => {
     const fetchMock = fetchMockWith(401, 401);
     vi.stubGlobal("fetch", fetchMock);
@@ -332,6 +363,30 @@ describe("searchWithRetry 重试矩阵", () => {
       makeDeps([keyRow("k-t8-a"), keyRow("k-t8-b"), keyRow("k-t8-c"), keyRow("k-t8-d")]),
       TAVILY,
       "api-t8",
+      req,
+      { onSuccess, onFailure }
+    );
+
+    expect(onFailure.mock.calls[0][0]).toMatchObject({ kind: "exhausted" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(bearerSet(fetchMock).size).toBe(3);
+  });
+
+  it("8b. 4 keys 全 429 → 截在 MAX_ATTEMPTS=3 次（rate-limit 计入尝试上限）", async () => {
+    const fetchMock = fetchMockWith(429, 429, 429, 429);
+    vi.stubGlobal("fetch", fetchMock);
+    const onSuccess = vi.fn(async () => new Response("ok"));
+    const onFailure = vi.fn(async () => new Response("fail", { status: 502 }));
+
+    await searchWithRetry(
+      makeDeps([
+        keyRow("k-t8b-a"),
+        keyRow("k-t8b-b"),
+        keyRow("k-t8b-c"),
+        keyRow("k-t8b-d"),
+      ]),
+      TAVILY,
+      "api-t8b",
       req,
       { onSuccess, onFailure }
     );
