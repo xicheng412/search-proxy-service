@@ -81,7 +81,7 @@ export function adminPage(data: DashboardData) {
         {card({
           className: "chart-card",
           title: "近 5 天调用趋势",
-          description: "上游真实调用 · 按小时聚合",
+          description: "上游官方 key 的真实调用尝试（含成败）· 5 天 / 小时聚合",
           actions: (
             <div class="chart-legend" aria-hidden="true">
               <span class="legend-item">
@@ -105,7 +105,7 @@ export function adminPage(data: DashboardData) {
         {card({
           className: "signals-card",
           title: "分发请求量",
-          description: "UTC 日 · 含当前桶",
+          description: "分发 key 请求到达量（不计成败）· UTC 日 · 含当前桶",
           body: (
             <div class="signal-list">
               <div class="signal-row">
@@ -130,6 +130,9 @@ export function adminPage(data: DashboardData) {
           ),
         })}
       </div>
+      <p class="card-note dashboard-note">
+        口径：趋势图为上游官方 key 的真实调用尝试，请求量卡为分发 key 到达数；两条线维度不同、勿互相核对，均为近似值。
+      </p>
       {card({
         title: "运行参数",
         description: "修改后 ≤3s 生效，无需重新部署。",

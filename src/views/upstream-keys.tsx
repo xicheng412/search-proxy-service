@@ -80,6 +80,12 @@ export function upstreamListFragment(
         const causeTitle = k.suspended_cause
           ? (causeMap[k.suspended_cause] ?? "冷却中")
           : "冷却中";
+        // 因由前缀上屏（如「熔断 · 冷却：3min」），title 保留完整因由供 hover；
+        // 未知/无因由时只显示冷却时长，与 SSR 空态「-」一致。
+        const causeLabel = k.suspended_cause
+          ? (causeMap[k.suspended_cause] ?? "").replace(/\s*冷却$/, "")
+          : "";
+        const causePrefix = causeLabel ? `${causeLabel} · ` : "";
         const cooling =
           k.cooldown_until != null && k.cooldown_until > now ? (
             <span
@@ -87,6 +93,7 @@ export function upstreamListFragment(
               data-cooldown-until={k.cooldown_until}
               title={causeTitle}
             >
+              {causePrefix}
               {formatRemaining(k.cooldown_until - now)}
             </span>
           ) : (
@@ -94,8 +101,8 @@ export function upstreamListFragment(
           );
         const st =
           k.status === "enabled"
-            ? badge("enabled", "ok")
-            : badge("disabled", "neutral");
+            ? badge("启用", "ok")
+            : badge("停用", "neutral");
         return (
           <tr>
             <td>

@@ -183,7 +183,7 @@ export function keysPage(csrf: string, fragment: Child) {
       {card({
         title: "Key 列表",
         description:
-          "调用时用 Bearer tavily-<key> / exa-<key>（前缀决定路由）；官方真实 key 在上游 Keys 页管理。",
+          "调用时用 Bearer tavily-<key> / exa-<key> / searxng-tavily-<key> / reader-tavily-<key>（前缀决定路由）；官方真实 key 在上游 Keys 页管理。「最近24h请求」= 该分发 key 的请求到达量（15 分钟桶，含当前桶）。",
         body: <div id="keys-list">{fragment}</div>,
       })}
       {card({
@@ -241,9 +241,9 @@ export function distListFragment(
     ? keys.map((k) => {
         const st =
           k.status === "enabled" ? (
-            <span class="badge badge-ok">enabled</span>
+            <span class="badge badge-ok">启用</span>
           ) : (
-            <span class="badge badge-neutral">disabled</span>
+            <span class="badge badge-neutral">停用</span>
           );
         const s = callsMap[k.api_key] ?? { success: 0, fail: 0 };
         return (

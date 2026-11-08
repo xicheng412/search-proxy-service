@@ -72,11 +72,11 @@ export function helpPage(publicBaseUrl: string = ""): string {
       <tr><td>429</td><td>自动换另一个可用上游 key 重试一次；仍 429 返回上游错误</td></tr>
       <tr><td>432</td><td>（Tavily）key / plan 限额耗尽：换 key 重试一次；仍 432 透传上游错误</td></tr>
       <tr><td>433</td><td>（Tavily）PayGo 余额耗尽：立即透传上游错误，不重试</td></tr>
-      <tr><td>401</td><td>分发 key 缺失 / 无效 / 禁用，或前缀非法</td></tr>
+      <tr><td>401</td><td>分发 key 缺失 / 无效 / 停用，或前缀非法</td></tr>
       <tr><td>400</td><td>（searxng）缺 <code>q</code> 或 <code>format</code> 非 json；<code>native</code> 透传上游 400；（reader）缺目标 URL</td></tr>
       <tr><td>405</td><td>（/reader、/extract）协议与该端点不匹配——如用 native/searxng 打 /reader</td></tr>
       <tr><td>502</td><td>（reader）目标页抓取失败（Tavily failed_results）或上游不可达</td></tr>
-      <tr><td>503</td><td>该 provider 无可用的上游 key（全部禁用或冷却中）</td></tr>
+      <tr><td>503</td><td>该 provider 无可用的上游 key（全部停用或冷却中）</td></tr>
     </tbody>
   </table>
 
