@@ -21,6 +21,30 @@
   });
 })();
 
+// ---------- HTMX 写操作的加载反馈 + 防重复提交：请求期间禁用提交按钮并加 is-loading --------
+// 全部 admin 写操作都是 hx-post 表单（hx-target 多为列表/结果区，成功即整片替换；
+// 失败返回 errorFragment 200 时按钮不在被替换区——afterRequest 统一复原覆盖两种情况）。
+// 用委托监听 document 事件，模板零改动；恢复逻辑回读 dataset 里保存的旧 disabled 态。
+document.addEventListener('htmx:beforeRequest', function (e) {
+  var elt = e.detail.elt;
+  var btn = elt && elt.querySelector ? elt.querySelector('[type="submit"]') : null;
+  if (!btn) return;
+  btn.dataset.wasDisabled = btn.disabled ? '1' : '0';
+  btn.disabled = true;
+  btn.classList.add('is-loading');
+});
+function htmxRestoreButton(e) {
+  var elt = e.detail.elt;
+  var btn = elt && elt.querySelector ? elt.querySelector('[type="submit"]') : null;
+  if (!btn) return;
+  btn.disabled = btn.dataset.wasDisabled === '1';
+  delete btn.dataset.wasDisabled;
+  btn.classList.remove('is-loading');
+}
+document.addEventListener('htmx:afterRequest', htmxRestoreButton);
+document.addEventListener('htmx:responseError', htmxRestoreButton);
+document.addEventListener('htmx:sendError', htmxRestoreButton);
+
 // ---------- 全屏 toast：覆盖式提示（同一时间只保留一则） ----------
 function showToast(message) {
   var region = document.getElementById('toast-region');

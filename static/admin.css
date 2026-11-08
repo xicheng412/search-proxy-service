@@ -207,6 +207,14 @@ pre { font-family:var(--font-mono); }
 .btn-danger:hover { filter:brightness(1.03); }
 .btn-sm { min-height:28px; padding:4px 9px; font-size:12px; }
 .btn-block { width:100%; }
+/* 提交中状态（admin.js 挂 is-loading 于 submit 按钮）：半透明抑制重复点击，带小 spinner 反馈 */
+.btn.is-loading { opacity:.55; pointer-events:none; }
+.btn.is-loading::before {
+  content:""; display:inline-block; width:11px; height:11px; margin-right:7px;
+  border:2px solid currentColor; border-right-color:transparent;
+  border-radius:50%; vertical-align:-1px; animation:btn-spin .7s linear infinite;
+}
+@keyframes btn-spin { to { transform:rotate(360deg); } }
 .input.input-sm { min-height:30px; padding:4px 8px; font-size:12px; }
 .theme-icon { display:inline-flex; }
 .theme-icon-sun { display:none; }
