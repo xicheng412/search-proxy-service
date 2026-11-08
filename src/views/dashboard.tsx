@@ -10,8 +10,10 @@ import type { DistSummaries } from "../usage";
 export interface DashboardData {
   tavilyTotal: number;
   tavilyEnabled: number;
+  tavilyCooling: number;
   exaTotal: number;
   exaEnabled: number;
+  exaCooling: number;
   distTotal: number;
   distEnabled: number;
   distSeries: string;
@@ -43,7 +45,9 @@ export function adminPage(data: DashboardData) {
         {statCard({
           label: "Tavily Keys",
           value: data.tavilyTotal,
-          meta: `启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}`,
+          meta: `启用 ${data.tavilyEnabled} · 停用 ${data.tavilyTotal - data.tavilyEnabled}${
+            data.tavilyCooling ? ` · 冷却中 ${data.tavilyCooling}` : ""
+          }`,
           href: "/admin/tavily",
           tone:
             data.tavilyTotal === 0
@@ -55,7 +59,9 @@ export function adminPage(data: DashboardData) {
         {statCard({
           label: "Exa Keys",
           value: data.exaTotal,
-          meta: `启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}`,
+          meta: `启用 ${data.exaEnabled} · 停用 ${data.exaTotal - data.exaEnabled}${
+            data.exaCooling ? ` · 冷却中 ${data.exaCooling}` : ""
+          }`,
           href: "/admin/exa",
           tone:
             data.exaTotal === 0

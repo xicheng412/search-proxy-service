@@ -54,17 +54,24 @@ export async function listUpstreamKeys(
   return (results as Record<string, unknown>[]).map(toCoreKey);
 }
 
-/** dashboard 统计卡用：按 provider 计数 total/enabled（注册口径，不含 cooldown）。 */
+/** dashboard 统计卡用：按 provider 计数 total/enabled/cooling（注册口径）。
+ * cooling = 启用且在冷却中（cooldown_until > now）的 key 数；cooldown_until 为 D1 低频
+ * checkpoint（≤30s 陈旧），用于首屏概览的近似可用性信号，不参与任何硬闸门。 */
 export async function countUpstreamKeys(
   env: Env,
   def: UpstreamDef
-): Promise<{ total: number; enabled: number }> {
+): Promise<{ total: number; enabled: number; cooling: number }> {
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS total,
-            COALESCE(SUM(CASE WHEN status = 'enabled' THEN 1 ELSE 0 END), 0) AS enabled
+            COALESCE(SUM(CASE WHEN status = 'enabled' THEN 1 ELSE 0 END), 0) AS enabled,
+            COALESCE(SUM(CASE WHEN status = 'enabled' AND cooldown_until > ?2 THEN 1 ELSE 0 END), 0) AS cooling
      FROM upstream_keys WHERE provider = ?1`
-  ).bind(def.provider).first();
-  return { total: Number(row?.["total"] ?? 0), enabled: Number(row?.["enabled"] ?? 0) };
+  ).bind(def.provider, Date.now()).first();
+  return {
+    total: Number(row?.["total"] ?? 0),
+    enabled: Number(row?.["enabled"] ?? 0),
+    cooling: Number(row?.["cooling"] ?? 0),
+  };
 }
 
 // 惰性总数缓存：总量基本不变，低频读「共 N 条」，随 add/delete（总量变动）时同 isolate 立即失效，

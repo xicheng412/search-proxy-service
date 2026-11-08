@@ -172,19 +172,23 @@ describe("updateUpstreamKey 动态 SET 与空 patch", () => {
 });
 
 describe("countUpstreamKeys 统计读模型", () => {
-  it("按 provider 聚合 total/enabled，绑定 provider", async () => {
-    const { db, log } = makeScriptedD1([{ results: [{ total: 3, enabled: 2 }] }]);
+  it("按 provider 聚合 total/enabled/cooling，绑定 provider 与 now", async () => {
+    const now = Date.now();
+    const { db, log } = makeScriptedD1([{ results: [{ total: 3, enabled: 2, cooling: 1 }] }]);
     const r = await countUpstreamKeys({ DB: db } as unknown as Env, def);
-    expect(r).toEqual({ total: 3, enabled: 2 });
+    expect(r).toEqual({ total: 3, enabled: 2, cooling: 1 });
     const [call] = log();
     expect(call.op).toBe("first");
     expect(call.sql).toContain("FROM upstream_keys WHERE provider = ?1");
-    expect(call.binds).toEqual([def.provider]);
+    expect(call.sql).toContain("cooldown_until > ?2");
+    expect(call.binds.length).toBe(2);
+    expect(call.binds[0]).toBe(def.provider);
+    expect(call.binds[1]).toBeGreaterThanOrEqual(now);
   });
 
-  it("空表返回 0/0", async () => {
+  it("空表返回 0/0/0", async () => {
     const { db } = makeScriptedD1([]);
-    await expect(countUpstreamKeys({ DB: db } as unknown as Env, def)).resolves.toEqual({ total: 0, enabled: 0 });
+    await expect(countUpstreamKeys({ DB: db } as unknown as Env, def)).resolves.toEqual({ total: 0, enabled: 0, cooling: 0 });
   });
 });
 

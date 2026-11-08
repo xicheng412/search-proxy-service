@@ -68,8 +68,10 @@ admin.get("/", async (c) => {
     adminPage({
       tavilyTotal: tkeys.total,
       tavilyEnabled: tkeys.enabled,
+      tavilyCooling: tkeys.cooling,
       exaTotal: ekeys.total,
       exaEnabled: ekeys.enabled,
+      exaCooling: ekeys.cooling,
       distTotal: dkeys.total,
       distEnabled: dkeys.enabled,
       distSeries: JSON.stringify(distSeries),
